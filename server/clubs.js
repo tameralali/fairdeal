@@ -68,7 +68,7 @@ export class Clubs {
   }
 
   requireRegistered(user) {
-    if (!user.username) throw new Error('Create an account with a username and password first, so your club balance is never tied to one browser');
+    if (!user.username) throw new Error('Sign in with your account first');
   }
 
   nameOf(userId) {
@@ -121,6 +121,20 @@ export class Clubs {
     };
     this.changed(c.id);
     return { club: c, status };
+  }
+
+  // Someone joining through a site invite that names this club goes straight in.
+  addInvited(clubId, userId) {
+    const c = this.data[clubId];
+    if (!c) return false;
+    const m = c.members[userId];
+    if (m && m.status === 'active') return true;
+    c.members[userId] = {
+      userId, role: 'member', status: 'active', balance: m?.balance || 0,
+      creditLimit: c.settings.defaultCreditLimit || 0, requestedAt: Date.now(), joinedAt: Date.now(),
+    };
+    this.changed(clubId);
+    return true;
   }
 
   decideMember(actor, clubId, userId, approve) {

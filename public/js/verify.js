@@ -8,6 +8,8 @@ import { boardName } from './game-form.js';
 
 const BRAND_HEX = '6f3ac1d0a85c2e94b7f1036d4e5a9c8b21f0e7d6c5b4a39281706f5e4d3c2b1a';
 const wc = webCryptoAdapter();
+// members only, like the rest of the site
+if (!token()) location.replace('/?next=' + encodeURIComponent(location.pathname + location.search));
 const out = $('#out');
 applyPrefs(document.body);
 $('#brand').innerHTML = `${sealSVG(BRAND_HEX, 30, 'The Aquarium')}<span>The <b>Aquarium</b></span>`;

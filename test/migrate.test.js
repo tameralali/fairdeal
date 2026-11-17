@@ -29,11 +29,12 @@ test('moving to a new server: data copied, logins keep working, the old copy for
   const oldBase = `http://127.0.0.1:${await oldSrv.listen(0)}`;
 
   // some real data on the old server: an account, a club with chips and credit, a club table, a hand file
-  const owner = (await call(oldBase, 'POST', '/api/auth/register', { username: 'tamer', password: 'secret123', name: 'Tamer' })).json;
-  const omar = (await call(oldBase, 'POST', '/api/auth/register', { username: 'omar', password: 'secret123', name: 'Omar' })).json;
+  const owner = (await call(oldBase, 'POST', `/api/links/${oldSrv.ownerSetupToken}`, { username: 'tamer', password: 'secret123', name: 'Tamer', email: 'tamer@example.com' })).json;
+  const inv = (await call(oldBase, 'POST', '/api/admin/invites', { email: 'omar@example.com', name: 'Omar' }, owner.token)).json;
+  const omar = (await call(oldBase, 'POST', `/api/links/${inv.link.split('/').pop()}`, { username: 'omar', password: 'secret123', name: 'Omar' })).json;
   const clubId = (await call(oldBase, 'POST', '/api/clubs', { name: 'The Aquarium' }, owner.token)).json.id;
   const code = (await call(oldBase, 'GET', `/api/clubs/${clubId}`, null, owner.token)).json.club.inviteCode;
-  await call(oldBase, 'POST', '/api/clubs/join', { code }, omar.token);
+  assert.equal((await call(oldBase, 'POST', '/api/clubs/join', { code }, omar.token)).status, 200);
   await call(oldBase, 'POST', `/api/clubs/${clubId}/members/${omar.user.id}/decide`, { approve: true }, owner.token);
   await call(oldBase, 'POST', `/api/clubs/${clubId}/members/${omar.user.id}/chips`, { amount: 2500, note: 'Cash' }, owner.token);
   await call(oldBase, 'POST', `/api/clubs/${clubId}/members/${omar.user.id}/credit`, { limit: 1000 }, owner.token);
@@ -111,7 +112,7 @@ test('the new server answers health checks with a holding page while it waits fo
   const src = tmp('aq-src-');
   const oldSrv = createServer({ dataDir: src, exportKey: KEY });
   await oldSrv.listen(oldPort);
-  await call(`http://127.0.0.1:${oldPort}`, 'POST', '/api/auth/guest', { name: 'Someone' });
+  await call(`http://127.0.0.1:${oldPort}`, 'POST', `/api/links/${oldSrv.ownerSetupToken}`, { username: 'someone', password: 'secret123', name: 'Someone', email: 'someone@example.com' });
   oldSrv.store.flush();
   const r = await pending;
   assert.ok(r.imported >= 1);

@@ -9,12 +9,15 @@ import { Auth } from './auth.js';
 import { Clubs } from './clubs.js';
 import { TableManager } from './table.js';
 import { exportKeyFromEnv, keyMatches, readDataDir, importIfNeeded } from './migrate.js';
+import { mailerFromEnv, inviteEmail, resetEmail } from './mail.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT, 'data'), exportKey = exportKeyFromEnv() } = {}) {
+export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT, 'data'), exportKey = exportKeyFromEnv(), mailer = mailerFromEnv() } = {}) {
   const store = new Store(dataDir);
   const auth = new Auth(store);
+  // until someone claims the site, a one-time owner link is made at each start (printed in the log)
+  const ownerSetupToken = auth.ownerSetupLink();
   const clubs = new Clubs(store, auth);
   const tables = new TableManager({ store, auth, clubs });
 
@@ -32,7 +35,7 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   const movedTo = () => store.data.meta?.movedTo || null;
   app.use((req, res, next) => {
     const to = movedTo();
-    if (!to || req.path === '/healthz' || req.path.startsWith('/api/admin/')) return next();
+    if (!to || req.path === '/healthz' || req.path === '/api/admin/export') return next();
     if (req.path.startsWith('/api/')) return res.status(410).json({ error: `The Aquarium has moved to ${to}` });
     res.redirect(302, to.replace(/\/+$/, '') + req.originalUrl);
   });
@@ -55,20 +58,20 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'] }));
   const page = (f) => (req, res) => res.sendFile(path.join(ROOT, 'public', f));
   app.get('/t/:id', page('table.html'));
-  app.get(['/club/:id', '/join/:code'], page('index.html'));
+  app.get(['/club/:id', '/join/:code', '/invite/:token', '/reset/:token', '/admin'], page('index.html'));
   app.get('/verify', page('verify.html'));
   app.get('/healthz', (req, res) => res.json({ ok: true }));
   app.get('/favicon.ico', (req, res) => res.redirect(301, '/favicon.svg'));
 
   const tokenOf = (req) => (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  const api = (fn, { needUser = true } = {}) => (req, res) => {
+  const api = (fn, { needUser = true } = {}) => async (req, res) => {
     try {
       const user = auth.userForToken(tokenOf(req));
       if (needUser && !user) return res.status(401).json({ error: 'Please sign in again' });
-      const out = fn(req, user, res);
+      const out = await fn(req, user, res);
       if (out !== undefined && !res.headersSent) res.json(out);
     } catch (e) {
-      res.status(400).json({ error: e.message });
+      if (!res.headersSent) res.status(e.status || 400).json({ error: e.message });
     }
   };
   const viewTable = (req, user) => {
@@ -78,14 +81,9 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   };
 
   // ----- accounts -----
-  app.post('/api/auth/guest', api((req) => {
-    const { user, token } = auth.createGuest(req.body.name);
-    return { token, user: auth.publicUser(user) };
-  }, { needUser: false }));
-  app.post('/api/auth/register', api((req, user) => {
-    const r = auth.register(user, req.body || {});
-    return { token: r.token, user: auth.publicUser(r.user) };
-  }, { needUser: false }));
+  const inviteOnly = (req, res) => res.status(403).json({ error: 'The Aquarium is invite only. Open the invite link you were sent, or sign in.' });
+  app.post('/api/auth/guest', inviteOnly);
+  app.post('/api/auth/register', inviteOnly);
   app.post('/api/auth/login', api((req) => {
     const r = auth.login(req.body || {}, req.ip);
     return { token: r.token, user: auth.publicUser(r.user) };
@@ -93,6 +91,65 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   app.post('/api/auth/logout', api((req) => { auth.logout(tokenOf(req)); return { ok: true }; }));
   app.get('/api/me', api((req, user) => ({ user: auth.publicUser(user), clubs: clubs.forUser(user.id), tables: tables.forUser(user.id) })));
   app.patch('/api/me', api((req, user) => ({ user: auth.publicUser(auth.rename(user, req.body.name)) })));
+
+  // invite, owner setup and password reset links (no sign-in needed: the link is the key)
+  const clubName = (id) => clubs.data[id]?.name || null;
+  app.get('/api/links/:token', api((req) => {
+    const info = auth.linkInfo(req.params.token);
+    return { ...info, club: info.clubId ? clubName(info.clubId) : null, clubId: undefined };
+  }, { needUser: false }));
+  app.post('/api/links/:token', api((req) => {
+    const r = auth.acceptLink(req.params.token, req.body || {}, req.ip);
+    if (r.invite.kind === 'join' && r.invite.clubId) clubs.addInvited(r.invite.clubId, r.user.id);
+    return { token: r.token, user: auth.publicUser(r.user), kind: r.invite.kind, clubId: r.invite.clubId || null };
+  }, { needUser: false }));
+
+  // ----- admin: people, invites, roles -----
+  const linkUrl = (req, kind, token) => `${req.protocol}://${req.get('host')}/${kind === 'reset' ? 'reset' : 'invite'}/${token}`;
+  async function deliver(inv, to, message) {
+    if (!to) return { sent: false, error: 'This account has no email address' };
+    if (!mailer) return { sent: false, error: null };
+    try {
+      await mailer.send({ to, ...message });
+      inv.sentAt = Date.now();
+      inv.sendError = null;
+      store.save();
+      return { sent: true };
+    } catch (e) {
+      inv.sendError = String(e.message || e).slice(0, 200);
+      store.save();
+      console.error('[mail]', inv.sendError);
+      return { sent: false, error: 'The email did not go through. Copy the link and send it yourself.' };
+    }
+  }
+  const sendInvite = (req, user, r) => {
+    const link = linkUrl(req, 'join', r.token);
+    const msg = inviteEmail({ link, inviter: user.name, club: r.invite.clubId ? clubName(r.invite.clubId) : null, name: r.invite.name, expiresAt: r.invite.expiresAt });
+    return deliver(r.invite, r.invite.email, msg).then((m) => ({ ...m, link, email: r.invite.email, expiresAt: r.invite.expiresAt }));
+  };
+  app.get('/api/admin/people', api((req, user) => ({
+    ...auth.people(user, clubName), me: auth.publicUser(user), mail: { on: !!mailer, from: mailer?.address || null },
+  })));
+  app.post('/api/admin/invites', api(async (req, user) => {
+    const { email, name, clubId, days } = req.body || {};
+    if (clubId && !clubs.isManager(clubId, user.id)) throw new Error('You can only add people to clubs you manage');
+    return sendInvite(req, user, auth.createInvite(user, { email, name, clubId, days }));
+  }));
+  app.post('/api/admin/invites/:id/renew', api(async (req, user) => sendInvite(req, user, auth.renewInvite(user, req.params.id, req.body?.days))));
+  app.post('/api/admin/invites/:id/revoke', api((req, user) => { auth.revokeInvite(user, req.params.id); return { ok: true }; }));
+  app.post('/api/admin/users/:id/role', api((req, user) => ({ user: auth.publicUser(auth.setRole(user, req.params.id, req.body?.role)) })));
+  app.post('/api/admin/users/:id/access', api((req, user) => {
+    const u = auth.setAccess(user, req.params.id, !!req.body?.enabled);
+    if (u.disabled) for (const sock of io.sockets.sockets.values()) if (sock.data.user?.id === u.id) sock.disconnect(true);
+    return { ok: true };
+  }));
+  app.post('/api/admin/users/:id/reset', api(async (req, user) => {
+    const r = auth.createReset(user, req.params.id);
+    const target = auth.users[req.params.id];
+    const link = linkUrl(req, 'reset', r.token);
+    const m = await deliver(r.invite, target.email, resetEmail({ link, admin: user.name, username: target.username, expiresAt: r.invite.expiresAt }));
+    return { ...m, link, email: target.email || null, expiresAt: r.invite.expiresAt };
+  }));
 
   // ----- tables -----
   app.post('/api/tables', api((req, user) => ({ id: tables.create(user, req.body || {}).id })));
@@ -200,7 +257,7 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   clubs.onChange((clubId) => io.to('club:' + clubId).emit('club:changed', { clubId }));
 
   return {
-    app, server, io, store, auth, clubs, tables,
+    app, server, io, store, auth, clubs, tables, ownerSetupToken, mailer,
     listen(port = Number(process.env.PORT) || 3000) {
       return new Promise((resolve) => server.listen(port, () => resolve(server.address().port)));
     },
@@ -227,7 +284,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     self: process.env.RENDER_EXTERNAL_URL || '', holdPort: port,
   });
   const srv = createServer({ dataDir });
-  srv.listen(port).then((p) => console.log(`The Aquarium is running on http://localhost:${p}`));
+  srv.listen(port).then((p) => {
+    console.log(`The Aquarium is running on http://localhost:${p}`);
+    console.log(srv.mailer ? `Invites are emailed from ${srv.mailer.address}.` : 'Email is not set up (SMTP_USER and SMTP_PASS): admins copy invite links themselves.');
+    if (srv.ownerSetupToken) {
+      const base = (process.env.RENDER_EXTERNAL_URL || `http://localhost:${p}`).replace(/\/+$/, '');
+      console.log(`This site has no owner yet. Open this link to set it up (it works once): ${base}/invite/${srv.ownerSetupToken}`);
+    }
+  });
   const shutdown = () => { try { srv.store.flush(); } finally { process.exit(0); } };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

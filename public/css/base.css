@@ -107,7 +107,7 @@ p { margin: 0 0 .75em; max-width: 68ch; }
 /* ---------- forms ---------- */
 label { display: block; font-weight: 500; color: var(--muted); font-size: 14px; }
 .lbl { display: block; margin-bottom: .3rem; color: var(--muted); font-weight: 500; font-size: 14px; }
-input:not([type]), input[type=text], input[type=number], input[type=password], input[type=search], select, textarea {
+input:not([type]), input[type=text], input[type=email], input[type=number], input[type=password], input[type=search], select, textarea {
   font: 500 16px/1.2 var(--ui);
   color: var(--text);
   background: var(--room-2);
@@ -164,6 +164,16 @@ input[type=number] { font-family: var(--num); font-size: 17px; font-variant-nume
 dialog.start-game { width: min(980px, calc(100vw - 24px)); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .nowrap { white-space: nowrap; }
+
+/* ---------- members-only sign-in ---------- */
+body.gated > :not(.gate) { display: none !important; }
+.gate { min-height: 100dvh; display: grid; place-items: center; padding: 28px 16px; }
+.gate-card { width: min(400px, 100%); }
+.gate-card .wordmark { margin-bottom: 1.6rem; }
+.gate-card h1 { font-size: 2.3rem; margin-bottom: .4rem; }
+.gate-card > p.muted { margin-bottom: 1.4rem; }
+.gate-card .btn.big { width: 100%; }
+.gate-card .hint { margin-top: 1.2rem; }
 
 /* ---------- dialogs ---------- */
 dialog {

@@ -1,6 +1,6 @@
 # The Aquarium
 
-Private online poker for a home game. It plays like PokerNow (share a link, approve seats, track the ledger), and every deal can be checked by the players themselves.
+Private online poker for a home game. It plays like PokerNow (share a link, approve seats, track the ledger), only members you invite can get in, and every deal can be checked by the players themselves.
 
 ## What it does
 
@@ -76,9 +76,24 @@ Serve it over HTTPS (Render and Fly do this automatically). Settings come from e
 | `PORT` | `3000` | Port to listen on |
 | `DATA_DIR` | `./data` | Where accounts, clubs, ledgers, hand records and logs are stored |
 
-## Accounts
+## Accounts and invites
 
-Anyone can play with just a name, like PokerNow. Creating an account (username and password) keeps the same identity across devices and is required for clubs, so a balance belongs to a person and not to a browser. There is no email, so to reset a forgotten password, stop the server and run:
+The Aquarium is invite only. Nobody can see a table, a club or the lobby without an account, and an account can only be made from an invite link.
+
+- **The owner.** When the site has no owner, the server prints a one-time setup link in its log at every start (on Render: the service's Logs tab). Opening it creates the owner's account, or makes an existing account the owner.
+- **Admins.** The owner makes and removes admins on the People page. Admins and the owner invite people by email, optionally straight into a club, and send members password reset links. Only the owner changes admins or turns someone's access off (that signs them out everywhere; their balances stay as they are).
+- **Invite links** work once, only for the email address they were sent to, and expire after 1 to 30 days. The invitee picks their own username and password. An admin can send a fresh link (the old one stops working) or cancel it.
+
+**Sending the emails.** With these two settings the site emails invites and reset links from your Gmail:
+
+| Variable | Value |
+| --- | --- |
+| `SMTP_USER` | your Gmail address |
+| `SMTP_PASS` | a Gmail app password (Google Account, Security, 2-Step Verification on, then App passwords) |
+
+Other providers also need `SMTP_HOST` and `SMTP_PORT`, and `MAIL_FROM` changes the sender name. Without them nothing is emailed: the admin gets the link to copy and send.
+
+A forgotten owner password can also be reset on the server itself:
 
 ```
 node scripts/reset-password.js <username> <new password>
@@ -98,7 +113,7 @@ The data folder can be handed from one running server to another, for example to
 npm test
 ```
 
-35 tests: hand rankings including the Omaha two-card rule; betting rules (heads-up order, incomplete all-in raises, pot-limit maximums, side pots, uncalled bets); the run-it vote (lowest vote, once wins straight away, missing votes, cards face down while voting); double board pot splits and double board run several times; 6,000 random hands across all three games, on one board or two, checking that chips are conserved and every card can be rebuilt from the seed; full games against a running server with bot players covering approvals, rebuys, the format steps, double board bomb pots, multi-run all-ins, time limits and browser-side verification of every hand; the club flow with credit limits, buy-ins, cash-outs and settlements; and moving the data to a new server.
+43 tests: hand rankings including the Omaha two-card rule; betting rules (heads-up order, incomplete all-in raises, pot-limit maximums, side pots, uncalled bets); the run-it vote (lowest vote, once wins straight away, missing votes, cards face down while voting); double board pot splits and double board run several times; 6,000 random hands across all three games, on one board or two, checking that chips are conserved and every card can be rebuilt from the seed; full games against a running server with bot players covering approvals, rebuys, the format steps, double board bomb pots, multi-run all-ins, time limits and browser-side verification of every hand; the club flow with credit limits, buy-ins, cash-outs and settlements; invite-only access (refused sign-ups, the owner link, email-bound single-use invites, roles, password resets, turning access off, a failed email); and moving the data to a new server.
 
 ## Layout
 

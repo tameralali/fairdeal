@@ -6,8 +6,8 @@ import { scryptSync, randomBytes } from 'node:crypto';
 import { Store } from '../server/store.js';
 
 const [username, password] = process.argv.slice(2);
-if (!username || !password || password.length < 6) {
-  console.error('Usage: node scripts/reset-password.js <username> <new password, at least 6 characters>');
+if (!username || !password || password.length < 8) {
+  console.error('Usage: node scripts/reset-password.js <username> <new password, at least 8 characters>');
   process.exit(1);
 }
 const dir = process.env.DATA_DIR || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data');

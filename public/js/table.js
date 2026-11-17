@@ -9,7 +9,7 @@ import { app, emit, fmt, inp, parse, gameShort, now } from './table-core.js';
 import * as D from './table-dialogs.js';
 import { boardName, stepLabel } from './game-form.js';
 
-export const BRAND_HEX = '6f3ac1d0a85c2e94b7f1036d4e5a9c8b21f0e7d6c5b4a39281706f5e4d3c2b1a';
+import { BRAND_HEX } from './api.js';
 const TIMES = ['', 'once', 'twice', 'three times', 'four times'];
 const els = {};
 
@@ -180,7 +180,6 @@ function renderTop(s) {
   const ends = t.session && t.session.endsAt;
   const reqs = s.requests ? s.requests.length : 0;
   const f = s.fairness;
-  const acct = app.me && !app.me.username ? '<button class="btn ghost small" data-open="account" title="Create an account">Save account</button>' : '';
   els.top.innerHTML = `
     <span class="conn ${app.connected ? '' : 'off'}" title="${app.connected ? 'Connected' : 'Reconnecting'}"></span>
     <a class="wordmark" href="/" title="Lobby">${sealSVG(BRAND_HEX, 26, 'The Aquarium')}<span>The <b>Aquarium</b></span></a>
@@ -201,7 +200,6 @@ function renderTop(s) {
       <button class="btn small sm-hide" data-open="hands">Hands</button>
       <button class="btn small sm-hide" data-open="look">Look</button>
       <button class="btn small sm-hide ${els.drawer.classList.contains('collapsed') ? '' : 'primary'}" data-open="log">Log</button>
-      <span class="sm-hide">${acct}</span>
       <button class="btn small menu-btn" data-open="menu">Menu</button>
     </div>`;
   tick();
@@ -646,7 +644,7 @@ function bindEvents() {
         render();
         return;
       }
-      ({ options: D.hostDialog, ledger: D.ledgerDialog, hands: D.handsDialog, look: D.lookDialog, fair: D.fairDialog, requests: D.requestsDialog, account: D.accountFromTable, menu: D.menuDialog })[k]?.();
+      ({ options: D.hostDialog, ledger: D.ledgerDialog, hands: D.handsDialog, look: D.lookDialog, fair: D.fairDialog, requests: D.requestsDialog, menu: D.menuDialog })[k]?.();
       return;
     }
     const player = e.target.closest('[data-player]');

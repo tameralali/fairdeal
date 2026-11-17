@@ -1,6 +1,6 @@
 // Dialogs on the table page: seats and chips, host options, ledger, hand history with verification,
 // appearance, fairness explainer.
-import { api, accountDialog } from './api.js';
+import { api } from './api.js';
 import { esc, dialog, toast, confirmDialog, copyText } from './ui.js';
 import { cardHTML, prefs, savePrefs, FELTS, BACKS } from './cards.js';
 import { sealSVG } from './seal.js';
@@ -89,11 +89,6 @@ export async function standDialog() {
     ? `You will leave after this hand and your stack will be cashed ${where}. Remaining decisions this hand are checked or folded for you.`
     : `Your stack of ${fmt(seat.stack)} will be cashed ${where}.`, { title: 'Stand up?', ok: 'Stand up' });
   if (ok) emit('standup');
-}
-
-export async function accountFromTable() {
-  const u = await accountDialog(app.me);
-  if (u) { app.me = u; toast('Account created'); app.render(); }
 }
 
 // ---------- host ----------
@@ -494,7 +489,6 @@ export function menuDialog() {
   const items = [
     s.me.isHost && ['options', 'Game options'],
     ['ledger', 'Ledger'], ['hands', 'Hand history'], ['fair', 'Sealed deck'], ['look', 'Look and feel'], ['log', 'Log and chat'],
-    app.me && !app.me.username && ['account', 'Create an account'],
   ].filter(Boolean);
   const dlg = dialog({
     title: 'Menu', className: 'narrow',
@@ -506,7 +500,7 @@ export function menuDialog() {
     dlg.close();
     const k = b.dataset.go;
     if (k === 'log') { document.querySelector('[data-open="log"]')?.click(); return; }
-    ({ options: hostDialog, ledger: ledgerDialog, hands: handsDialog, fair: fairDialog, look: lookDialog, account: accountFromTable })[k]?.();
+    ({ options: hostDialog, ledger: ledgerDialog, hands: handsDialog, fair: fairDialog, look: lookDialog })[k]?.();
   });
 }
 

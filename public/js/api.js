@@ -1,5 +1,5 @@
-// REST client, identity bootstrap and chip formatting.
-import { dialog, esc } from './ui.js';
+// REST client, sign-in and chip formatting.
+import { sealSVG } from './seal.js';
 
 const KEY = 'fd:token';
 
@@ -36,97 +36,57 @@ export const api = {
   },
 };
 
-// Returns /api/me, creating a guest identity (just a name, like PokerNow) when needed.
+export const BRAND_HEX = '6f3ac1d0a85c2e94b7f1036d4e5a9c8b21f0e7d6c5b4a39281706f5e4d3c2b1a';
+
+// Returns /api/me. The site is invite only, so without a valid sign-in the page shows the
+// members-only sign-in screen and waits there.
 export async function ensureIdentity() {
   if (api.token) {
     try { return await api.get('/api/me'); }
     catch (e) { if (e.status === 401) api.token = null; else throw e; }
   }
-  await identityDialog();
+  await gate();
   return api.get('/api/me');
 }
 
-export function identityDialog({ mode = 'guest', closable = false } = {}) {
+export function gate() {
   return new Promise((resolve) => {
-    const dlg = dialog({
-      title: mode === 'login' ? 'Sign in' : 'What should the table call you?',
-      className: 'narrow',
-      closable,
-      body: `
-        <form data-form="guest" class="stack ${mode === 'login' ? 'hidden' : ''}">
-          <label><span class="lbl">Your name at the table</span><input name="name" type="text" maxlength="24" autocomplete="nickname" required></label>
-          <button class="btn primary" type="submit">Continue</button>
-          <p class="hint">No account needed to play. Create one later to join clubs or play from another device.</p>
-          <button class="btn ghost small" type="button" data-switch="login">I have an account</button>
-        </form>
-        <form data-form="login" class="stack ${mode === 'login' ? '' : 'hidden'}">
-          <label><span class="lbl">Username</span><input name="username" type="text" autocomplete="username" required></label>
-          <label><span class="lbl">Password</span><input name="password" type="password" autocomplete="current-password" required></label>
-          <button class="btn primary" type="submit">Sign in</button>
-          <button class="btn ghost small" type="button" data-switch="guest">Play as a guest instead</button>
-        </form>
-        <p class="bad hidden" data-err></p>`,
-    });
-    const err = dlg.$('[data-err]');
-    const show = (m) => { err.textContent = m; err.classList.remove('hidden'); };
-    dlg.el.addEventListener('click', (e) => {
-      const sw = e.target.closest('[data-switch]');
-      if (!sw) return;
-      dlg.$$('[data-form]').forEach((f) => f.classList.toggle('hidden', f.dataset.form !== sw.dataset.switch));
-      dlg.$('h2').textContent = sw.dataset.switch === 'login' ? 'Sign in' : 'What should the table call you?';
-    });
-    dlg.$('[data-form=guest]').addEventListener('submit', async (e) => {
+    document.body.classList.add('gated');
+    const el = document.createElement('div');
+    el.className = 'gate';
+    el.innerHTML = `<main class="gate-card">
+      <div class="wordmark">${sealSVG(BRAND_HEX, 34, 'The Aquarium')}<span>The <b>Aquarium</b></span></div>
+      <h1>Members only</h1>
+      <p class="muted">The Aquarium is a private poker game. Sign in with your username and password. New here? Open the invite link an admin emailed you.</p>
+      <form class="stack" data-login>
+        <label><span class="lbl">Username</span><input name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+        <label><span class="lbl">Password</span><input name="password" type="password" autocomplete="current-password" required></label>
+        <p class="bad hidden" data-err role="alert"></p>
+        <button class="btn primary big" type="submit">Sign in</button>
+      </form>
+      <p class="hint">Forgot your password? Ask an admin to email you a reset link.</p>
+    </main>`;
+    document.body.appendChild(el);
+    const form = el.querySelector('[data-login]');
+    const err = el.querySelector('[data-err]');
+    form.addEventListener('submit', async (e) => {
       e.preventDefault();
+      err.classList.add('hidden');
+      const btn = form.querySelector('button');
+      btn.disabled = true;
       try {
-        const r = await api.post('/api/auth/guest', { name: e.target.name.value });
+        const r = await api.post('/api/auth/login', { username: form.elements.username.value.trim(), password: form.elements.password.value });
         api.token = r.token;
-        dlg.close();
+        el.remove();
+        document.body.classList.remove('gated');
         resolve(r.user);
-      } catch (x) { show(x.message); }
-    });
-    dlg.$('[data-form=login]').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      try {
-        const r = await api.post('/api/auth/login', { username: e.target.username.value, password: e.target.password.value });
-        api.token = r.token;
-        dlg.close();
-        resolve(r.user);
-      } catch (x) { show(x.message); }
-    });
-    setTimeout(() => dlg.$('input:not([type=hidden])')?.focus(), 30);
-  });
-}
-
-export function accountDialog(user) {
-  return new Promise((resolve) => {
-    const dlg = dialog({
-      title: 'Create an account',
-      className: 'narrow',
-      body: `
-        <form class="stack">
-          <p class="muted">Keeps your name, tables and club balances. Sign in on any device with the same username.</p>
-          <label><span class="lbl">Username</span><input name="username" type="text" autocomplete="username" required minlength="3" maxlength="20"></label>
-          <label><span class="lbl">Password</span><input name="password" type="password" autocomplete="new-password" required minlength="6"></label>
-          <label><span class="lbl">Display name</span><input name="name" type="text" maxlength="24" value="${esc(user?.name || '')}"></label>
-          <p class="bad hidden" data-err></p>
-          <button class="btn primary" type="submit">Create account</button>
-        </form>`,
-      onClose: () => resolve(null),
-    });
-    dlg.$('form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      try {
-        const f = e.target;
-        const r = await api.post('/api/auth/register', { username: f.username.value, password: f.password.value, name: f.name.value });
-        api.token = r.token;
-        resolve(r.user);
-        dlg.close();
       } catch (x) {
-        const el = dlg.$('[data-err]');
-        el.textContent = x.message;
-        el.classList.remove('hidden');
+        err.textContent = x.message;
+        err.classList.remove('hidden');
+        btn.disabled = false;
       }
     });
+    setTimeout(() => form.elements.username.focus(), 30);
   });
 }
 

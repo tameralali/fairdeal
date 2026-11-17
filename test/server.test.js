@@ -11,14 +11,15 @@ import { verifyHandRecord, webCryptoAdapter } from '../shared/fairness.js';
 
 Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10 });
 
-let srv, url, dataDir;
+let srv, url, dataDir, siteOwner;
 const wc = webCryptoAdapter();
 
 before(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aquarium-'));
-  srv = createServer({ dataDir });
+  srv = createServer({ dataDir, mailer: null });
   const port = await srv.listen(0);
   url = `http://127.0.0.1:${port}`;
+  siteOwner = await call('POST', `/api/links/${srv.ownerSetupToken}`, { username: 'site_owner', password: 'secret123', name: 'Owner', email: 'owner@example.com' });
 });
 const allBots = [];
 after(async () => { for (const b of allBots) b.close(); await srv.close(); });
@@ -31,6 +32,16 @@ async function call(method, p, body, token) {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || r.status);
   return j;
+}
+
+// Everyone joins through an invite from the site owner.
+let seq = 0;
+async function member(name, username = null) {
+  seq++;
+  const email = `${name.toLowerCase()}${seq}@example.com`;
+  const inv = await call('POST', '/api/admin/invites', { email, name }, siteOwner.token);
+  const token = inv.link.split('/').pop();
+  return call('POST', `/api/links/${token}`, { username: username || `${name.toLowerCase()}_${seq}`, password: 'secret123', name });
 }
 
 function rngFrom(seed) {
@@ -147,7 +158,7 @@ async function verifyAll(tableId, bots, hostToken) {
 
 test('standalone game: approvals, mixed games, bombs, multi-runs, ledger and verification', { timeout: 240000 }, async () => {
   const auths = [];
-  for (const n of ['Tamer', 'Omar', 'Lina', 'Sam', 'Rami']) auths.push(await call('POST', '/api/auth/guest', { name: n }));
+  for (const n of ['Tamer', 'Omar', 'Lina', 'Sam', 'Rami']) auths.push(await member(n));
   const host = auths[0];
   const { id } = await call('POST', '/api/tables', {
     name: 'Thursday game',
@@ -234,8 +245,8 @@ test('standalone game: approvals, mixed games, bombs, multi-runs, ledger and ver
 });
 
 test('seeds stay hidden until the game ends when the reveal policy is per session', { timeout: 120000 }, async () => {
-  const a = await call('POST', '/api/auth/guest', { name: 'Host' });
-  const b = await call('POST', '/api/auth/guest', { name: 'Guest' });
+  const a = await member('Host');
+  const b = await member('Guest');
   const { id } = await call('POST', '/api/tables', { settings: { revealPolicy: 'session', autoApprove: true, decisionSeconds: 5, timeBankSeconds: 0 } }, a.token);
   const bots = [new Bot('Host', a, 1), new Bot('Guest', b, 2)];
   for (const x of bots) await x.connect(id);
@@ -258,11 +269,11 @@ test('seeds stay hidden until the game ends when the reveal policy is per sessio
 });
 
 test('club: invites, approvals, chips, credit limits, buy-ins draw from balance, cash-outs return', { timeout: 150000 }, async () => {
-  const owner = await call('POST', '/api/auth/register', { username: 'tamer', password: 'secret123', name: 'Tamer' });
-  const m1 = await call('POST', '/api/auth/register', { username: 'omar', password: 'secret123', name: 'Omar' });
-  const m2 = await call('POST', '/api/auth/register', { username: 'lina', password: 'secret123', name: 'Lina' });
-  const guest = await call('POST', '/api/auth/guest', { name: 'Drifter' });
-  await assert.rejects(call('POST', '/api/clubs', { name: 'Nope' }, guest.token), /account/);
+  const owner = await member('Tamer', 'tamer');
+  const m1 = await member('Omar', 'omar');
+  const m2 = await member('Lina', 'lina');
+  const guest = await member('Drifter');
+  await assert.rejects(call('POST', '/api/auth/guest', { name: 'Nope' }), /invite only/);
   const { id: clubId } = await call('POST', '/api/clubs', { name: 'Dubai Thursday Club', decimals: 2 }, owner.token);
   let view = await call('GET', `/api/clubs/${clubId}`, null, owner.token);
   const code = view.club.inviteCode;
@@ -336,8 +347,8 @@ test('club: invites, approvals, chips, credit limits, buy-ins draw from balance,
 });
 
 test('a table that deals on its own starts its time limit with the first hand', { timeout: 60000 }, async () => {
-  const a = await call('POST', '/api/auth/guest', { name: 'Early' });
-  const b = await call('POST', '/api/auth/guest', { name: 'Late' });
+  const a = await member('Early');
+  const b = await member('Late');
   const { id } = await call('POST', '/api/tables', { settings: { autoStart: true, autoApprove: true, sessionMinutes: 120, decisionSeconds: 5, timeBankSeconds: 0 } }, a.token);
   let t = await call('GET', `/api/tables/${id}`, null, a.token);
   assert.equal(t.status, 'running');
@@ -355,12 +366,13 @@ test('a table that deals on its own starts its time limit with the first hand', 
   bots.forEach((x) => x.close());
 });
 
-test('accounts: login, guest upgrade, rename', async () => {
-  const g = await call('POST', '/api/auth/guest', { name: 'Temp' });
-  const up = await call('POST', '/api/auth/register', { username: 'temp_user', password: 'abcdef' }, g.token);
-  assert.equal(up.user.id, g.user.id, 'guest upgraded in place');
-  await assert.rejects(call('POST', '/api/auth/login', { username: 'temp_user', password: 'wrong!' }), /Wrong/);
-  const li = await call('POST', '/api/auth/login', { username: 'TEMP_USER', password: 'abcdef' });
+test('accounts: invite only, login, rename', async () => {
+  await assert.rejects(call('POST', '/api/auth/guest', { name: 'Temp' }), /invite only/);
+  await assert.rejects(call('POST', '/api/auth/register', { username: 'temp_user', password: 'abcdefgh' }), /invite only/);
+  await assert.rejects(call('GET', '/api/me'), /sign in/);
+  const g = await member('Temp', 'temp_user');
+  await assert.rejects(call('POST', '/api/auth/login', { username: 'temp_user', password: 'wrong!!!' }), /Wrong/);
+  const li = await call('POST', '/api/auth/login', { username: 'TEMP_USER', password: 'secret123' });
   assert.equal(li.user.id, g.user.id);
   const me = await call('PATCH', '/api/me', { name: 'Renamed' }, li.token);
   assert.equal(me.user.name, 'Renamed');
