@@ -88,13 +88,17 @@ node scripts/reset-password.js <username> <new password>
 
 Everything lives in the data folder: `db.json` (accounts, clubs, club ledgers, table settings and table ledgers), `hands/` (one file per table, every hand with its seed and cards) and `logs/`. Copy the folder to back it up. If the server restarts during a hand, that hand is cancelled, stacks go back to where they were when it started, and seated players are set to sitting out until they return.
 
+## Moving to a new server
+
+The data folder can be handed from one running server to another, for example to a new Render address. Start the old server with `MIGRATION_EXPORT=on` and a long random `MIGRATION_KEY`, and the new one with `IMPORT_FROM=<old server URL>` and the same key. On its first boot, while its data folder is empty, the new server shows a short "moving in" page, copies every account, club, ledger, table and hand from the old one, then starts. From that moment the old server forwards every visitor to the new address and accepts no more changes. Logins carry over (players sign in once on the new address). On Render, `RENDER_EXTERNAL_URL` tells the old server where to send people; elsewhere, set it on the new server yourself. Remove `IMPORT_FROM` and the key once the move is done.
+
 ## Tests
 
 ```
 npm test
 ```
 
-33 tests: hand rankings including the Omaha two-card rule; betting rules (heads-up order, incomplete all-in raises, pot-limit maximums, side pots, uncalled bets); the run-it vote (lowest vote, once wins straight away, missing votes, cards face down while voting); double board pot splits and double board run several times; 6,000 random hands across all three games, on one board or two, checking that chips are conserved and every card can be rebuilt from the seed; full games against a running server with bot players covering approvals, rebuys, the format steps, double board bomb pots, multi-run all-ins, time limits and browser-side verification of every hand; and the club flow with credit limits, buy-ins, cash-outs and settlements.
+35 tests: hand rankings including the Omaha two-card rule; betting rules (heads-up order, incomplete all-in raises, pot-limit maximums, side pots, uncalled bets); the run-it vote (lowest vote, once wins straight away, missing votes, cards face down while voting); double board pot splits and double board run several times; 6,000 random hands across all three games, on one board or two, checking that chips are conserved and every card can be rebuilt from the seed; full games against a running server with bot players covering approvals, rebuys, the format steps, double board bomb pots, multi-run all-ins, time limits and browser-side verification of every hand; the club flow with credit limits, buy-ins, cash-outs and settlements; and moving the data to a new server.
 
 ## Layout
 

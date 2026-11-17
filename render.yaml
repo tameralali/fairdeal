@@ -1,4 +1,33 @@
+# The Aquarium on Render.
+# While the app moves from the old "fairdeal" service to the new "aquarium" service, both are listed:
+# the old one hands over its data once (MIGRATION_EXPORT) and the new one pulls it on its first boot
+# (IMPORT_FROM). Both read MIGRATION_KEY from an env group that Render fills with a random value.
+envVarGroups:
+  - name: aquarium-move
+    envVars:
+      - key: MIGRATION_KEY
+        generateValue: true
 services:
+  - type: web
+    name: aquarium
+    runtime: node
+    plan: starter
+    region: frankfurt
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: NODE_VERSION
+        value: "22"
+      - key: IMPORT_FROM
+        value: https://fairdeal-yf1j.onrender.com
+      - fromGroup: aquarium-move
+    disk:
+      name: aquarium-data
+      mountPath: /data
+      sizeGB: 1
   - type: web
     name: fairdeal
     runtime: node
@@ -12,6 +41,9 @@ services:
         value: /data
       - key: NODE_VERSION
         value: "22"
+      - key: MIGRATION_EXPORT
+        value: "on"
+      - fromGroup: aquarium-move
     disk:
       name: fairdeal-data
       mountPath: /data

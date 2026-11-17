@@ -199,6 +199,7 @@ function watch(clubId) {
   if (!clubSocket) {
     clubSocket = window.io({ auth: { token: api.token }, transports: ['websocket', 'polling'] });
     clubSocket.on('connect', () => { if (watching) clubSocket.emit('club:watch', { clubId: watching }); });
+    clubSocket.on('connect_error', (e) => { if (e.message === 'moved') location.reload(); });
     let t = null;
     clubSocket.on('club:changed', ({ clubId: cid }) => {
       if (cid !== watching) return;

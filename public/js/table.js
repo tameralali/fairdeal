@@ -47,6 +47,7 @@ function connect() {
   socket.on('connect_error', (e) => {
     setConn(false);
     if (e.message === 'auth') { api.token = null; location.reload(); }
+    if (e.message === 'moved') location.reload();
   });
   socket.on('state', onState);
   socket.on('log:reset', (entries) => { app.logs = entries; renderLog(); });

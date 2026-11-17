@@ -8,10 +8,11 @@ import { Store } from './store.js';
 import { Auth } from './auth.js';
 import { Clubs } from './clubs.js';
 import { TableManager } from './table.js';
+import { exportKeyFromEnv, keyMatches, readDataDir, importIfNeeded } from './migrate.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT, 'data') } = {}) {
+export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT, 'data'), exportKey = exportKeyFromEnv() } = {}) {
   const store = new Store(dataDir);
   const auth = new Auth(store);
   const clubs = new Clubs(store, auth);
@@ -26,6 +27,29 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     res.setHeader('Referrer-Policy', 'same-origin');
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     next();
+  });
+  // After a move (see migrate.js) this copy only forwards visitors to the new address.
+  const movedTo = () => store.data.meta?.movedTo || null;
+  app.use((req, res, next) => {
+    const to = movedTo();
+    if (!to || req.path === '/healthz' || req.path.startsWith('/api/admin/')) return next();
+    if (req.path.startsWith('/api/')) return res.status(410).json({ error: `The Aquarium has moved to ${to}` });
+    res.redirect(302, to.replace(/\/+$/, '') + req.originalUrl);
+  });
+  app.post('/api/admin/export', (req, res) => {
+    if (!exportKey) return res.status(404).json({ error: 'Not found' });
+    if (!keyMatches(req.get('x-migration-key'), exportKey)) return res.status(403).json({ error: 'Wrong key' });
+    const to = String(req.body?.url || '');
+    if (to && !/^https?:\/\/[^\s/]+/.test(to)) return res.status(400).json({ error: 'Bad address' });
+    store.flush();
+    const payload = readDataDir(dataDir);
+    if (to && to !== movedTo()) {
+      store.data.meta = { ...(store.data.meta || {}), movedTo: to, movedAt: Date.now() };
+      store.flush();
+      console.log(`Data copied to ${to}. This server now forwards visitors there.`);
+      setImmediate(() => io.disconnectSockets(true));
+    }
+    res.json(payload);
   });
   app.use('/shared', express.static(path.join(ROOT, 'shared')));
   app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'] }));
@@ -121,6 +145,7 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   const server = http.createServer(app);
   const io = new Server(server, { maxHttpBufferSize: 1e5, pingInterval: 20000, pingTimeout: 25000 });
   io.use((socket, next) => {
+    if (movedTo()) return next(new Error('moved'));
     const user = auth.userForToken(socket.handshake.auth?.token);
     if (!user) return next(new Error('auth'));
     socket.data.user = user;
@@ -194,8 +219,15 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const srv = createServer();
-  srv.listen().then((port) => console.log(`The Aquarium is running on http://localhost:${port}`));
+  const dataDir = process.env.DATA_DIR || path.join(ROOT, 'data');
+  const port = Number(process.env.PORT) || 3000;
+  // a new server pulls its data from the old one on first boot (see migrate.js)
+  await importIfNeeded({
+    dataDir, from: process.env.IMPORT_FROM, key: process.env.MIGRATION_KEY,
+    self: process.env.RENDER_EXTERNAL_URL || '', holdPort: port,
+  });
+  const srv = createServer({ dataDir });
+  srv.listen(port).then((p) => console.log(`The Aquarium is running on http://localhost:${p}`));
   const shutdown = () => { try { srv.store.flush(); } finally { process.exit(0); } };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
