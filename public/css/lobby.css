@@ -53,3 +53,80 @@
 .invite code { font: 600 15px/1.2 var(--mono); color: var(--brass-hi); overflow-wrap: anywhere; }
 .tx-type { white-space: nowrap; }
 .scroll-x { overflow-x: auto; }
+
+/* ---------- club home ---------- */
+.club-band {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 16px 30px; align-items: end;
+  padding: 2px 0 22px; margin-bottom: 22px; border-bottom: 1px solid var(--line-soft);
+}
+.cb-name h1 { margin: 0; font-size: 2.4rem; line-height: 1.05; }
+.cb-name .row { gap: .8rem; }
+.cb-bal { display: flex; gap: 28px; }
+.cb-bal div { text-align: right; }
+.cb-bal small { display: block; color: var(--muted); font-size: 13.5px; }
+.cb-bal b { font: 700 30px/1.05 var(--num); font-variant-numeric: tabular-nums; }
+@media (max-width: 860px) {
+  .club-band { grid-template-columns: 1fr; align-items: start; }
+  .cb-bal { justify-content: space-between; gap: 14px; }
+  .cb-bal div { text-align: left; }
+  .club-band .btn.big { justify-self: stretch; }
+}
+.sec-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.sec-head h2 { margin: 0; }
+.balances td.bal { font-size: 19px; font-weight: 600; }
+.balances tr.me td { background: rgba(211, 170, 94, .05); }
+.balances td b { font-weight: 600; }
+.role { font: 600 12.5px/1 var(--ui); color: var(--brass-hi); border: 1px solid rgba(211, 170, 94, .4); border-radius: 999px; padding: 2px 7px 3px; margin-left: 4px; }
+.past { margin-top: 12px; }
+.past summary { cursor: pointer; color: var(--muted); padding: 6px 2px; }
+.gboard a.ended { opacity: .72; }
+.more { display: flex; justify-content: center; padding-top: 10px; }
+.club-foot { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 22px; }
+.club-list > div { display: flex; flex-direction: column; padding: 10px 2px; border-bottom: 1px solid var(--line-soft); }
+.start-panel .btn.big { margin-top: .2rem; }
+@media (max-width: 700px) { .hide-sm { display: none; } }
+
+.linkish { appearance: none; background: none; border: 0; padding: 0; font: inherit; font-weight: 600; color: var(--text); cursor: pointer; text-align: left; }
+.linkish:not([disabled]):hover { color: var(--brass-hi); text-decoration: underline; text-underline-offset: 3px; }
+.linkish[disabled] { cursor: default; }
+/* phones: balances and ledger as stacked lists */
+.narrow-only { display: none; }
+.bal-list, .led-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.bal-item {
+  appearance: none; width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 12px; align-items: baseline;
+  padding: 11px 4px; background: none; border: 0; border-bottom: 1px solid var(--line-soft); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.bal-item[disabled] { cursor: default; }
+.bal-item.me { background: rgba(211, 170, 94, .05); }
+.bi-name { min-width: 0; }
+.bi-bal { font: 700 22px/1 var(--num); font-variant-numeric: tabular-nums; text-align: right; }
+.bi-sub { color: var(--muted); font-size: 13.5px; }
+.bi-net { font: 600 15px/1 var(--num); font-variant-numeric: tabular-nums; text-align: right; }
+.led-list li { padding: 10px 2px; border-bottom: 1px solid var(--line-soft); }
+.li-top { display: flex; justify-content: space-between; gap: 10px; }
+.li-top span { font: 600 17px/1.2 var(--num); font-variant-numeric: tabular-nums; }
+.li-sub { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 13.5px; margin-top: 2px; }
+.totals.sheet { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.sheet-actions { display: grid; gap: 8px; }
+@media (max-width: 640px) {
+  .wide-only { display: none; }
+  .narrow-only { display: block; }
+  .totals { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .totals b { font-size: 20px; }
+  .panel { padding: 16px 14px 18px; }
+  .lobby { padding: 0 12px 48px; }
+}
+@media (max-width: 560px) {
+  .lob-head { flex-wrap: wrap; gap: 6px 10px; padding: 12px 0; margin-bottom: 18px; }
+  .lob-head .pre, .lob-head .uname { display: none; }
+  .lob-head .who { gap: 2px; }
+  .lob-head .wordmark span { white-space: nowrap; }
+  .cb-name h1 { font-size: 2rem; }
+  .cb-bal b { font-size: 26px; }
+  .gboard a { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "g stakes seats" "nm nm nm"; row-gap: 6px; }
+  .gboard .g { grid-area: g; }
+  .gboard .stakes { grid-area: stakes; }
+  .gboard .seats { grid-area: seats; }
+  .gboard .nm { grid-area: nm; }
+  .gboard .nm small { white-space: normal; }
+}

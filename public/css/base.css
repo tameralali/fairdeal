@@ -95,6 +95,7 @@ p { margin: 0 0 .75em; max-width: 68ch; }
 .btn.danger:hover { background: rgba(208, 100, 90, .12); border-color: var(--danger); }
 .btn.small { font-size: 13.5px; padding: .45em .7em; border-radius: var(--r-sm); }
 .btn.tiny { font-size: 12.5px; padding: .3em .55em; border-radius: 5px; }
+.btn.big { font-size: 17px; padding: .8em 1.35em; border-radius: var(--r-md); }
 .btn .count {
   font: 700 12px/1 var(--num);
   background: var(--brass);
@@ -129,6 +130,40 @@ input[type=number] { font-family: var(--num); font-size: 17px; font-variant-nume
 }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button.on { background: var(--panel-2); color: var(--text); box-shadow: inset 0 -2px 0 var(--brass); }
+
+/* ---------- game format editor (start a game, host options) ---------- */
+.fmt-presets { display: flex; flex-wrap: wrap; gap: .4rem; }
+.fmt-chip {
+  font: 600 13.5px/1 var(--ui); color: var(--muted); background: transparent; border: 1px solid var(--line);
+  border-radius: 999px; padding: .5em .85em; cursor: pointer;
+}
+.fmt-chip:hover { color: var(--text); border-color: var(--brass); }
+.fmt-steps { list-style: none; margin: .75rem 0 .6rem; padding: 0; }
+.fstep {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .6rem; padding: .5rem .6rem;
+  background: var(--room-2); border: 1px solid var(--line-soft); border-radius: var(--r-md);
+}
+.fstep + .fstep { margin-top: .4rem; }
+.fstep-n { font: 700 20px/1 var(--num); color: var(--brass); min-width: 1.3em; text-align: center; }
+.fstep select[data-f=game] { width: auto; flex: 1 1 13rem; }
+.fstep select[data-f=len] { width: auto; flex: 0 1 auto; }
+.fstep input[data-f=hands] { width: 5.5rem; flex: none; }
+.fstep-for { color: var(--muted); }
+.fstep-db { display: inline-flex; align-items: center; gap: .4rem; color: var(--text); font-weight: 500; font-size: 15px; cursor: pointer; white-space: nowrap; }
+.fstep-db input { accent-color: var(--brass); width: 16px; height: 16px; margin: 0; }
+.fstep .btn[data-step-remove] { margin-left: auto; }
+.fmt-foot { display: flex; align-items: baseline; gap: .5rem 1rem; flex-wrap: wrap; }
+.fmt-foot .hint { margin: 0; flex: 1 1 16rem; }
+.sg-sec + .sg-sec { margin-top: 1.2rem; padding-top: 1.1rem; border-top: 1px solid var(--line-soft); }
+.sg-sec h3 { font-size: 1.08rem; margin: 0 0 .7rem; }
+.sg-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 1.2rem 2.2rem; }
+.sg-where { display: flex; gap: .8rem 1.2rem; align-items: flex-end; flex-wrap: wrap; }
+.sg-where .seg { flex-wrap: wrap; }
+.sg-where > label { flex: 1 1 15rem; }
+.sg-where .hint, .sg-sec > .hint { margin-bottom: 0; }
+dialog.start-game { width: min(980px, calc(100vw - 24px)); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.nowrap { white-space: nowrap; }
 
 /* ---------- dialogs ---------- */
 dialog {

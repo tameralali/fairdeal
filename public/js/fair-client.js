@@ -63,7 +63,7 @@ export class FairClient {
       if (me && me.hole && me.hole.length) {
         if (JSON.stringify(r.myHole) !== JSON.stringify(me.hole)) { r.myHole = me.hole; r.mySeat = me.seat; changed = true; }
       }
-      const boards = h.runs ? h.runs : [h.board];
+      const boards = h.boards || (h.runs ? h.runs : [h.board]);
       if (boards.some((b) => b.length) && JSON.stringify(r.boards) !== JSON.stringify(boards)) { r.boards = boards; changed = true; }
       if (changed) this.save();
     }

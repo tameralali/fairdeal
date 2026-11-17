@@ -4,15 +4,21 @@ Private online poker for a home game. It plays like PokerNow (share a link, appr
 
 ## What it does
 
-**Games.** No Limit Hold'em, Pot Limit Omaha (4 cards) and PLO5. Tick more than one to rotate them every orbit (for example one orbit of PLO, then one of hold'em) or every set number of hands. Up to 10 seats, or 9 when PLO5 is in the mix.
+**Home page.** With a club, the home page is the club: your balance, the tables running now, every member's balance, credit limit and net from play, and the ledger of every chip movement. Managers add chips, set credit limits and settle up from there (on a phone, tap a member). Start a game opens as a pop-out.
 
-**Bomb pots.** Every N hands, a random percentage of hands, or called by the host for the next hand. The ante is set in big blinds and a bomb pot can be played as a different game from the one running. Everyone antes, there is no preflop betting, and the flop comes straight away. Random bomb pots are decided from the hand's sealed seed, so players can check they were not picked by hand.
+**Start a game.** One pop-out sets everything: where the game is (a club, or a private table), the format, stakes and seats, the clock, bomb pots, running it, and seating. It remembers your last game, so next week is one click.
 
-**Run it once to four times.** When everyone is all in before the river, each player in the hand picks 1 to the host's maximum (2, 3 or 4). The lowest pick is used, so nobody is run more times than they agreed to. Every pot, side pots included, is split across the runs; a player who does not answer within 15 seconds counts as "once". Extra runs come off the same sealed deck, so in very full PLO5 pots the deck can limit how many runs are possible.
+**Format.** No Limit Hold'em, Pot Limit Omaha (4 cards) and PLO5, played as a list of steps that repeats: each step is one game for one orbit or a set number of hands, on one board or two. For example one orbit of PLO, then 10 hands of hold'em on a double board, then back to PLO. Quick picks cover the usual mixes. Up to 10 seats; the seat limit drops when the deck can't deal everyone (9 with PLO5, 8 with PLO5 on two boards).
+
+**Double board.** Two boards are dealt, board 1 then board 2 on each street, and every pot is split between them. It can be set per format step and for bomb pots, and it works with running it more than once (two boards per run).
+
+**Bomb pots.** Every N hands, a random percentage of hands, or called by the host for the next hand. The ante is set in big blinds, a bomb pot can be played as a different game from the one running, and it can be dealt on two boards. Everyone antes, there is no preflop betting, and the flop comes straight away. Random bomb pots are decided from the hand's sealed seed, so players can check they were not picked by hand.
+
+**Run it once to four times.** When everyone is all in before the river (preflop, on the flop or on the turn), the players in the hand get 15 seconds to vote, before any cards are turned over. Any vote for once wins straight away; otherwise the lowest vote is used. Only votes that come in count, so a player who doesn't vote (or has disconnected) is left out, and no votes at all means once. The host sets the most runs allowed (2, 3 or 4). Every pot, side pots included, is split across the runs. Extra runs come off the same sealed deck, so in very full PLO5 pots the deck can limit how many runs are possible. A river all-in has nothing left to deal, so there is no vote.
 
 **Host controls.** Approve or decline seat requests and rebuys (or approve automatically), set a player to sitting out, remove a player, adjust stacks, pause after the current hand, end the game, and change any setting between hands. Every change is written to the table log.
 
-**Time.** Seconds per decision, a time bank per player, and a game length. When the game length runs out, the hand in progress finishes and everyone is cashed out. The host can add time or remove the limit. Players who run out of time are checked or folded and sat out until they click "I'm back".
+**Time.** Seconds per decision, a time bank per player, and a game length. A table that deals on its own starts the clock with its first hand. When the game length runs out, the hand in progress finishes and everyone is cashed out. The host can add time or remove the limit. Players who run out of time are checked or folded and sat out until they click "I'm back".
 
 **Table ledger.** Buy-ins, cash-outs, current stacks and net for everyone who played, a "settle up" list with the fewest payments that square everyone, and CSV download.
 
@@ -88,7 +94,7 @@ Everything lives in the data folder: `db.json` (accounts, clubs, club ledgers, t
 npm test
 ```
 
-25 tests: hand rankings including the Omaha two-card rule; betting rules (heads-up order, incomplete all-in raises, pot-limit maximums, side pots, uncalled bets); 6,000 random hands across all three games checking that chips are conserved and every card can be rebuilt from the seed; full games against a running server with bot players covering approvals, rebuys, game rotation, bomb pots, multi-run all-ins, time limits and browser-side verification of every hand; and the club flow with credit limits, buy-ins, cash-outs and settlements.
+33 tests: hand rankings including the Omaha two-card rule; betting rules (heads-up order, incomplete all-in raises, pot-limit maximums, side pots, uncalled bets); the run-it vote (lowest vote, once wins straight away, missing votes, cards face down while voting); double board pot splits and double board run several times; 6,000 random hands across all three games, on one board or two, checking that chips are conserved and every card can be rebuilt from the seed; full games against a running server with bot players covering approvals, rebuys, the format steps, double board bomb pots, multi-run all-ins, time limits and browser-side verification of every hand; and the club flow with credit limits, buy-ins, cash-outs and settlements.
 
 ## Layout
 
@@ -98,11 +104,11 @@ server/        Express + Socket.io server
   table.js     seats, host controls, timers, ledger, commit and reveal
   clubs.js     club balances, credits, settlements, transfers
 shared/        code used by both server and browser: cards, hand evaluator, fairness
-public/        the web app: lobby and clubs, table, verifier
+public/        the web app: home (club balances and ledger), start a game, table, verifier
 scripts/       maintenance scripts
 test/          automated tests
 ```
 
 ## Not included yet
 
-Tournaments, straddles, antes, double-board bomb pots, a hand replayer and player statistics.
+Tournaments, straddles, antes, a hand replayer and player statistics.

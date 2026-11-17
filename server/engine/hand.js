@@ -1,6 +1,12 @@
 // One hand of poker: blinds or bomb-pot antes, dealing, NL/PL betting, side pots,
-// all-in runouts run 1 to 4 times, showdown and payouts. Pure state machine: the Table drives
-// timing by calling advance() when `pending` is set.
+// one or two boards, all-in runouts run 1 to 4 times, showdown and payouts.
+// Pure state machine: the Table drives timing by calling advance() when `pending` is set.
+//
+// Boards: before any split there are `bpr` boards (1, or 2 for double board). When an all-in is
+// run k times, every board is copied k times, so there are k * bpr boards; board index
+// i belongs to run floor(i / bpr) and is board (i % bpr) + 1 of that run. Every pot is split evenly
+// across all boards. `placements` records, for each deck card dealt after the hole cards, which
+// board(s) it landed on, so anyone can rebuild every board from the shuffled deck.
 
 import { gameInfo, SUIT_SYMBOLS } from '../../shared/cards.js';
 import { bestHand } from '../../shared/evaluator.js';
@@ -43,12 +49,13 @@ export function buildPots(players) {
 }
 
 const TIMES = ['once', 'once', 'twice', 'three times', 'four times'];
+const STREET_OF = { 3: 'flop', 4: 'turn', 5: 'river' };
 
 export class Hand {
   constructor(opts) {
     const {
       number, gameType, players, buttonSeat, smallBlind, bigBlind, deck,
-      bombAnte = 0, ritMax = 1, fmt = String,
+      bombAnte = 0, ritMax = 1, fmt = String, doubleBoard = false,
     } = opts;
     this.number = number;
     this.game = gameInfo(gameType);
@@ -63,6 +70,7 @@ export class Hand {
     this.fmt = fmt;
     this.deck = deck;
     this.deckPtr = 0;
+    this.bpr = doubleBoard ? 2 : 1;
     this.players = players
       .slice()
       .sort((a, b) => a.seat - b.seat)
@@ -73,15 +81,15 @@ export class Hand {
       }));
     this.n = this.players.length;
     if (this.n < 2) throw new Error('need at least two players');
-    if (this.n * this.game.holeCount + 5 > deck.length) throw new Error('too many players for this game');
+    if (this.n * this.game.holeCount + 5 * this.bpr > deck.length) throw new Error('too many players for this game');
     this.btnIdx = this.players.findIndex((p) => p.seat === buttonSeat);
     if (this.btnIdx < 0) throw new Error('button must be on a dealt-in player');
     if (this.n === 2) { this.sbIdx = this.btnIdx; this.bbIdx = (this.btnIdx + 1) % 2; }
     else { this.sbIdx = (this.btnIdx + 1) % this.n; this.bbIdx = (this.btnIdx + 2) % this.n; }
-    this.board = [];
-    this.runs = null;
+    this.boards = Array.from({ length: this.bpr }, () => []);
+    this.placements = [];
     this.runCount = 1;
-    this.sharedCount = null;
+    this.splitAt = null;
     this.runIndex = 0;
     this.street = 'preflop';
     this.phase = 'init'; // betting | pending | rit | runout | done
@@ -102,11 +110,20 @@ export class Hand {
   drainEvents() { const e = this.events; this.events = []; return e; }
   byId(id) { return this.players.find((p) => p.id === id); }
   get live() { return this.players.filter((p) => !p.folded); }
+  get board() { return this.boards[0]; }
   potTotal() { return this.players.reduce((s, p) => s + p.committed, 0); }
   collectedPot() { return this.players.reduce((s, p) => s + p.committed - p.bet, 0); }
   draw() {
     if (this.deckPtr >= this.deck.length) throw new Error('deck exhausted');
     return this.deck[this.deckPtr++];
+  }
+  boardLabel(i) {
+    const run = Math.floor(i / this.bpr);
+    const side = i % this.bpr;
+    if (this.runCount > 1 && this.bpr > 1) return `run ${run + 1} board ${side + 1}`;
+    if (this.runCount > 1) return `run ${run + 1}`;
+    if (this.bpr > 1) return `board ${side + 1}`;
+    return '';
   }
   actor() { return this.phase === 'betting' && this.actorIndex >= 0 ? this.players[this.actorIndex] : null; }
   needsToAct(p) { return !p.folded && !p.allIn && (!p.hasActed || p.bet < this.currentBet); }
@@ -128,7 +145,8 @@ export class Hand {
   // ---------- start ----------
   start() {
     const btn = this.players[this.btnIdx];
-    this.log(`-- starting hand #${this.number} (${this.isBomb ? 'BOMB POT, ' : ''}${this.game.name}) (dealer: ${btn.name}) --`, 'hand-start');
+    const tags = [this.isBomb && 'BOMB POT', this.bpr > 1 && 'DOUBLE BOARD'].filter(Boolean).join(', ');
+    this.log(`-- starting hand #${this.number} (${tags ? tags + ', ' : ''}${this.game.name}) (dealer: ${btn.name}) --`, 'hand-start');
     this.log('Player stacks: ' + this.players.map((p) => `#${p.seat + 1} ${p.name} (${this.fmt(p.stack)})`).join(' | '), 'stacks');
     if (this.isBomb) {
       for (const p of this.players) {
@@ -174,18 +192,39 @@ export class Hand {
     }
   }
 
-  dealStreet() {
-    if (this.board.length === 0) {
-      this.board.push(this.draw(), this.draw(), this.draw());
-      this.street = 'flop';
-      this.log(`Flop: [${prettyList(this.board)}]`, 'board');
-    } else if (this.board.length < 5) {
-      const c = this.draw();
-      const prev = prettyList(this.board);
-      this.board.push(c);
-      this.street = this.board.length === 4 ? 'turn' : 'river';
-      this.log(`${this.street === 'turn' ? 'Turn' : 'River'}: ${prev} [${pretty(c)}]`, 'board');
+  // Deals the next street onto boards [first, first + bpr): board 1 gets its cards, then board 2.
+  dealStreetOnto(first) {
+    const len = this.boards[first].length;
+    if (len >= 5) return;
+    const n = len === 0 ? 3 : 1;
+    const before = [];
+    const dealt = [];
+    for (let b = first; b < first + this.bpr; b++) {
+      before.push(prettyList(this.boards[b]));
+      const got = [];
+      for (let i = 0; i < n; i++) {
+        const c = this.draw();
+        this.boards[b].push(c);
+        this.placements.push([b]);
+        got.push(c);
+      }
+      dealt.push(got);
     }
+    const name = STREET_OF[this.boards[first].length];
+    const parts = dealt.map((got, k) => {
+      const label = this.boardLabel(first + k);
+      const text = n === 3 ? `[${prettyList(got)}]` : `${before[k]} [${prettyList(got)}]`;
+      return label ? `${label}: ${text}` : text;
+    });
+    const head = name[0].toUpperCase() + name.slice(1);
+    if (this.runCount > 1 && this.bpr === 1) this.log(`${this.boardLabel(first).replace(/^r/, 'R')} ${name}: ${n === 3 ? `[${prettyList(dealt[0])}]` : `${before[0]} [${prettyList(dealt[0])}]`}`, 'board');
+    else this.log(`${head}: ${parts.join(' | ')}`, 'board');
+    return name;
+  }
+
+  dealStreet() {
+    const name = this.dealStreetOnto(0);
+    if (name) this.street = name;
   }
 
   startBettingRound() {
@@ -347,7 +386,7 @@ export class Hand {
     for (const p of this.players) p.bet = 0;
     this.actorIndex = -1;
     const canAct = this.live.filter((p) => !p.allIn);
-    if (this.board.length === 5 || this.street === 'river') {
+    if (this.boards[0].length === 5 || this.street === 'river') {
       this.phase = 'pending';
       this.pending = 'showdown';
       return;
@@ -357,73 +396,77 @@ export class Hand {
     this.pending = 'next-street';
   }
 
-  beginAllInRunout() {
+  revealLive() {
     for (const p of this.live) {
       if (!p.shown) {
         p.shown = true;
         this.log(`${p.name} shows [${prettyList(p.hole)}]`, 'show');
       }
     }
-    const need = 5 - this.board.length;
+  }
+
+  // Everyone left is all in (or only one player has chips) before the river.
+  // When running it more than once is possible, players vote first, while the hands are still face down.
+  beginAllInRunout() {
+    const need = this.bpr * (5 - this.boards[0].length);
     const remaining = this.deck.length - this.deckPtr;
     const maxRuns = Math.min(this.ritMax, Math.floor(remaining / need));
     if (maxRuns >= 2) {
       this.phase = 'rit';
       this.pending = null;
       this.rit = { max: maxRuns, eligible: this.live.map((p) => p.id), choices: new Map(), result: null };
+      this.log(`Everyone is all in. Voting on how many times to run it (up to ${TIMES[maxRuns]}).`, 'rit');
       return;
     }
+    this.revealLive();
     this.enterRunout(1);
   }
 
   setRitChoice(id, runs) {
-    if (this.phase !== 'rit') throw new Error('Not choosing how many times to run it');
+    if (this.phase !== 'rit') throw new Error('There is no vote right now');
     if (!this.rit.eligible.includes(id)) throw new Error('You are not in this all-in');
+    if (this.rit.choices.has(id)) throw new Error('You already voted');
     const n = Math.max(1, Math.min(this.rit.max, Math.floor(Number(runs)) || 1));
     this.rit.choices.set(id, n);
     this.version++;
-    if (this.rit.choices.size === this.rit.eligible.length) this.resolveRit();
+    // A vote for once decides it on the spot; otherwise wait until everyone has voted (or time runs out).
+    if (n === 1 || this.rit.choices.size === this.rit.eligible.length) this.resolveRit();
   }
 
+  // Only votes that came in count. Any vote for once wins; otherwise the lowest vote is used.
+  // Nobody voting means once.
   resolveRit() {
     if (this.phase !== 'rit') return;
-    const k = Math.min(...this.rit.eligible.map((id) => this.rit.choices.get(id) ?? 1));
+    const votes = this.rit.eligible.filter((id) => this.rit.choices.has(id)).map((id) => this.rit.choices.get(id));
+    const k = votes.length ? Math.min(...votes) : 1;
     this.rit.result = k;
-    const picks = this.rit.eligible.map((id) => `${this.byId(id).name}: ${this.rit.choices.has(id) ? this.rit.choices.get(id) : '1 (no answer)'}`).join(', ');
-    this.log(`Run it: ${picks}. Running it ${TIMES[k]}.`, 'rit');
+    const picks = this.rit.eligible.map((id) => `${this.byId(id).name}: ${this.rit.choices.has(id) ? this.rit.choices.get(id) : 'no vote'}`).join(', ');
+    this.log(`Run it vote: ${picks}. Running it ${TIMES[k]}.`, 'rit');
+    this.revealLive();
     this.enterRunout(k);
     this.version++;
   }
 
   enterRunout(k) {
     this.runCount = k;
-    this.sharedCount = this.board.length;
+    this.splitAt = this.boards[0].length;
     if (k > 1) {
-      this.runs = Array.from({ length: k }, () => this.board.slice());
-      this.runIndex = 0;
+      const base = this.boards.map((b) => b.slice());
+      this.boards = [];
+      for (let r = 0; r < k; r++) for (let b = 0; b < this.bpr; b++) this.boards.push(base[b].slice());
+      // cards already on the table are shared by every run: they were placed on all copies
+      this.placements = this.placements.map((t) => t.flatMap((b) => Array.from({ length: k }, (_, r) => b + r * this.bpr)));
     }
+    this.runIndex = 0;
     this.phase = 'runout';
     this.pending = 'runout';
   }
 
   runoutStep() {
-    if (this.runCount === 1) {
-      this.dealStreet();
-      this.pending = this.board.length >= 5 ? 'showdown' : 'runout';
-      return;
-    }
-    const run = this.runs[this.runIndex];
-    const label = `Run ${this.runIndex + 1}`;
-    if (run.length < 3) {
-      run.push(this.draw(), this.draw(), this.draw());
-      this.log(`${label} flop: [${prettyList(run)}]`, 'board');
-    } else {
-      const c = this.draw();
-      const prev = prettyList(run);
-      run.push(c);
-      this.log(`${label} ${run.length === 4 ? 'turn' : 'river'}: ${prev} [${pretty(c)}]`, 'board');
-    }
-    if (run.length >= 5) this.runIndex++;
+    const first = this.runIndex * this.bpr;
+    const name = this.dealStreetOnto(first);
+    if (this.runCount === 1 && name) this.street = name;
+    if (this.boards[first].length >= 5) this.runIndex++;
     this.pending = this.runIndex >= this.runCount ? 'showdown' : 'runout';
   }
 
@@ -443,7 +486,6 @@ export class Hand {
     this.version++;
   }
 
-  // Players who stand up or time out after leaving: fold if it is their turn.
   // ---------- endings ----------
   finishUncontested(winner) {
     this.returnUncalled();
@@ -452,8 +494,8 @@ export class Hand {
     winner.stack += pot;
     this.results = {
       uncontested: true,
-      boards: [this.board.slice()],
-      pots: [{ amount: pot, eligible: [winner.id], runs: [{ run: 0, amount: pot, winners: [{ id: winner.id, seat: winner.seat, name: winner.name, amount: pot, hand: null, cards: null }] }] }],
+      boards: this.boards.map((b) => b.slice()),
+      pots: [{ amount: pot, eligible: [winner.id], uncontested: true, runs: [{ b: 0, run: 0, side: 0, amount: pot, winners: [{ id: winner.id, seat: winner.seat, name: winner.name, amount: pot, hand: null, cards: null }] }] }],
       payouts: [{ id: winner.id, seat: winner.seat, name: winner.name, amount: pot }],
     };
     this.log(`${winner.name} collected ${this.fmt(pot)} from pot`, 'win');
@@ -470,7 +512,7 @@ export class Hand {
         if (!this.players[i].folded) { start = i; break; }
       }
     }
-    const boards = this.runs || [this.board];
+    const boards = this.boards;
     for (let k = 0; k < this.n; k++) {
       const p = this.players[(start + k) % this.n];
       if (p.folded || p.shown) continue;
@@ -489,12 +531,12 @@ export class Hand {
     pots.forEach((pot, pi) => {
       const potLabel = pots.length === 1 ? 'the pot' : pi === 0 ? 'the main pot' : `side pot ${pi}`;
       if (pot.eligible.length === 1) {
-        // Only one player can win this pot (everyone else who paid into it folded): it is not split by run.
+        // Only one player can win this pot (everyone else who paid into it folded): it is not split by board.
         const id = pot.eligible[0];
         const p = this.byId(id);
         payouts.set(id, (payouts.get(id) || 0) + pot.amount);
         this.log(`${p.name} collected ${this.fmt(pot.amount)} from ${potLabel}`, 'win');
-        potResults.push({ amount: pot.amount, eligible: pot.eligible, uncontested: true, runs: [{ run: 0, amount: pot.amount, winners: [{ id, seat: p.seat, name: p.name, amount: pot.amount, hand: null, cards: null }] }] });
+        potResults.push({ amount: pot.amount, eligible: pot.eligible, uncontested: true, runs: [{ b: 0, run: 0, side: 0, amount: pot.amount, winners: [{ id, seat: p.seat, name: p.name, amount: pot.amount, hand: null, cards: null }] }] });
         return;
       }
       const portions = splitEven(pot.amount, boards.length);
@@ -510,10 +552,11 @@ export class Hand {
           const e = ev.get(id);
           return { id, seat: p.seat, name: p.name, amount: shares[i], hand: e.name, cards: e.cards };
         });
+        const where = this.boardLabel(k);
         for (const w of ws) {
-          if (w.amount > 0) this.log(`${w.name} collected ${this.fmt(w.amount)} from ${potLabel}${boards.length > 1 ? ` on run ${k + 1}` : ''} with ${w.hand}`, 'win');
+          if (w.amount > 0) this.log(`${w.name} collected ${this.fmt(w.amount)} from ${potLabel}${where ? ` on ${where}` : ''} with ${w.hand}`, 'win');
         }
-        return { run: k, amount: portions[k], winners: ws };
+        return { b: k, run: Math.floor(k / this.bpr), side: k % this.bpr, amount: portions[k], winners: ws };
       });
       potResults.push({ amount: pot.amount, eligible: pot.eligible, runs });
     });
@@ -554,15 +597,17 @@ export class Hand {
       limit: this.limit,
       isBomb: this.isBomb,
       bombAnte: this.bombAnte,
+      doubleBoard: this.bpr > 1,
+      boardsPerRun: this.bpr,
       buttonSeat: this.players[this.btnIdx].seat,
       sbSeat: this.isBomb ? null : this.players[this.sbIdx].seat,
       bbSeat: this.isBomb ? null : this.players[this.bbIdx].seat,
       street: this.street,
       phase: this.phase,
-      board: this.board.slice(),
-      runs: this.runs ? this.runs.map((r) => r.slice()) : null,
+      board: this.boards[0].slice(),
+      boards: this.boards.map((b) => b.slice()),
       runCount: this.runCount,
-      sharedCount: this.sharedCount,
+      sharedCount: this.splitAt,
       pot: this.collectedPot(),
       potTotal: this.potTotal(),
       currentBet: this.currentBet,
@@ -591,6 +636,7 @@ export class Hand {
       gameType: this.gameType,
       isBomb: this.isBomb,
       bombAnte: this.bombAnte,
+      doubleBoard: this.bpr > 1,
       buttonSeat: this.players[this.btnIdx].seat,
       smallBlind: this.sb,
       bigBlind: this.bb,
@@ -601,8 +647,11 @@ export class Hand {
       dealt: {
         dealOrder: this.dealOrder.slice(),
         holeCount: this.game.holeCount,
-        sharedCount: this.runs ? this.sharedCount : this.board.length,
-        boards: this.runs ? this.runs.map((r) => r.slice()) : [this.board.slice()],
+        boardsPerRun: this.bpr,
+        runCount: this.runCount,
+        sharedCount: this.splitAt ?? this.boards[0].length,
+        boards: this.boards.map((b) => b.slice()),
+        placements: this.placements.map((t) => t.slice()),
       },
       runCount: this.runCount,
       results: this.results,

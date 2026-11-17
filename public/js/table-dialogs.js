@@ -7,6 +7,7 @@ import { sealSVG } from './seal.js';
 import { webCryptoAdapter } from '/shared/fairness.js';
 import { GAME_TYPES } from '/shared/cards.js';
 import { app, emit, fmt, parse, inp, gameShort, gameName } from './table-core.js';
+import { seg, bindSegs, formatEditorHTML, bindFormatEditor, readFormat, bombFieldsHTML, bindBombFields, readBomb, fitSeats, ritText, boardName } from './game-form.js';
 
 const wc = webCryptoAdapter();
 const open = {};
@@ -18,18 +19,6 @@ export function onState(s) {
 
 const val = (form, n) => form.elements.namedItem(n);
 const stepAttr = () => (app.dec ? '0.01' : '1');
-
-function bindSegs(dlg) {
-  dlg.el.addEventListener('click', (e) => {
-    const b = e.target.closest('[data-seg] button');
-    if (!b) return;
-    const seg = b.closest('[data-seg]');
-    seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
-    const input = dlg.el.querySelector(`input[name="${seg.dataset.seg}"]`);
-    if (input) { input.value = b.dataset.v; input.dispatchEvent(new Event('change', { bubbles: true })); }
-  });
-}
-const seg = (name, options, value) => `<div class="seg" data-seg="${name}">${options.map(([v, l]) => `<button type="button" data-v="${v}" class="${String(v) === String(value) ? 'on' : ''}">${l}</button>`).join('')}</div><input type="hidden" name="${name}" value="${esc(value)}">`;
 
 // ---------- seats & chips ----------
 export function seatDialog(seat) {
@@ -164,7 +153,6 @@ export function hostDialog() {
   const s = app.state;
   const t = s.table;
   const st = t.settings;
-  const gameBox = (id) => `<label class="check"><input type="checkbox" name="g_${id}" ${st.games.includes(id) ? 'checked' : ''}> ${esc(GAME_TYPES[id].name)}</label>`;
   const opt = (v, l, cur) => `<option value="${v}" ${String(v) === String(cur) ? 'selected' : ''}>${l}</option>`;
   const ends = t.session && t.session.endsAt;
   const dlg = dialog({
@@ -177,13 +165,9 @@ export function hostDialog() {
       <div data-panel="game" class="stack">
         <label><span class="lbl">Table name</span><input name="tableName" type="text" maxlength="40" value="${esc(t.name)}"></label>
         <div>
-          <span class="lbl">Games</span>
-          <div class="row">${gameBox('nlh')}${gameBox('plo4')}${gameBox('plo5')}</div>
-          <div class="row" style="margin-top:.6rem"><span class="muted">With more than one game, switch every</span>
-            <select name="rotateEvery" style="width:auto">${opt('orbit', 'orbit', st.rotateEvery)}${opt('hands', 'set number of hands', st.rotateEvery)}</select>
-            <input name="rotateHands" type="number" min="1" max="200" value="${st.rotateHands}" style="width:90px" title="Hands per game">
-          </div>
-          <p class="hint">An orbit ends when the button has gone around the table once, so "PLO and NLH" plays one orbit of each.</p>
+          <span class="lbl">Format</span>
+          ${formatEditorHTML(st.format)}
+          <p class="hint">An orbit ends when the button has gone around the table once. Changes apply from the next hand; changing which games are played, or their order, starts again from step 1.</p>
         </div>
         <div class="field-grid">
           <label><span class="lbl">Small blind</span><input name="smallBlind" type="number" step="${stepAttr()}" min="0" value="${inp(st.smallBlind)}"></label>
@@ -192,21 +176,16 @@ export function hostDialog() {
           <label><span class="lbl">Maximum stack</span><input name="maxBuyIn" type="number" step="${stepAttr()}" min="0" value="${st.maxBuyIn ? inp(st.maxBuyIn) : ''}" placeholder="Any"></label>
           <label><span class="lbl">Seats</span><select name="maxPlayers">${[2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => opt(n, n, st.maxPlayers)).join('')}</select></label>
         </div>
+        <p class="hint" data-seat-hint></p>
         <label class="check"><input type="checkbox" name="autoApprove" ${st.autoApprove ? 'checked' : ''}> Approve seat and chip requests automatically<small>Leave off to approve every buy-in and rebuy yourself.</small></label>
       </div>
       <div data-panel="bomb" class="stack hidden">
-        <div><span class="lbl">Bomb pots</span>${seg('bombMode', [['off', 'Off'], ['every', 'Every few hands'], ['percent', 'Random chance']], st.bombPot.mode)}</div>
-        <div class="field-grid">
-          <label data-show="every"><span class="lbl">Every this many hands</span><input name="bombEvery" type="number" min="2" max="1000" value="${st.bombPot.every}"></label>
-          <label data-show="percent"><span class="lbl">Chance each hand (%)</span><input name="bombPercent" type="number" min="1" max="100" step="0.5" value="${st.bombPot.percent}"></label>
-          <label><span class="lbl">Ante (big blinds)</span><input name="bombAnte" type="number" min="0.5" max="100" step="0.5" value="${st.bombPot.anteBB}"></label>
-          <label><span class="lbl">Play bomb pots as</span><select name="bombGame">${opt('current', 'The current game', st.bombPot.game)}${Object.values(GAME_TYPES).map((g) => opt(g.id, g.name, st.bombPot.game)).join('')}</select></label>
-        </div>
+        ${bombFieldsHTML(st.bombPot)}
         <p class="hint">Everyone antes, there is no preflop betting and the flop comes straight away. A random bomb pot is decided from that hand's sealed seed, so players can check it was not picked by hand.</p>
         <div class="row"><button type="button" class="btn" data-now="bomb">${t.bombNext ? 'Cancel next hand’s bomb pot' : 'Bomb pot next hand'}</button></div>
       </div>
       <div data-panel="run" class="stack hidden">
-        <label class="check"><input type="checkbox" name="ritEnabled" ${st.rit.enabled ? 'checked' : ''}> Let players run it more than once<small>When everyone is all in before the river, each player in the hand picks how many runs they want. The lowest pick is used, and each run pays its share of every pot.</small></label>
+        <label class="check"><input type="checkbox" name="ritEnabled" ${st.rit.enabled ? 'checked' : ''}> Let players run it more than once<small>${esc(ritText)} Each run pays its share of every pot.</small></label>
         <div><span class="lbl">Most runs allowed</span>${seg('ritMax', [[2, 'Twice'], [3, 'Three times'], [4, 'Four times']], st.rit.maxRuns)}</div>
         <p class="hint">Extra runs come off the same sealed deck in order. In very full PLO5 pots the deck may only allow fewer runs.</p>
       </div>
@@ -245,16 +224,12 @@ export function hostDialog() {
     foot: '<button class="btn ghost" data-close>Close</button><button class="btn primary" data-save>Save settings</button>',
     onClose: () => { delete open.players; },
   });
-  bindSegs(dlg);
   const form = dlg.$('#hostform');
-  const showBomb = () => {
-    const m = val(form, 'bombMode').value;
-    dlg.$$('[data-show]').forEach((el) => el.classList.toggle('hidden', el.dataset.show !== m));
-  };
-  const showRot = () => { val(form, 'rotateHands').classList.toggle('hidden', val(form, 'rotateEvery').value !== 'hands'); };
-  form.addEventListener('change', () => { showBomb(); showRot(); });
-  showBomb();
-  showRot();
+  bindSegs(dlg.el);
+  bindBombFields(form);
+  const refit = () => fitSeats(val(form, 'maxPlayers'), readFormat(form), readBomb(form), dlg.$('[data-seat-hint]'));
+  bindFormatEditor(form, refit);
+  form.addEventListener('change', (e) => { if (e.target.closest('[data-bomb]')) refit(); });
   dlg.el.addEventListener('click', async (e) => {
     const f = e.target.closest('[data-felt]');
     if (f) {
@@ -306,20 +281,17 @@ export function hostDialog() {
     if (m) playerDialog(m.dataset.manage);
   });
   dlg.$('[data-save]').addEventListener('click', async () => {
-    const games = ['nlh', 'plo4', 'plo5'].filter((g) => val(form, 'g_' + g).checked);
     const num = (n) => Number(val(form, n).value);
     const settings = {
       name: val(form, 'tableName').value,
-      games,
-      rotateEvery: val(form, 'rotateEvery').value,
-      rotateHands: num('rotateHands'),
+      format: readFormat(form),
       smallBlind: parse(val(form, 'smallBlind').value),
       bigBlind: parse(val(form, 'bigBlind').value),
       minBuyIn: val(form, 'minBuyIn').value ? parse(val(form, 'minBuyIn').value) : 0,
       maxBuyIn: val(form, 'maxBuyIn').value ? parse(val(form, 'maxBuyIn').value) : 0,
       maxPlayers: num('maxPlayers'),
       autoApprove: val(form, 'autoApprove').checked,
-      bombPot: { mode: val(form, 'bombMode').value, every: num('bombEvery'), percent: num('bombPercent'), anteBB: num('bombAnte'), game: val(form, 'bombGame').value },
+      bombPot: readBomb(form),
       rit: { enabled: val(form, 'ritEnabled').checked, maxRuns: num('ritMax') },
       decisionSeconds: num('decisionSeconds'),
       timeBankSeconds: num('timeBankSeconds'),
@@ -330,7 +302,6 @@ export function hostDialog() {
     };
     const dec = val(form, 'decimals');
     if (dec && Number(dec.value) !== st.decimals) settings.decimals = Number(dec.value);
-    if (!games.length) return toast('Pick at least one game', 'error');
     const a = await emit('host:settings', { settings });
     if (a.ok) { toast('Settings saved'); dlg.close(); }
   });
@@ -401,7 +372,7 @@ export async function handsDialog() {
     dlg.setBody(r.hands.length ? `<table class="data"><thead><tr><th>Hand</th><th>Time</th><th>Game</th><th>Won by</th><th class="n">Pot</th><th class="n">You</th><th>Deck check</th></tr></thead><tbody>
       ${r.hands.map((x) => `<tr class="hand-row" data-hand="${x.handNumber}" tabindex="0">
         <td class="num">#${x.handNumber}</td><td class="muted">${new Date(x.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-        <td>${esc(gameShort(x.gameType))}${x.isBomb ? ' bomb pot' : ''}${x.runCount > 1 ? `, ran ${x.runCount}×` : ''}</td>
+        <td>${esc(gameShort(x.gameType))}${x.isBomb ? ' bomb pot' : ''}${x.doubleBoard ? ', double board' : ''}${x.runCount > 1 ? `, ran ${x.runCount}×` : ''}</td>
         <td>${x.winners.map(esc).join(', ')}</td><td class="n">${fmt(x.pot)}</td>
         <td class="n">${x.myNet === null ? '<span class="faint">-</span>' : `<span class="${x.myNet > 0 ? 'pos' : x.myNet < 0 ? 'neg' : ''}">${x.myNet > 0 ? '+' : ''}${fmt(x.myNet)}</span>`}</td>
         <td>${badge(x.handNumber, x.revealed)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No finished hands yet.</p>');
@@ -433,15 +404,18 @@ async function showHand(dlg, n, back) {
   const dec = rec.decimals;
   const F = (a) => (dec ? (a / 100).toFixed(2) : String(a));
   const lines = [];
+  const bpr = rec.dealt.boardsPerRun || 1;
+  const nb = rec.dealt.boards.length;
+  const where = (run) => { const n = boardName(run.b ?? run.run, bpr, rec.results.boards.length || nb); return n ? ` on ${n.toLowerCase()}` : ''; };
   rec.results.pots.forEach((pot, pi) => pot.runs.forEach((run) => {
     if (pot.uncontested) { lines.push(`${esc(run.winners[0].name)} won ${fmt(run.amount)} (${pi ? `side pot ${pi}` : 'main pot'}, nobody else left in it)`); return; }
-    lines.push(`${run.winners.map((w) => esc(w.name)).join(' and ')} ${run.winners.length > 1 ? 'split' : 'won'} ${fmt(run.amount)}${run.winners[0]?.hand ? ` with ${esc(run.winners[0].hand)}` : ''}${rec.results.boards.length > 1 ? ` on run ${run.run + 1}` : ''}${rec.results.pots.length > 1 ? (pi ? ` (side pot ${pi})` : ' (main pot)') : ''}`);
+    lines.push(`${run.winners.map((w) => esc(w.name)).join(' and ')} ${run.winners.length > 1 ? 'split' : 'won'} ${fmt(run.amount)}${run.winners[0]?.hand ? ` with ${esc(run.winners[0].hand)}` : ''}${where(run)}${rec.results.pots.length > 1 ? (pi ? ` (side pot ${pi})` : ' (main pot)') : ''}`);
   }));
   dlg.setBody(`
     <div class="row" style="justify-content:space-between"><button class="btn small ghost" data-back>All hands</button>
-      <span class="muted">${esc(gameName(rec.gameType))}${rec.isBomb ? ', bomb pot' : ''}, blinds ${F(rec.smallBlind)}/${F(rec.bigBlind)}, ${new Date(rec.startedAt).toLocaleString()}</span></div>
-    <h3 class="section-title">Board${rec.dealt.boards.length > 1 ? 's' : ''}</h3>
-    <div class="stack-sm">${rec.dealt.boards.map((b, i) => `<div>${rec.dealt.boards.length > 1 ? `<span class="muted">Run ${i + 1}</span> ` : ''}${b.length ? mini(b) : '<span class="faint">No board dealt</span>'}</div>`).join('')}</div>
+      <span class="muted">${esc(gameName(rec.gameType))}${rec.isBomb ? ', bomb pot' : ''}${rec.doubleBoard ? ', double board' : ''}, blinds ${F(rec.smallBlind)}/${F(rec.bigBlind)}, ${new Date(rec.startedAt).toLocaleString()}</span></div>
+    <h3 class="section-title">Board${nb > 1 ? 's' : ''}</h3>
+    <div class="stack-sm">${rec.dealt.boards.map((b, i) => `<div>${nb > 1 ? `<span class="muted blabel">${esc(boardName(i, bpr, nb))}</span>` : ''}${b.length ? mini(b) : '<span class="faint">No board dealt</span>'}</div>`).join('')}</div>
     <h3 class="section-title">Players</h3>
     <table class="data"><thead><tr><th>Seat</th><th>Player</th><th>Cards</th><th class="n">Start</th><th class="n">End</th><th class="n">Net</th></tr></thead><tbody>
     ${rec.players.map((p) => `<tr><td>${p.seat + 1}${p.seat === rec.buttonSeat ? ' <span class="faint">(D)</span>' : ''}</td><td>${esc(p.name)}${p.folded ? ' <span class="faint">folded</span>' : ''}</td>
@@ -490,7 +464,7 @@ export function lookDialog() {
       <div class="row"><div><span class="lbl">Card faces</span>${seg('deck', [['big', 'Large index'], ['classic', 'Classic']], prefs.deck)}</div>
         <label class="check" style="align-self:flex-end"><input type="checkbox" data-pref="fourColor" ${prefs.fourColor ? 'checked' : ''}> Four-color deck</label></div>
       <div><span class="lbl">Card backs</span><div class="swatches">${BACKS.map((b) => `<button type="button" class="swatch ${prefs.back === b.id ? 'on' : ''}" data-back="${b.id}" title="${esc(b.name)}" style="background:var(--back)" data-backswatch="${b.id}"></button>`).join('')}</div></div>
-      <div><span class="lbl">When everyone is all in</span>${seg('autoRun', [['ask', 'Ask me how many runs'], ['once', 'Always run it once'], ['max', 'Always the most allowed']], prefs.autoRun)}</div>
+      <div><span class="lbl">When everyone is all in</span>${seg('autoRun', [['ask', 'Ask me to vote'], ['once', 'Always vote once'], ['max', 'Always vote the most']], prefs.autoRun)}</div>
       <label class="check"><input type="checkbox" data-pref="handStrength" ${prefs.handStrength ? 'checked' : ''}> Show what my hand makes</label>
       <label class="check"><input type="checkbox" data-pref="sound" ${prefs.sound ? 'checked' : ''}> Sound when it is my turn</label>
       <label class="check"><input type="checkbox" data-pref="verifyNotes" ${prefs.verifyNotes ? 'checked' : ''}> Note in the log when my browser has checked a hand</label>

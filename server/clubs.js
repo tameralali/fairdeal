@@ -187,7 +187,9 @@ export class Clubs {
     if (!m) throw new Error('Not an active member');
     const before = m.creditLimit;
     m.creditLimit = limit;
-    this.tx(c, { type: 'credit_limit', userId, amount: 0, by: actor, note: `Credit limit ${before} -> ${limit}` });
+    const t = this.tx(c, { type: 'credit_limit', userId, amount: 0, by: actor });
+    t.limitFrom = before;
+    t.limitTo = limit;
     this.changed(clubId);
   }
 
@@ -338,7 +340,8 @@ export class Clubs {
     const esc = (s) => `"${String(s ?? '').replace(/"/g, '""')}"`;
     const rows = [['time', 'member', 'type', 'amount', 'balance_after', 'by', 'table', 'note']];
     for (const t of v.transactions.slice().reverse()) {
-      rows.push([new Date(t.at).toISOString(), t.name, t.type, amt(t.amount), amt(t.balanceAfter), t.byName || '', t.tableName || '', t.note || '']);
+      const note = t.type === 'credit_limit' && t.limitTo !== undefined ? `credit limit ${amt(t.limitFrom)} to ${amt(t.limitTo)}` : t.note || '';
+      rows.push([new Date(t.at).toISOString(), t.name, t.type, amt(t.amount), amt(t.balanceAfter), t.byName || '', t.tableName || '', note]);
     }
     return rows.map((r) => r.map(esc).join(',')).join('\n');
   }

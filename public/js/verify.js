@@ -4,6 +4,7 @@ import { GAME_TYPES } from '/shared/cards.js';
 import { cardHTML, prefs, applyPrefs } from './cards.js';
 import { sealSVG } from './seal.js';
 import { esc, $, toast } from './ui.js';
+import { boardName } from './game-form.js';
 
 const BRAND_HEX = '6f3ac1d0a85c2e94b7f1036d4e5a9c8b21f0e7d6c5b4a39281706f5e4d3c2b1a';
 const wc = webCryptoAdapter();
@@ -52,7 +53,7 @@ async function check(records) {
   const pending = results.filter((x) => x.res.pending).length;
   out.innerHTML = `<section class="panel"><div class="result-head"><h2>${ok} of ${results.length - pending} revealed hands passed</h2>${pending ? `<span class="muted">${pending} still sealed until the game ends</span>` : ''}</div>
     <table class="data"><thead><tr><th>Hand</th><th>Game</th><th>Checks</th><th>Result</th></tr></thead><tbody>
-    ${results.map((x, i) => `<tr class="sum-row hand-row" data-i="${i}"><td class="num">#${x.rec.handNumber}</td><td>${esc(GAME_TYPES[x.rec.gameType]?.short || x.rec.gameType)}${x.rec.isBomb ? ' bomb pot' : ''}${x.rec.runCount > 1 ? `, ran ${x.rec.runCount}×` : ''}</td>
+    ${results.map((x, i) => `<tr class="sum-row hand-row" data-i="${i}"><td class="num">#${x.rec.handNumber}</td><td>${esc(GAME_TYPES[x.rec.gameType]?.short || x.rec.gameType)}${x.rec.isBomb ? ' bomb pot' : ''}${x.rec.doubleBoard ? ', double board' : ''}${x.rec.runCount > 1 ? `, ran ${x.rec.runCount}×` : ''}</td>
       <td class="muted">${x.res.checks.length}</td><td>${x.res.pending ? '<span class="vbadge wait">Sealed</span>' : x.res.ok ? '<span class="vbadge ok">&#10003; Passed</span>' : '<span class="vbadge bad">&#10007; Failed</span>'}</td></tr>`).join('')}
     </tbody></table><p class="hint">Click a hand to see its deck and every check.</p></section><div id="one"></div>`;
 }
@@ -64,7 +65,7 @@ function detail({ rec, res, seedHash, obs }) {
   return `<section class="panel">
     <div class="result-head">${res.pending ? sealSVG(f.commitment, 56) : sealSVG(seedHash, 56)}
       <div><h2>Hand #${rec.handNumber} ${res.pending ? 'is still sealed' : res.ok ? 'passed every check' : 'failed a check'}</h2>
-      <span class="muted">${esc(rec.tableName || rec.tableId)}, ${esc(GAME_TYPES[rec.gameType]?.name || rec.gameType)}${rec.isBomb ? ', bomb pot' : ''}, ${new Date(rec.startedAt).toLocaleString()}</span></div></div>
+      <span class="muted">${esc(rec.tableName || rec.tableId)}, ${esc(GAME_TYPES[rec.gameType]?.name || rec.gameType)}${rec.isBomb ? ', bomb pot' : ''}${rec.doubleBoard ? ', double board' : ''}, ${new Date(rec.startedAt).toLocaleString()}</span></div></div>
     <div class="vgrid">
       <div>
         <h3 class="section-title">Checks</h3>
@@ -84,10 +85,10 @@ function detail({ rec, res, seedHash, obs }) {
       <div>
         ${res.deal ? `<h3 class="section-title">Who got which card</h3>
           <table class="data"><tbody>${Object.entries(res.deal.holes).map(([seat, cards]) => `<tr><td>${esc(nameOf(seat))}</td><td><span class="mini-cards">${cards.map((c) => cardHTML(c)).join('')}</span></td></tr>`).join('')}
-          ${res.deal.boards.map((b, i) => `<tr><td>${res.deal.boards.length > 1 ? `Board, run ${i + 1}` : 'Board'}</td><td><span class="mini-cards">${b.map((c) => cardHTML(c)).join('') || '<span class="faint">none</span>'}</span></td></tr>`).join('')}</tbody></table>
+          ${res.deal.boards.map((b, i) => `<tr><td>${esc(boardName(i, rec.dealt.boardsPerRun || 1, res.deal.boards.length) || 'Board')}</td><td><span class="mini-cards">${b.map((c) => cardHTML(c)).join('') || '<span class="faint">none</span>'}</span></td></tr>`).join('')}</tbody></table>
           <h3 class="section-title">Deck order after the shuffle</h3>
           <div class="deck">${res.deck.map((c, i) => `<figure class="${i < usedCount ? 'used' : ''}">${cardHTML(c)}<figcaption>${i + 1}</figcaption></figure>`).join('')}</div>
-          <p class="hint">Outlined cards were dealt, in order from position 1: hole cards one at a time starting left of the button, then the board, then any extra runs.</p>` : ''}
+          <p class="hint">Outlined cards were dealt, in order from position 1: hole cards one at a time starting left of the button, then the board cards street by street (board 1 before board 2 on a double board), then any extra runs.</p>` : ''}
       </div>
     </div>
   </section>`;

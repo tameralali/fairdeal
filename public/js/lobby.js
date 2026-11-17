@@ -1,15 +1,20 @@
-// Lobby, club pages and invite links.
-import { api, ensureIdentity, identityDialog, accountDialog, fmtChips, parseChips } from './api.js';
+// Home page. With a club: the club's balances and ledger, its tables, and Start a game (a pop-out).
+// Without one: Start a game, your tables, and joining or creating a club. Also invite links.
+import { api, ensureIdentity, identityDialog, accountDialog, fmtChips, parseChips, toInput } from './api.js';
 import { esc, $, dialog, toast, confirmDialog, copyText, timeAgo } from './ui.js';
 import { sealSVG } from './seal.js';
+import { startGameDialog, formatShort } from './game-form.js';
 import { GAME_TYPES } from '/shared/cards.js';
 
 const BRAND_HEX = '6f3ac1d0a85c2e94b7f1036d4e5a9c8b21f0e7d6c5b4a39281706f5e4d3c2b1a';
+const CLUB_KEY = 'aq:club';
 const main = $('#main');
 const head = $('#head');
 let me = null;
 let clubSocket = null;
 let watching = null;
+// view state that survives live refreshes of the club page
+const ui = { sort: 'name', member: '', ledgerLimit: 30 };
 
 async function boot() {
   try { me = await ensureIdentity(); }
@@ -21,7 +26,7 @@ async function boot() {
 function route() {
   const path = location.pathname;
   let m;
-  if ((m = path.match(/^\/club\/([^/]+)/))) return clubPage(decodeURIComponent(m[1]), new URLSearchParams(location.search).get('tab') || 'tables');
+  if ((m = path.match(/^\/club\/([^/]+)/))) return clubHome(decodeURIComponent(m[1]));
   if ((m = path.match(/^\/join\/([^/]+)/))) return joinPage(decodeURIComponent(m[1]));
   return home();
 }
@@ -32,7 +37,7 @@ function go(url) { history.pushState(null, '', url); route(); }
 function renderHead() {
   const u = me.user;
   head.innerHTML = `<a class="wordmark" href="/">${sealSVG(BRAND_HEX, 30, 'The Aquarium')}<span>The <b>Aquarium</b></span></a>
-    <div class="who"><span>Playing as <b>${esc(u.name)}</b>${u.username ? ` <span class="faint">@${esc(u.username)}</span>` : ''}</span>
+    <div class="who"><span><span class="pre">Playing as </span><b>${esc(u.name)}</b>${u.username ? ` <span class="faint uname">@${esc(u.username)}</span>` : ''}</span>
       <button class="btn small ghost" data-h="rename">Change name</button>
       ${u.username ? '<button class="btn small ghost" data-h="logout">Sign out</button>' : '<button class="btn small" data-h="register">Create account</button><button class="btn small ghost" data-h="login">Sign in</button>'}
     </div>`;
@@ -75,74 +80,78 @@ head.addEventListener('click', async (e) => {
   }
 });
 
-const shortGames = (games) => games.map((g) => GAME_TYPES[g]?.short || g).join(' / ');
+// ---------- shared pieces ----------
+const shortGames = (games) => (games || []).map((g) => GAME_TYPES[g]?.short || g).join(' / ');
 
 function board(tables, empty = 'No tables yet.') {
   if (!tables || !tables.length) return `<div class="empty">${esc(empty)}</div>`;
   return tables.map((t) => {
     const F = (a) => fmtChips(a, t.decimals);
-    let status = t.status === 'ended' ? 'Ended' : t.status === 'waiting' ? 'Not started' : t.paused ? 'Paused' : 'Running';
+    let status = t.status === 'ended' ? `Ended ${timeAgo(t.endedAt || t.createdAt)}` : t.status === 'waiting' ? 'Waiting to start' : t.paused ? 'Paused' : 'Running';
     if (t.status === 'running' && t.endsAt) status += `, ends ${new Date(t.endsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-    return `<a href="/t/${esc(t.id)}"><span class="g">${esc(shortGames(t.games))}</span><span class="stakes">${F(t.smallBlind)}/${F(t.bigBlind)}</span>
-      <span class="nm"><b>${esc(t.name)}</b><small>${esc(status)}${t.names.length ? `: ${t.names.map(esc).join(', ')}` : ''}</small></span>
+    const extra = t.bombMode && t.bombMode !== 'off' && t.status !== 'ended' ? ' with bomb pots' : '';
+    const who = t.names.length ? `. ${t.status === 'ended' ? '' : 'Playing: '}${t.names.join(', ')}` : '';
+    return `<a href="/t/${esc(t.id)}" class="${t.status === 'ended' ? 'ended' : ''}"><span class="g">${esc(t.format ? formatShort(t.format) : shortGames(t.games))}</span><span class="stakes">${F(t.smallBlind)}/${F(t.bigBlind)}</span>
+      <span class="nm"><b>${esc(t.name)}</b><small>${esc(status + extra + who)}</small></span>
       <span class="seats"><b>${t.players}</b> of ${t.maxPlayers}</span></a>`;
   }).join('');
 }
 
-const gamePicker = (checked = ['nlh']) => `<div class="game-pick">
-  <label><input type="checkbox" name="g" value="nlh" ${checked.includes('nlh') ? 'checked' : ''}><span>NLH<small>No limit hold'em</small></span></label>
-  <label><input type="checkbox" name="g" value="plo4" ${checked.includes('plo4') ? 'checked' : ''}><span>PLO<small>Pot limit Omaha</small></span></label>
-  <label><input type="checkbox" name="g" value="plo5" ${checked.includes('plo5') ? 'checked' : ''}><span>PLO5<small>Five card Omaha</small></span></label>
-</div>`;
+const managedClubs = () => me.clubs.filter((c) => c.status === 'active' && (c.role === 'owner' || c.role === 'manager')).map((c) => ({ id: c.id, name: c.name, decimals: c.decimals }));
+const openStart = (clubId = null) => startGameDialog({ user: me.user, clubs: managedClubs(), clubId });
 
-function readTableForm(f, dec) {
-  const games = [...f.querySelectorAll('input[name=g]:checked')].map((x) => x.value);
-  if (!games.length) throw new Error('Pick at least one game');
-  const P = (n) => parseChips(f.elements[n].value, dec);
-  const settings = {
-    games, smallBlind: P('sb'), bigBlind: P('bb'),
-    minBuyIn: f.elements.min.value ? P('min') : 0, maxBuyIn: f.elements.max.value ? P('max') : 0,
-  };
-  if (f.elements.seats) settings.maxPlayers = Number(f.elements.seats.value);
-  return settings;
+function clubForms() {
+  return `<div class="stack-sm">
+    <form data-joinclub class="row"><input name="code" placeholder="Invite code" aria-label="Invite code" style="max-width:190px" autocapitalize="characters"><button class="btn" type="submit">Join club</button></form>
+    <form data-newclub class="row"><input name="cname" placeholder="New club name" aria-label="New club name" style="max-width:220px"><select name="decimals" style="width:auto" aria-label="Chip amounts"><option value="0">Whole chips</option><option value="2">Two decimals</option></select><button class="btn" type="submit">Create club</button></form>
+    ${me.user.username ? '' : '<p class="hint">Clubs need an account, so a balance belongs to you and not to this browser. Use Create account at the top.</p>'}
+  </div>`;
+}
+
+function bindClubForms(root, after = () => {}) {
+  root.querySelector('[data-joinclub]').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const code = e.target.elements.code.value.trim();
+    if (code) { after(); go('/join/' + encodeURIComponent(code)); }
+  });
+  root.querySelector('[data-newclub]').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const r = await api.post('/api/clubs', { name: e.target.elements.cname.value, decimals: Number(e.target.elements.decimals.value) });
+      me = await api.get('/api/me');
+      after();
+      go('/club/' + r.id);
+    } catch (x) { toast(x.message, 'error'); }
+  });
 }
 
 // ---------- home ----------
 async function home() {
-  unwatch();
   me = await api.get('/api/me');
+  const active = me.clubs.filter((c) => c.status === 'active');
+  if (active.length) {
+    let saved = null;
+    try { saved = localStorage.getItem(CLUB_KEY); } catch { /* storage blocked */ }
+    return clubHome((active.find((c) => c.id === saved) || active[0]).id);
+  }
+  unwatch();
   document.title = 'The Aquarium';
-  const clubs = me.clubs.length ? me.clubs.map((c) => `<a href="/club/${esc(c.id)}"><span><b>${esc(c.name)}</b><br><small>${c.status === 'pending' ? 'Waiting for approval' : c.role}</small></span>${c.status === 'active' ? `<span class="num">${fmtChips(c.balance, c.decimals)}</span>` : ''}</a>`).join('') : '<p class="muted">You are not in a club yet.</p>';
+  const pending = me.clubs.filter((c) => c.status === 'pending');
   main.innerHTML = `<div class="lob-grid">
     <div>
-      <section class="panel">
+      <section class="panel start-panel">
         <h2>Start a game</h2>
-        <p class="lead">Pick the games and stakes, then send the table link to your players. You approve each seat and rebuy, and every player's browser checks every deal.</p>
-        <form id="newtable" class="stack">
-          <div>${gamePicker()}<p class="hint">Pick two or three to rotate them, one orbit each.</p></div>
-          <div class="field-grid">
-            <label><span class="lbl">Table name</span><input name="tname" type="text" maxlength="40" placeholder="${esc(me.user.name)}'s game"></label>
-            <label><span class="lbl">Chip amounts</span><select name="decimals"><option value="0">Whole chips (5/10)</option><option value="2">Two decimals (0.25/0.50)</option></select></label>
-            <label><span class="lbl">Small blind</span><input name="sb" type="number" step="any" min="0" value="5"></label>
-            <label><span class="lbl">Big blind</span><input name="bb" type="number" step="any" min="0" value="10"></label>
-            <label><span class="lbl">Minimum buy-in</span><input name="min" type="number" step="any" min="0" placeholder="Any"></label>
-            <label><span class="lbl">Maximum stack</span><input name="max" type="number" step="any" min="0" placeholder="Any"></label>
-          </div>
-          <div class="row"><button class="btn primary" type="submit">Create table</button><span class="hint">Bomb pots, running it up to four times, time limits and reveal timing are under Options at the table.</span></div>
-        </form>
+        <p class="lead">Choose the format, stakes and bomb pots, then send the table link to your players. Every player's browser checks every deal.</p>
+        <button class="btn primary big" data-start>Start a game</button>
       </section>
       <section class="panel"><h2>Your tables</h2><div class="gboard">${board(me.tables, 'Tables you host or play at show up here.')}</div></section>
     </div>
     <div>
       <section class="panel">
         <h2>Clubs</h2>
-        <p class="muted">A club keeps each member's chip balance across games. Managers add chips, set credit limits and settle up.</p>
-        <div class="club-list">${clubs}</div>
-        <div class="stack" style="margin-top:1rem">
-          <form id="joinclub" class="row"><input name="code" placeholder="Invite code" aria-label="Invite code" style="max-width:190px" autocapitalize="characters"><button class="btn" type="submit">Join club</button></form>
-          <form id="newclub" class="row"><input name="cname" placeholder="New club name" aria-label="New club name" style="max-width:220px"><select name="decimals" style="width:auto" aria-label="Chip amounts"><option value="0">Whole chips</option><option value="2">Two decimals</option></select><button class="btn" type="submit">Create club</button></form>
-          ${me.user.username ? '' : '<p class="hint">Clubs need an account, so a balance belongs to you and not to this browser. Use Create account at the top.</p>'}
-        </div>
+        <p class="muted">A club keeps each member's chip balance across games. Managers add chips, set credit limits and settle up, and the club's balances and ledger become your home page.</p>
+        ${pending.length ? `<div class="club-list">${pending.map((c) => `<div><b>${esc(c.name)}</b><small>Waiting for a manager to approve you</small></div>`).join('')}</div>` : ''}
+        ${clubForms()}
       </section>
       <section class="panel">
         <h2>Checking the shuffle</h2>
@@ -151,33 +160,8 @@ async function home() {
       </section>
     </div>
   </div>`;
-  const nt = $('#newtable');
-  nt.elements.decimals.addEventListener('change', (e) => {
-    const two = e.target.value === '2';
-    nt.elements.sb.value = two ? '0.25' : '5';
-    nt.elements.bb.value = two ? '0.50' : '10';
-  });
-  nt.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    try {
-      const dec = Number(nt.elements.decimals.value);
-      const settings = { ...readTableForm(nt, dec), decimals: dec };
-      const r = await api.post('/api/tables', { name: nt.elements.tname.value, settings });
-      location.href = '/t/' + r.id;
-    } catch (x) { toast(x.message, 'error'); }
-  });
-  $('#joinclub').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const code = e.target.elements.code.value.trim();
-    if (code) go('/join/' + encodeURIComponent(code));
-  });
-  $('#newclub').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    try {
-      const r = await api.post('/api/clubs', { name: e.target.elements.cname.value, decimals: Number(e.target.elements.decimals.value) });
-      go('/club/' + r.id);
-    } catch (x) { toast(x.message, 'error'); }
-  });
+  main.querySelector('[data-start]').addEventListener('click', () => openStart());
+  bindClubForms(main);
 }
 
 // ---------- invite ----------
@@ -205,8 +189,11 @@ async function joinPage(code) {
   main.querySelector('[data-login]')?.addEventListener('click', async () => { await identityDialog({ mode: 'login', closable: true }); me = await api.get('/api/me'); renderHead(); joinPage(code); });
 }
 
-// ---------- clubs ----------
-function unwatch() { watching = null; }
+// ---------- live updates ----------
+function unwatch() {
+  watching = null;
+  if (main._clubClick) { main.removeEventListener('click', main._clubClick); main._clubClick = null; }
+}
 function watch(clubId) {
   watching = clubId;
   if (!clubSocket) {
@@ -228,102 +215,101 @@ function watch(clubId) {
   }
 }
 
+// ---------- club home ----------
 const TX = {
   chips_add: 'Chips added', chips_remove: 'Chips removed', settlement: 'Settled', transfer_in: 'Transfer in',
   transfer_out: 'Transfer out', buyin: 'Buy-in', cashout: 'Cash-out', credit_limit: 'Credit limit',
 };
 
-async function clubPage(id, tab) {
+// Credit limit entries carry the old and new limit; older ones only have a note like "Credit limit 0 - 2000".
+function txDetail(t, F) {
+  if (t.type === 'credit_limit') {
+    let from = t.limitFrom;
+    let to = t.limitTo;
+    const m = /^Credit limit (-?\d+) -\s*>?\s*(-?\d+)$/.exec(t.note || '');
+    if (to === undefined && m) { from = Number(m[1]); to = Number(m[2]); }
+    if (to !== undefined) return `Set to ${F(to)} (was ${F(from)})`;
+  }
+  return [t.tableName, t.note].filter(Boolean).join(': ');
+}
+
+// One line for the phone ledger: what happened, where, and the balance after it.
+function txLine(t, F) {
+  const d = txDetail(t, F);
+  if (t.type === 'credit_limit') return d ? `Credit limit ${d[0].toLowerCase()}${d.slice(1)}` : 'Credit limit changed';
+  return `${TX[t.type] || t.type}${d ? `, ${d}` : ''}. Balance ${F(t.balanceAfter)}`;
+}
+
+async function clubHome(id) {
   let data;
   try { data = await api.get('/api/clubs/' + encodeURIComponent(id)); }
-  catch (e) { main.innerHTML = `<p class="bad">${esc(e.message)}</p><p><a href="/">Back to the lobby</a></p>`; return; }
+  catch (e) {
+    try { localStorage.removeItem(CLUB_KEY); } catch { /* storage blocked */ }
+    main.innerHTML = `<section class="panel" style="max-width:560px"><h2>That club is not available</h2><p class="muted">${esc(e.message)}</p><a href="/">Back to the lobby</a></section>`;
+    return;
+  }
   const c = data.club;
   document.title = `${c.name} | The Aquarium`;
   if (c.myStatus !== 'active') {
     main.innerHTML = `<section class="panel" style="max-width:560px"><h2>${esc(c.name)}</h2><p>${c.myStatus === 'pending' ? 'Your request to join is waiting for a manager.' : 'You are not a member of this club.'}</p><a href="/">Back to the lobby</a></section>`;
     return;
   }
+  try { localStorage.setItem(CLUB_KEY, id); } catch { /* storage blocked */ }
   watch(id);
   const dec = c.settings.decimals;
   const F = (a) => fmtChips(a, dec);
   const P = (v) => parseChips(v, dec);
-  const tabs = [['tables', 'Tables'], ['members', 'Members'], ['ledger', 'Ledger'], c.isManager && ['settings', 'Settings']].filter(Boolean);
-  if (!tabs.some(([k]) => k === tab)) tab = 'tables';
   const roleLabel = { owner: 'You own this club', manager: 'You are a manager', member: 'Member' }[c.myRole];
+  const clubs = me.clubs.filter((x) => x.status === 'active');
+  const live = data.tables.filter((t) => t.status !== 'ended');
+  const past = data.tables.filter((t) => t.status === 'ended');
+  const money = (n) => (n === undefined ? '<span class="faint">-</span>' : `<span class="${n < 0 ? 'neg' : ''}">${F(n)}</span>`);
+  const signed = (n) => (n === undefined ? '<span class="faint">-</span>' : `<span class="${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}">${n > 0 ? '+' : ''}${F(n)}</span>`);
+  const members = c.members.slice().sort((a, b) => (ui.sort === 'net' ? (b.net ?? -1e18) - (a.net ?? -1e18) : ui.sort === 'balance' ? (b.balance ?? -1e18) - (a.balance ?? -1e18) : 0));
+  if (ui.member && !c.members.some((m) => m.userId === ui.member)) ui.member = '';
+  const txs = c.transactions.filter((t) => !ui.member || t.userId === ui.member);
+  const shown = txs.slice(0, ui.ledgerLimit);
+  const when = (at) => new Date(at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
   main.innerHTML = `
-    <div class="club-head">
-      <div><a href="/" class="muted">Lobby</a><h1>${esc(c.name)}</h1><span class="muted">${roleLabel}</span></div>
-      <div class="bal">
+    <section class="club-band">
+      <div class="cb-name">
+        <div class="row"><h1>${esc(c.name)}</h1>${clubs.length > 1 ? `<select data-switch aria-label="Switch club" style="width:auto">${clubs.map((x) => `<option value="${esc(x.id)}" ${x.id === c.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : ''}</div>
+        <span class="muted">${roleLabel}, ${c.members.length} member${c.members.length === 1 ? '' : 's'}</span>
+      </div>
+      <div class="cb-bal">
         <div><small>Your balance</small><b class="${c.me.balance < 0 ? 'neg' : ''}">${F(c.me.balance)}</b></div>
         <div><small>Credit limit</small><b>${F(c.me.creditLimit)}</b></div>
         <div><small>Available to play</small><b>${F(Math.max(0, c.me.available))}</b></div>
       </div>
-    </div>
+      <button class="btn primary big" data-start>Start a game</button>
+    </section>
     ${c.announcement ? `<div class="announce">${esc(c.announcement)}</div>` : ''}
-    ${c.isManager && c.pending && c.pending.length ? `<section class="panel" style="margin-bottom:18px"><h2>Waiting to join</h2>
+    ${c.isManager && c.pending && c.pending.length ? `<section class="panel waitlist"><h2>Waiting to join</h2>
       ${c.pending.map((p) => `<div class="row" style="padding:6px 0"><b class="grow">${esc(p.name)}</b><span class="muted">${timeAgo(p.requestedAt)}</span><button class="btn small ghost" data-decide="${esc(p.userId)}" data-ok="0">Decline</button><button class="btn small primary" data-decide="${esc(p.userId)}" data-ok="1">Approve</button></div>`).join('')}</section>` : ''}
-    <nav class="page-tabs">${tabs.map(([k, l]) => `<a href="/club/${esc(id)}?tab=${k}" data-tab="${k}" class="${k === tab ? 'on' : ''}">${l}</a>`).join('')}</nav>
-    <div id="tabbody"></div>`;
-  main.querySelector('.page-tabs').addEventListener('click', (e) => {
-    const a = e.target.closest('[data-tab]');
-    if (!a) return;
-    e.preventDefault();
-    go(`/club/${id}?tab=${a.dataset.tab}`);
-  });
-  main.querySelectorAll('[data-decide]').forEach((b) => b.addEventListener('click', async () => {
-    try { await api.post(`/api/clubs/${id}/members/${b.dataset.decide}/decide`, { approve: b.dataset.ok === '1' }); route(); }
-    catch (x) { toast(x.message, 'error'); }
-  }));
-  const body = $('#tabbody');
-  const post = async (path, payload, done) => {
-    try { await api.post(`/api/clubs/${id}${path}`, payload); if (done) toast(done); route(); return true; }
-    catch (x) { toast(x.message, 'error'); return false; }
-  };
 
-  if (tab === 'tables') {
-    body.innerHTML = `<section class="panel"><h2>Club tables</h2><p class="muted">Members buy in from their balance (plus any credit) and cash out back into it.</p><div class="gboard">${board(data.tables, 'No club tables yet.')}</div></section>
-      ${c.isManager ? `<section class="panel"><h2>Open a table</h2>
-        <form id="clubtable" class="stack">
-          ${gamePicker(['plo4', 'nlh'])}
-          <div class="field-grid">
-            <label><span class="lbl">Table name</span><input name="tname" maxlength="40" placeholder="Main game"></label>
-            <label><span class="lbl">Small blind</span><input name="sb" type="number" step="any" value="${dec ? '0.25' : '5'}"></label>
-            <label><span class="lbl">Big blind</span><input name="bb" type="number" step="any" value="${dec ? '0.50' : '10'}"></label>
-            <label><span class="lbl">Minimum buy-in</span><input name="min" type="number" step="any" placeholder="Any"></label>
-            <label><span class="lbl">Maximum stack</span><input name="max" type="number" step="any" placeholder="Any"></label>
-            <label><span class="lbl">Seats</span><select name="seats">${[2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<option ${n === 8 ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
-          </div>
-          <div class="row"><button class="btn primary" type="submit">Open table</button><span class="hint">Club tables start right away and seat members straight from their balance, so the game runs without a manager present.</span></div>
-        </form></section>` : ''}`;
-    $('#clubtable')?.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      try {
-        const f = e.target;
-        const r = await api.post(`/api/clubs/${id}/tables`, { name: f.elements.tname.value || 'Main game', settings: readTableForm(f, dec) });
-        location.href = '/t/' + r.id;
-      } catch (x) { toast(x.message, 'error'); }
-    });
-  }
+    <section class="panel">
+      <h2>Tables</h2>
+      <div class="gboard">${board(live, c.isManager ? 'No game running. Start one and it shows up here for every member.' : 'No game running right now.')}</div>
+      ${past.length ? `<details class="past"><summary>Past games (${past.length})</summary><div class="gboard">${board(past.slice(0, 20))}</div></details>` : ''}
+    </section>
 
-  if (tab === 'members') {
-    const sortKey = new URLSearchParams(location.search).get('sort') || 'name';
-    const members = c.members.slice().sort((a, b) => (sortKey === 'net' ? (b.net ?? -1e18) - (a.net ?? -1e18) : sortKey === 'balance' ? (b.balance ?? -1e18) - (a.balance ?? -1e18) : 0));
-    const money = (n) => (n === undefined ? '<span class="faint">-</span>' : `<span class="${n < 0 ? 'neg' : ''}">${F(n)}</span>`);
-    const net = (n) => (n === undefined ? '<span class="faint">-</span>' : `<span class="${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}">${n > 0 ? '+' : ''}${F(n)}</span>`);
-    const invite = `${location.origin}/join/${c.inviteCode}`;
-    body.innerHTML = `<section class="panel">
-      ${c.isManager ? `<div class="invite" style="margin-bottom:16px"><span class="muted">Invite link</span><code class="grow">${esc(invite)}</code><button class="btn small" data-copy="${esc(invite)}">Copy</button><button class="btn small ghost" data-newcode>New link</button></div>` : ''}
+    <section class="panel" id="balances">
+      <div class="sec-head"><h2>Balances</h2>
+        <div class="row">
+          ${c.seeAll ? `<div class="seg" role="group" aria-label="Sort members">${[['name', 'By role'], ['balance', 'By balance'], ['net', 'Leaderboard']].map(([k, l]) => `<button type="button" data-sort="${k}" class="${k === ui.sort ? 'on' : ''}">${l}</button>`).join('')}</div>` : ''}
+          ${c.isManager ? '<button class="btn small" data-invite>Invite players</button>' : ''}
+        </div>
+      </div>
       ${c.totals ? `<div class="totals">
         <div><small>Held by members</small><b>${F(c.totals.held)}</b></div>
         <div><small>Owed to the club</small><b class="${c.totals.owed < 0 ? 'neg' : ''}">${F(c.totals.owed)}</b></div>
         <div><small>On tables now</small><b>${F(c.totals.onTables)}</b></div>
         <div><small>Net balance</small><b>${F(c.totals.balances)}</b></div></div>` : ''}
-      <div class="row" style="justify-content:space-between;margin-bottom:8px"><h2 style="margin:0">Members</h2>
-        ${c.seeAll ? `<div class="seg">${[['name', 'By role'], ['balance', 'By balance'], ['net', 'Leaderboard']].map(([k, l]) => `<button type="button" data-sort="${k}" class="${k === sortKey ? 'on' : ''}">${l}</button>`).join('')}</div>` : ''}</div>
-      <div class="scroll-x"><table class="data"><thead><tr><th>Member</th><th>Role</th><th class="n">Balance</th><th class="n">Credit limit</th><th class="n">Available</th><th class="n">On tables</th><th class="n">Net from play</th>${c.isManager ? '<th></th>' : ''}</tr></thead>
-      <tbody>${members.map((m) => `<tr><td>${esc(m.name)}${m.userId === me.user.id ? ' <span class="faint">(you)</span>' : ''}</td><td class="muted">${m.role}</td>
-        <td class="n">${money(m.balance)}</td><td class="n">${m.creditLimit === undefined ? '<span class="faint">-</span>' : F(m.creditLimit)}</td><td class="n">${m.available === undefined ? '<span class="faint">-</span>' : F(Math.max(0, m.available))}</td>
-        <td class="n">${m.onTables === undefined ? '<span class="faint">-</span>' : F(m.onTables)}</td><td class="n">${net(m.net)}</td>
+      <div class="scroll-x wide-only"><table class="data balances"><thead><tr><th>Member</th><th class="n">Balance</th><th class="n hide-sm">Credit limit</th><th class="n">Available</th><th class="n hide-sm">On tables</th><th class="n">Net from play</th>${c.isManager ? '<th><span class="sr">Actions</span></th>' : ''}</tr></thead>
+      <tbody>${members.map((m) => `<tr class="${m.userId === me.user.id ? 'me' : ''}"><td><button type="button" class="linkish" data-mm="${esc(m.userId)}" ${c.isManager || m.userId === me.user.id ? '' : 'disabled'}>${esc(m.name)}</button>${m.userId === me.user.id ? ' <span class="faint">(you)</span>' : ''}${m.role !== 'member' ? ` <span class="role">${m.role}</span>` : ''}</td>
+        <td class="n bal">${money(m.balance)}</td><td class="n hide-sm">${m.creditLimit === undefined ? '<span class="faint">-</span>' : F(m.creditLimit)}</td><td class="n">${m.available === undefined ? '<span class="faint">-</span>' : F(Math.max(0, m.available))}</td>
+        <td class="n hide-sm">${m.onTables === undefined ? '<span class="faint">-</span>' : F(m.onTables)}</td><td class="n">${signed(m.net)}</td>
         ${c.isManager ? `<td><div class="member-actions">
           <button class="btn tiny" data-m="chips" data-u="${esc(m.userId)}">Chips</button>
           <button class="btn tiny" data-m="credit" data-u="${esc(m.userId)}">Credit</button>
@@ -331,120 +317,227 @@ async function clubPage(id, tab) {
           ${c.myRole === 'owner' && m.role !== 'owner' ? `<button class="btn tiny ghost" data-m="role" data-u="${esc(m.userId)}">${m.role === 'manager' ? 'Make member' : 'Make manager'}</button>` : ''}
           ${m.role !== 'owner' ? `<button class="btn tiny ghost" data-m="remove" data-u="${esc(m.userId)}">Remove</button>` : ''}
         </div></td>` : ''}</tr>`).join('')}</tbody></table></div>
+      <ul class="bal-list narrow-only">${members.map((m) => `<li><button type="button" class="bal-item ${m.userId === me.user.id ? 'me' : ''}" data-mm="${esc(m.userId)}" ${c.isManager || m.userId === me.user.id ? '' : 'disabled'}>
+        <span class="bi-name"><b>${esc(m.name)}</b>${m.userId === me.user.id ? ' <span class="faint">(you)</span>' : ''}${m.role !== 'member' ? ` <span class="role">${m.role}</span>` : ''}</span>
+        <span class="bi-bal">${money(m.balance)}</span>
+        ${m.balance === undefined ? '' : `<small class="bi-sub">Available ${F(Math.max(0, m.available))}${m.onTables ? `, ${F(m.onTables)} on tables` : ''}${m.creditLimit ? `, credit ${F(m.creditLimit)}` : ''}</small><small class="bi-net">${signed(m.net)}</small>`}
+      </button></li>`).join('')}</ul>
       ${!c.seeAll ? '<p class="hint">Only managers see other members’ balances in this club.</p>' : ''}
     </section>
-    ${c.settings.allowTransfers ? `<section class="panel"><h2>Send chips to a member</h2>
-      <form id="transfer" class="row"><select name="to" style="width:auto">${c.members.filter((m) => m.userId !== me.user.id).map((m) => `<option value="${esc(m.userId)}">${esc(m.name)}</option>`).join('')}</select>
-      <input name="amount" type="number" step="any" min="0" placeholder="Amount" style="max-width:140px"><input name="note" placeholder="Note (optional)" style="max-width:220px"><button class="btn" type="submit">Send chips</button></form>
-      <p class="hint">You can send chips from a positive balance only; credit cannot be transferred.</p></section>` : ''}`;
-    body.addEventListener('click', async (e) => {
-      const cp = e.target.closest('[data-copy]');
-      if (cp) return copyText(cp.dataset.copy);
-      if (e.target.closest('[data-newcode]')) {
-        if (await confirmDialog('The old invite link stops working.', { title: 'Make a new invite link?', ok: 'Make new link' })) post('/invite', {}, 'New invite link ready');
-        return;
-      }
-      const s = e.target.closest('[data-sort]');
-      if (s) return go(`/club/${id}?tab=members&sort=${s.dataset.sort}`);
-      const b = e.target.closest('[data-m]');
-      if (!b) return;
-      const m = c.members.find((x) => x.userId === b.dataset.u);
-      const k = b.dataset.m;
-      if (k === 'chips') memberChips(m);
-      if (k === 'credit') memberCredit(m);
-      if (k === 'settle') {
-        const d = dialog({
-          title: `Settle ${m.name}`, className: 'narrow',
-          body: `<form class="stack"><p>${m.balance < 0 ? `${esc(m.name)} owes the club ${F(-m.balance)}.` : `The club owes ${esc(m.name)} ${F(m.balance)}.`} Settling records the payment and sets the balance to zero.</p>
-            <label><span class="lbl">How it was paid</span><input name="note" placeholder="e.g. Cash, bank transfer"></label><button class="btn primary" type="submit">Record settlement</button></form>`,
-        });
-        d.$('form').addEventListener('submit', async (ev) => { ev.preventDefault(); if (await post(`/members/${m.userId}/settle`, { note: ev.target.elements.note.value }, 'Settlement recorded')) d.close(); });
-      }
-      if (k === 'role') post(`/members/${m.userId}/role`, { role: m.role === 'manager' ? 'member' : 'manager' }, 'Role changed');
-      if (k === 'remove' && await confirmDialog(`Remove ${m.name} from the club? Their balance must be zero.`, { ok: 'Remove', danger: true })) post(`/members/${m.userId}/remove`, {}, 'Member removed');
-    });
-    $('#transfer')?.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const f = e.target;
-      post('/transfer', { toUserId: f.elements.to.value, amount: P(f.elements.amount.value), note: f.elements.note.value }, 'Chips sent');
-    });
 
-    const memberChips = (m) => {
-      const d = dialog({
-        title: `Chips for ${m.name}`, className: 'narrow',
-        body: `<form class="stack">
-          <div class="seg" data-dir><button type="button" class="on" data-v="1">Add chips</button><button type="button" data-v="-1">Remove chips</button></div>
-          <label><span class="lbl">Amount</span><input name="amount" type="number" step="any" min="0" required></label>
-          <label><span class="lbl">Note</span><input name="note" maxlength="140" placeholder="e.g. Cash received"></label>
-          <p class="hint">Balance now ${F(m.balance)}. Removing more than the balance leaves the member owing the club.</p>
-          <button class="btn primary" type="submit">Save</button></form>`,
-      });
-      let dir = 1;
-      d.$('[data-dir]').addEventListener('click', (ev) => {
-        const x = ev.target.closest('button');
-        if (!x) return;
-        dir = Number(x.dataset.v);
-        d.$$('[data-dir] button').forEach((y) => y.classList.toggle('on', y === x));
-      });
-      d.$('form').addEventListener('submit', async (ev) => {
-        ev.preventDefault();
-        const amt = P(ev.target.elements.amount.value);
-        if (!(amt > 0)) return toast('Enter an amount', 'error');
-        if (await post(`/members/${m.userId}/chips`, { amount: dir * amt, note: ev.target.elements.note.value }, dir > 0 ? 'Chips added' : 'Chips removed')) d.close();
-      });
-    };
-    const memberCredit = (m) => {
-      const d = dialog({
-        title: `Credit limit for ${m.name}`, className: 'narrow',
-        body: `<form class="stack"><p class="muted">How far below zero ${esc(m.name)} can go when buying in. Their own chips are used first, then credit.</p>
-          <label><span class="lbl">Credit limit</span><input name="limit" type="number" step="any" min="0" value="${dec ? (m.creditLimit / 100).toFixed(2) : m.creditLimit}"></label>
-          <button class="btn primary" type="submit">Save limit</button></form>`,
-      });
-      d.$('form').addEventListener('submit', async (ev) => { ev.preventDefault(); if (await post(`/members/${m.userId}/credit`, { limit: P(ev.target.elements.limit.value) }, 'Credit limit saved')) d.close(); });
-    };
+    <section class="panel" id="ledger">
+      <div class="sec-head"><h2>Ledger</h2>
+        <div class="row">${c.seeAll ? `<select data-filter style="width:auto" aria-label="Show entries for"><option value="">Everyone</option>${c.members.map((m) => `<option value="${esc(m.userId)}" ${m.userId === ui.member ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>` : ''}
+        <button class="btn small" data-csv>Download CSV</button></div>
+      </div>
+      ${shown.length ? `<div class="scroll-x wide-only"><table class="data"><thead><tr><th>When</th><th>Member</th><th>What</th><th class="n">Amount</th><th class="n">Balance after</th><th>By</th><th>Detail</th></tr></thead><tbody>
+      ${shown.map((t) => `<tr><td class="muted nowrap">${when(t.at)}</td><td>${esc(t.name)}</td><td class="nowrap">${TX[t.type] || esc(t.type)}</td>
+        <td class="n">${t.type === 'credit_limit' ? '' : signed(t.amount)}</td><td class="n">${F(t.balanceAfter)}</td>
+        <td class="muted">${esc(t.byName || '')}</td><td class="muted">${esc(txDetail(t, F))}</td></tr>`).join('')}</tbody></table></div>
+      <ul class="led-list narrow-only">${shown.map((t) => `<li>
+        <div class="li-top"><b>${esc(t.name)}</b><span>${t.type === 'credit_limit' ? '' : signed(t.amount)}</span></div>
+        <div class="li-sub"><span>${esc(txLine(t, F))}</span><span class="nowrap">${when(t.at)}</span></div>
+      </li>`).join('')}</ul>
+      ${txs.length > shown.length ? `<div class="more"><button class="btn small ghost" data-more>Show ${Math.min(50, txs.length - shown.length)} more of ${txs.length - shown.length}</button></div>` : ''}` : '<p class="muted">No entries yet. Chips added, buy-ins, cash-outs and settlements show up here.</p>'}
+    </section>
+
+    <div class="club-foot">
+      ${c.isManager ? '<button class="btn small" data-settings>Club settings</button>' : ''}
+      ${c.settings.allowTransfers ? '<button class="btn small" data-transfer>Send chips to a member</button>' : ''}
+      <button class="btn small ghost" data-clubs>Join or create another club</button>
+      <a class="btn small ghost" href="/verify">Shuffle verifier</a>
+    </div>`;
+
+  const post = async (path, payload, done) => {
+    try { await api.post(`/api/clubs/${id}${path}`, payload); if (done) toast(done); route(); return true; }
+    catch (x) { toast(x.message, 'error'); return false; }
+  };
+
+  main.querySelector('[data-start]').addEventListener('click', () => openStart(c.isManager ? c.id : null));
+  main.querySelector('[data-switch]')?.addEventListener('change', (e) => { ui.member = ''; ui.ledgerLimit = 30; go('/club/' + e.target.value); });
+  main.querySelector('[data-filter]')?.addEventListener('change', (e) => { ui.member = e.target.value; ui.ledgerLimit = 30; clubHome(id); });
+  main.querySelector('[data-csv]').addEventListener('click', () => api.download(`/api/clubs/${id}/transactions.csv`, `club-ledger-${c.name.replace(/[^\w-]+/g, '-')}.csv`).catch((x) => toast(x.message, 'error')));
+
+  main.addEventListener('click', onClick);
+  function onClick(e) {
+    if (!main.contains(e.target)) return;
+    const d = e.target.closest('[data-decide]');
+    if (d) { post(`/members/${d.dataset.decide}/decide`, { approve: d.dataset.ok === '1' }); return; }
+    const mm = e.target.closest('[data-mm]');
+    if (mm) { const m = c.members.find((x) => x.userId === mm.dataset.mm); if (m) memberSheet(m); return; }
+    const s = e.target.closest('[data-sort]');
+    if (s) { ui.sort = s.dataset.sort; clubHome(id); return; }
+    if (e.target.closest('[data-more]')) { ui.ledgerLimit += 50; clubHome(id); return; }
+    if (e.target.closest('[data-invite]')) return inviteDialog();
+    if (e.target.closest('[data-settings]')) return settingsDialog();
+    if (e.target.closest('[data-transfer]')) return transferDialog();
+    if (e.target.closest('[data-clubs]')) {
+      const dlg = dialog({ title: 'Clubs', className: 'narrow', body: `<p class="muted">Join a club with its invite code, or start a new one.</p>${clubForms()}` });
+      bindClubForms(dlg.el, () => dlg.close());
+      return;
+    }
+    const b = e.target.closest('[data-m]');
+    if (!b) return;
+    const m = c.members.find((x) => x.userId === b.dataset.u);
+    const k = b.dataset.m;
+    if (k === 'chips') memberChips(m);
+    if (k === 'credit') memberCredit(m);
+    if (k === 'settle') memberSettle(m);
+    if (k === 'role') post(`/members/${m.userId}/role`, { role: m.role === 'manager' ? 'member' : 'manager' }, 'Role changed');
+    if (k === 'remove') confirmDialog(`Remove ${m.name} from the club? Their balance must be zero.`, { ok: 'Remove', danger: true }).then((ok) => ok && post(`/members/${m.userId}/remove`, {}, 'Member removed'));
+  }
+  // clubHome re-renders main in place; drop this render's listener on the next one
+  const prev = main._clubClick;
+  if (prev) main.removeEventListener('click', prev);
+  main._clubClick = onClick;
+
+  function memberSheet(m) {
+    const mine = m.userId === me.user.id;
+    const stat = (label, v) => `<div><small>${label}</small><b>${v}</b></div>`;
+    const dlg = dialog({
+      title: m.name, className: 'narrow',
+      body: `<div class="stack">
+        ${m.balance === undefined ? '<p class="muted">Only managers see this member’s balance.</p>' : `<div class="totals sheet">
+          ${stat('Balance', money(m.balance))}${stat('Credit limit', F(m.creditLimit))}${stat('Available', F(Math.max(0, m.available)))}${stat('On tables', F(m.onTables))}${stat('Net from play', signed(m.net))}
+        </div>`}
+        <p class="muted">${m.role === 'owner' ? 'Owner' : m.role === 'manager' ? 'Manager' : 'Member'}${m.joinedAt ? `, joined ${new Date(m.joinedAt).toLocaleDateString()}` : ''}</p>
+        ${c.isManager ? `<div class="sheet-actions">
+          <button class="btn" data-a="chips">Add or remove chips</button>
+          <button class="btn" data-a="credit">Credit limit</button>
+          ${m.balance ? '<button class="btn" data-a="settle">Settle up</button>' : ''}
+          ${c.myRole === 'owner' && m.role !== 'owner' ? `<button class="btn ghost" data-a="role">${m.role === 'manager' ? 'Make member' : 'Make manager'}</button>` : ''}
+          ${m.role !== 'owner' ? '<button class="btn danger" data-a="remove">Remove from club</button>' : ''}
+        </div>` : ''}
+      </div>`,
+      foot: `<button class="btn ghost" data-a="entries">${mine ? 'Show my' : 'Show their'} ledger entries</button><button class="btn primary" data-close>Done</button>`,
+    });
+    dlg.el.addEventListener('click', async (ev) => {
+      const a = ev.target.closest('[data-a]')?.dataset.a;
+      if (!a) return;
+      dlg.close();
+      if (a === 'chips') memberChips(m);
+      if (a === 'credit') memberCredit(m);
+      if (a === 'settle') memberSettle(m);
+      if (a === 'role') post(`/members/${m.userId}/role`, { role: m.role === 'manager' ? 'member' : 'manager' }, 'Role changed');
+      if (a === 'remove' && await confirmDialog(`Remove ${m.name} from the club? Their balance must be zero.`, { ok: 'Remove', danger: true })) post(`/members/${m.userId}/remove`, {}, 'Member removed');
+      if (a === 'entries') {
+        ui.member = m.userId;
+        ui.ledgerLimit = 30;
+        await clubHome(id);
+        document.getElementById('ledger')?.scrollIntoView({ block: 'start' });
+      }
+    });
   }
 
-  if (tab === 'ledger') {
-    const filter = new URLSearchParams(location.search).get('member') || '';
-    const txs = c.transactions.filter((t) => !filter || t.userId === filter);
-    body.innerHTML = `<section class="panel">
-      <div class="row" style="justify-content:space-between;margin-bottom:10px"><h2 style="margin:0">Ledger</h2>
-        <div class="row">${c.seeAll ? `<select data-filter style="width:auto"><option value="">Everyone</option>${c.members.map((m) => `<option value="${esc(m.userId)}" ${m.userId === filter ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>` : ''}
-        <button class="btn small" data-csv>Download CSV</button></div></div>
-      ${txs.length ? `<div class="scroll-x"><table class="data"><thead><tr><th>When</th><th>Member</th><th>What</th><th class="n">Amount</th><th class="n">Balance after</th><th>By</th><th>Detail</th></tr></thead><tbody>
-      ${txs.map((t) => `<tr><td class="muted">${new Date(t.at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td><td>${esc(t.name)}</td><td class="tx-type">${TX[t.type] || esc(t.type)}</td>
-        <td class="n"><span class="${t.amount > 0 ? 'pos' : t.amount < 0 ? 'neg' : ''}">${t.amount > 0 ? '+' : ''}${t.type === 'credit_limit' ? '' : F(t.amount)}</span></td><td class="n">${F(t.balanceAfter)}</td>
-        <td class="muted">${esc(t.byName || '')}</td><td class="muted">${esc([t.tableName, t.note].filter(Boolean).join(': '))}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No entries yet.</p>'}
-    </section>`;
-    body.querySelector('[data-filter]')?.addEventListener('change', (e) => go(`/club/${id}?tab=ledger${e.target.value ? '&member=' + encodeURIComponent(e.target.value) : ''}`));
-    body.querySelector('[data-csv]').addEventListener('click', () => api.download(`/api/clubs/${id}/transactions.csv`, `club-ledger-${c.name.replace(/[^\w-]+/g, '-')}.csv`).catch((x) => toast(x.message, 'error')));
+  function inviteDialog() {
+    const link = `${location.origin}/join/${c.inviteCode}`;
+    const dlg = dialog({
+      title: 'Invite players', className: 'narrow',
+      body: `<div class="stack"><p class="muted">Send this link. New members ${c.settings.requireApproval ? 'wait for a manager to approve them' : 'join straight away'}, and need an account so their balance is theirs.</p>
+        <div class="invite"><code class="grow">${esc(link)}</code><button class="btn small" data-copy>Copy</button></div>
+        <p class="hint">Invite code ${esc(c.inviteCode)}. Making a new link stops the old one from working.</p></div>`,
+      foot: '<button class="btn ghost" data-newcode>Make a new link</button><button class="btn primary" data-close>Done</button>',
+    });
+    dlg.$('[data-copy]').addEventListener('click', () => copyText(link));
+    dlg.$('[data-newcode]').addEventListener('click', async () => {
+      if (await confirmDialog('The old invite link stops working.', { title: 'Make a new invite link?', ok: 'Make new link' })) {
+        dlg.close();
+        post('/invite', {}, 'New invite link ready');
+      }
+    });
   }
 
-  if (tab === 'settings' && c.isManager) {
+  function memberChips(m) {
+    const dlg = dialog({
+      title: `Chips for ${m.name}`, className: 'narrow',
+      body: `<form class="stack">
+        <div class="seg" data-dir><button type="button" class="on" data-v="1">Add chips</button><button type="button" data-v="-1">Remove chips</button></div>
+        <label><span class="lbl">Amount</span><input name="amount" type="number" inputmode="decimal" step="any" min="0" required></label>
+        <label><span class="lbl">Note</span><input name="note" maxlength="140" placeholder="e.g. Cash received"></label>
+        <p class="hint">Balance now ${F(m.balance)}. Removing more than the balance leaves the member owing the club.</p>
+        <button class="btn primary" type="submit">Save</button></form>`,
+    });
+    let dir = 1;
+    dlg.$('[data-dir]').addEventListener('click', (ev) => {
+      const x = ev.target.closest('button');
+      if (!x) return;
+      dir = Number(x.dataset.v);
+      dlg.$$('[data-dir] button').forEach((y) => y.classList.toggle('on', y === x));
+    });
+    dlg.$('form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const amt = P(ev.target.elements.amount.value);
+      if (!(amt > 0)) return toast('Enter an amount', 'error');
+      if (await post(`/members/${m.userId}/chips`, { amount: dir * amt, note: ev.target.elements.note.value }, dir > 0 ? 'Chips added' : 'Chips removed')) dlg.close();
+    });
+    setTimeout(() => dlg.$('[name=amount]').focus(), 30);
+  }
+
+  function memberCredit(m) {
+    const dlg = dialog({
+      title: `Credit limit for ${m.name}`, className: 'narrow',
+      body: `<form class="stack"><p class="muted">How far below zero ${esc(m.name)} can go when buying in. Their own chips are used first, then credit.</p>
+        <label><span class="lbl">Credit limit</span><input name="limit" type="number" inputmode="decimal" step="any" min="0" value="${toInput(m.creditLimit, dec)}"></label>
+        <button class="btn primary" type="submit">Save limit</button></form>`,
+    });
+    dlg.$('form').addEventListener('submit', async (ev) => { ev.preventDefault(); if (await post(`/members/${m.userId}/credit`, { limit: P(ev.target.elements.limit.value) }, 'Credit limit saved')) dlg.close(); });
+  }
+
+  function memberSettle(m) {
+    const dlg = dialog({
+      title: `Settle ${m.name}`, className: 'narrow',
+      body: `<form class="stack"><p>${m.balance < 0 ? `${esc(m.name)} owes the club ${F(-m.balance)}.` : `The club owes ${esc(m.name)} ${F(m.balance)}.`} Settling records the payment and sets the balance to zero.</p>
+        <label><span class="lbl">How it was paid</span><input name="note" placeholder="e.g. Cash, bank transfer"></label><button class="btn primary" type="submit">Record settlement</button></form>`,
+    });
+    dlg.$('form').addEventListener('submit', async (ev) => { ev.preventDefault(); if (await post(`/members/${m.userId}/settle`, { note: ev.target.elements.note.value }, 'Settlement recorded')) dlg.close(); });
+  }
+
+  function transferDialog() {
+    const others = c.members.filter((m) => m.userId !== me.user.id);
+    const dlg = dialog({
+      title: 'Send chips to a member', className: 'narrow',
+      body: `<form class="stack">
+        <label><span class="lbl">To</span><select name="to">${others.map((m) => `<option value="${esc(m.userId)}">${esc(m.name)}</option>`).join('')}</select></label>
+        <label><span class="lbl">Amount</span><input name="amount" type="number" inputmode="decimal" step="any" min="0" required></label>
+        <label><span class="lbl">Note</span><input name="note" maxlength="140" placeholder="Optional"></label>
+        <p class="hint">You can send chips from a positive balance only; credit cannot be passed on.</p>
+        <button class="btn primary" type="submit">Send chips</button></form>`,
+    });
+    dlg.$('form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const f = ev.target.elements;
+      if (await post('/transfer', { toUserId: f.to.value, amount: P(f.amount.value), note: f.note.value }, 'Chips sent')) dlg.close();
+    });
+  }
+
+  function settingsDialog() {
     const st = c.settings;
     const used = c.transactions.some((t) => t.amount !== 0);
-    body.innerHTML = `<section class="panel"><h2>Club settings</h2>
-      <form id="clubset" class="stack">
+    const dlg = dialog({
+      title: 'Club settings',
+      body: `<form class="stack" id="clubset">
         <div class="field-grid">
           <label><span class="lbl">Club name</span><input name="cname" maxlength="40" value="${esc(c.name)}"></label>
-          <label><span class="lbl">Default credit limit for new members</span><input name="defaultCreditLimit" type="number" step="any" min="0" value="${dec ? (st.defaultCreditLimit / 100).toFixed(2) : st.defaultCreditLimit}"></label>
+          <label><span class="lbl">Default credit limit for new members</span><input name="defaultCreditLimit" type="number" step="any" min="0" value="${toInput(st.defaultCreditLimit, dec)}"></label>
           <label><span class="lbl">Chip amounts</span><select name="decimals" ${used ? 'disabled' : ''}><option value="0" ${st.decimals === 0 ? 'selected' : ''}>Whole chips</option><option value="2" ${st.decimals === 2 ? 'selected' : ''}>Two decimals</option></select></label>
         </div>
         <label><span class="lbl">Announcement for members</span><input name="announcement" maxlength="140" value="${esc(c.announcement || '')}" placeholder="e.g. Settle up by Sunday night"></label>
         <label class="check"><input type="checkbox" name="membersSeeLedger" ${st.membersSeeLedger ? 'checked' : ''}> Members can see everyone's balance and the full ledger<small>Off: each member sees only their own balance and entries.</small></label>
         <label class="check"><input type="checkbox" name="allowTransfers" ${st.allowTransfers ? 'checked' : ''}> Members can send chips to each other<small>Only from a positive balance; credit cannot be passed on.</small></label>
         <label class="check"><input type="checkbox" name="requireApproval" ${st.requireApproval ? 'checked' : ''}> A manager approves new members<small>Off: anyone with the invite link joins straight away.</small></label>
-        <div><button class="btn primary" type="submit">Save settings</button></div>
-      </form></section>`;
-    $('#clubset').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const f = e.target.elements;
+      </form>`,
+      foot: '<button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-save>Save settings</button>',
+    });
+    dlg.$('[data-save]').addEventListener('click', async () => {
+      const f = dlg.$('#clubset').elements;
       try {
         await api.patch(`/api/clubs/${id}`, {
           name: f.cname.value, announcement: f.announcement.value, defaultCreditLimit: P(f.defaultCreditLimit.value),
           membersSeeLedger: f.membersSeeLedger.checked, allowTransfers: f.allowTransfers.checked, requireApproval: f.requireApproval.checked,
           ...(used ? {} : { decimals: Number(f.decimals.value) }),
         });
+        me = await api.get('/api/me');
+        dlg.close();
         toast('Settings saved');
         route();
       } catch (x) { toast(x.message, 'error'); }

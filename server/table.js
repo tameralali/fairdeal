@@ -8,14 +8,16 @@ import { cleanName } from './auth.js';
 
 export const DELAYS = {
   street: 700, runoutFirst: 1800, runout: 1300, showdown: 900,
-  afterUncontested: 2500, afterShowdown: 5000, perExtraRun: 1500,
+  afterUncontested: 2500, afterShowdown: 5000, perExtraRun: 1500, perExtraBoard: 1000,
   rit: 15000, autoAct: 400,
 };
 
+// The format is a list of steps played in order, then repeated from the top. Each step is one game
+// for one orbit or a set number of hands, dealt on one board or two (double board).
+export const MAX_STEPS = 8;
+
 export const DEFAULT_SETTINGS = {
-  games: ['nlh'],
-  rotateEvery: 'orbit',
-  rotateHands: 10,
+  format: [{ game: 'nlh', length: 'orbit', doubleBoard: false }],
   smallBlind: 5,
   bigBlind: 10,
   minBuyIn: 0,
@@ -24,7 +26,7 @@ export const DEFAULT_SETTINGS = {
   decisionSeconds: 30,
   timeBankSeconds: 60,
   autoApprove: false,
-  bombPot: { mode: 'off', every: 10, percent: 10, anteBB: 2, game: 'current' },
+  bombPot: { mode: 'off', every: 10, percent: 10, anteBB: 2, game: 'current', doubleBoard: false },
   rit: { enabled: true, maxRuns: 4 },
   sessionMinutes: 0,
   revealPolicy: 'hand',
@@ -46,16 +48,76 @@ function numIn(v, lo, hi, label) {
   return Math.round(n * 100) / 100;
 }
 
-export function sanitizeSettings(input = {}, current = DEFAULT_SETTINGS, ctx = {}) {
-  const s = structuredClone(current);
-  const has = (k) => input[k] !== undefined && input[k] !== null;
-  if (has('games')) {
-    const g = [...new Set([].concat(input.games))].filter((x) => GAME_TYPES[x]);
-    if (!g.length) fail('Pick at least one game');
-    s.games = g;
+// Most players a game can be dealt to: everyone's hole cards plus five cards for each board.
+export function capacityFor(game, doubleBoard = false) {
+  const g = GAME_TYPES[game];
+  return Math.min(10, g.maxPlayers, Math.floor((52 - 5 * (doubleBoard ? 2 : 1)) / g.holeCount));
+}
+
+export const formatGames = (format) => [...new Set(format.map((x) => x.game))];
+
+export function stepText(step, short = false) {
+  const g = GAME_TYPES[step.game];
+  const len = step.length === 'orbit' ? 'one orbit' : `${step.length} hand${step.length === 1 ? '' : 's'}`;
+  return `${short ? g.short : g.name}${step.doubleBoard ? ' double board' : ''}, ${len}`;
+}
+
+function cleanStep(x, i) {
+  if (!x || typeof x !== 'object') fail(`Step ${i + 1} of the format is not valid`);
+  if (!GAME_TYPES[x.game]) fail(`Pick a game for step ${i + 1} of the format`);
+  const length = x.length === 'orbit' ? 'orbit' : intIn(x.length, 1, 500, `Hands in step ${i + 1} of the format`);
+  return { game: x.game, length, doubleBoard: !!x.doubleBoard };
+}
+
+// Tables created before the format existed stored a list of games and one rotation rule.
+function legacyFormat(games, rotateEvery, rotateHands) {
+  const list = [...new Set([].concat(games ?? []))].filter((g) => GAME_TYPES[g]);
+  if (!list.length) fail('Pick at least one game');
+  const length = rotateEvery === 'hands' ? Math.max(1, Math.min(500, Math.floor(Number(rotateHands)) || 10)) : 'orbit';
+  return list.map((game) => ({ game, length, doubleBoard: false }));
+}
+
+export function migrateSettings(saved) {
+  const s = { ...structuredClone(DEFAULT_SETTINGS), ...structuredClone(saved || {}) };
+  if (!Array.isArray(saved?.format) || !saved.format.length) s.format = legacyFormat(s.games || ['nlh'], s.rotateEvery, s.rotateHands);
+  s.bombPot = { ...DEFAULT_SETTINGS.bombPot, ...(s.bombPot || {}) };
+  s.rit = { ...DEFAULT_SETTINGS.rit, ...(s.rit || {}) };
+  delete s.games;
+  delete s.rotateEvery;
+  delete s.rotateHands;
+  return s;
+}
+
+// Every (game, double board) combination the table can deal, given its format and bomb pots.
+function dealCombos(s) {
+  const out = s.format.map((x) => [x.game, x.doubleBoard]);
+  if (s.bombPot.mode !== 'off') {
+    for (const x of s.format) out.push([s.bombPot.game === 'current' ? x.game : s.bombPot.game, x.doubleBoard || s.bombPot.doubleBoard]);
   }
-  if (has('rotateEvery')) s.rotateEvery = input.rotateEvery === 'hands' ? 'hands' : 'orbit';
-  if (has('rotateHands')) s.rotateHands = intIn(input.rotateHands, 1, 200, 'Hands per game');
+  return out;
+}
+
+export function seatCap(s) {
+  let cap = 10;
+  let why = null;
+  for (const [g, db] of dealCombos(s)) {
+    const c = capacityFor(g, db);
+    if (c < cap) { cap = c; why = { game: g, doubleBoard: db }; }
+  }
+  return { cap, why };
+}
+
+export function sanitizeSettings(input = {}, current = DEFAULT_SETTINGS, ctx = {}) {
+  const s = migrateSettings(current);
+  const has = (k) => input[k] !== undefined && input[k] !== null;
+  if (has('format')) {
+    if (!Array.isArray(input.format) || !input.format.length) fail('Add at least one game to the format');
+    if (input.format.length > MAX_STEPS) fail(`The format can have at most ${MAX_STEPS} steps`);
+    s.format = input.format.map(cleanStep);
+  } else if (has('games')) {
+    const hands = has('rotateHands') ? intIn(input.rotateHands, 1, 500, 'Hands per game') : 10;
+    s.format = legacyFormat(input.games, input.rotateEvery, hands);
+  }
   if (has('smallBlind')) s.smallBlind = intIn(input.smallBlind, 1, 1e12, 'Small blind');
   if (has('bigBlind')) s.bigBlind = intIn(input.bigBlind, 1, 1e12, 'Big blind');
   if (s.smallBlind > s.bigBlind) fail('The small blind cannot be bigger than the big blind');
@@ -74,6 +136,7 @@ export function sanitizeSettings(input = {}, current = DEFAULT_SETTINGS, ctx = {
       percent: b.percent !== undefined ? numIn(b.percent, 1, 100, 'Bomb pot chance (%)') : s.bombPot.percent,
       anteBB: b.anteBB !== undefined ? numIn(b.anteBB, 0.5, 100, 'Bomb pot size (big blinds)') : s.bombPot.anteBB,
       game: ['current', ...Object.keys(GAME_TYPES)].includes(b.game) ? b.game : s.bombPot.game,
+      doubleBoard: b.doubleBoard !== undefined ? !!b.doubleBoard : s.bombPot.doubleBoard,
     };
   }
   if (has('rit')) {
@@ -90,9 +153,11 @@ export function sanitizeSettings(input = {}, current = DEFAULT_SETTINGS, ctx = {
     s.feltColor = input.feltColor.toLowerCase();
   }
   if (has('decimals')) s.decimals = Number(input.decimals) === 2 ? 2 : 0;
-  const games = [...s.games, s.bombPot.game].filter((g) => g !== 'current');
-  const cap = Math.min(...games.map((g) => GAME_TYPES[g].maxPlayers));
-  if (s.maxPlayers > cap) fail(`PLO5 deals five cards to everyone, so a table that uses it can have at most ${cap} seats`);
+  const { cap, why } = seatCap(s);
+  if (s.maxPlayers > cap && !has('maxPlayers') && (ctx.highestSeat ?? -1) < cap) s.maxPlayers = cap;
+  if (s.maxPlayers > cap) {
+    fail(`${GAME_TYPES[why.game].name}${why.doubleBoard ? ' on two boards' : ''} can be dealt to at most ${cap} players, so this table can have at most ${cap} seats`);
+  }
   if (ctx.highestSeat !== undefined && ctx.highestSeat >= 0 && s.maxPlayers <= ctx.highestSeat) fail('Someone is sitting in a seat you are removing');
   return s;
 }
@@ -107,7 +172,7 @@ export class Table {
     this.clubId = data.clubId || null;
     this.ownerId = data.ownerId;
     this.createdAt = data.createdAt || Date.now();
-    this.settings = data.settings;
+    this.settings = migrateSettings(data.settings);
     this.status = data.status || 'waiting';
     this.paused = !!data.paused;
     this.handNumber = data.handNumber || 0;
@@ -251,7 +316,7 @@ export class Table {
   leave(socket) {
     this.sockets.delete(socket);
     this.broadcast();
-    // a disconnected player in a run-it choice defaults to once
+    // a run-it vote goes ahead without players who disconnect: only votes that came in count
     if (this.hand && this.hand.phase === 'rit') this.afterHandChange();
   }
 
@@ -486,11 +551,14 @@ export class Table {
     this.maybeStartHand();
   }
 
-  startSession() {
+  // clockAtFirstHand: a table that deals on its own starts its time limit with the first hand,
+  // not when it was created and nobody had sat down yet.
+  startSession({ clockAtFirstHand = false } = {}) {
     this.status = 'running';
     this.paused = false;
     this.session.startedAt = Date.now();
-    this.session.endsAt = this.settings.sessionMinutes ? Date.now() + this.settings.sessionMinutes * 60000 : null;
+    this.session.clockAtFirstHand = clockAtFirstHand && !!this.settings.sessionMinutes;
+    this.session.endsAt = this.settings.sessionMinutes && !this.session.clockAtFirstHand ? Date.now() + this.settings.sessionMinutes * 60000 : null;
     this.scheduleSession();
     this.snapshot();
     this.broadcast();
@@ -514,6 +582,10 @@ export class Table {
     this.requireHost(host);
     this.assertOpen();
     minutes = intIn(minutes, -600, 600, 'Minutes');
+    if (this.session.clockAtFirstHand) {
+      this.session.clockAtFirstHand = false;
+      this.session.endsAt = Date.now() + this.settings.sessionMinutes * 60000;
+    }
     const base = this.session.endsAt || Date.now();
     this.session.endsAt = Math.max(Date.now() + 60000, base + minutes * 60000);
     this.endAfterHand = false;
@@ -527,6 +599,7 @@ export class Table {
   hostClearTimeLimit(host) {
     this.requireHost(host);
     this.session.endsAt = null;
+    this.session.clockAtFirstHand = false;
     this.settings.sessionMinutes = 0;
     this.endAfterHand = false;
     this.scheduleSession();
@@ -562,8 +635,12 @@ export class Table {
     const next = sanitizeSettings(input, before, { highestSeat });
     const changes = describeChanges(before, next, (a) => this.fmt(a));
     this.settings = next;
-    if (JSON.stringify(before.games) !== JSON.stringify(next.games)) this.rotation = { index: 0, seen: [], count: 0 };
-    if (before.sessionMinutes !== next.sessionMinutes && this.status === 'running') {
+    const order = (f) => f.map((x) => x.game).join(',');
+    if (order(before.format) !== order(next.format)) this.rotation = { index: 0, seen: [], count: 0 };
+    if (this.session.clockAtFirstHand) {
+      // no hand dealt yet: the clock still starts with the first hand, using the new length
+      this.session.clockAtFirstHand = !!next.sessionMinutes;
+    } else if (before.sessionMinutes !== next.sessionMinutes && this.status === 'running') {
       this.session.endsAt = next.sessionMinutes ? (this.session.startedAt || Date.now()) + next.sessionMinutes * 60000 : null;
       if (this.session.endsAt && this.session.endsAt < Date.now() + 60000) this.session.endsAt = Date.now() + 60000;
       this.scheduleSession();
@@ -627,6 +704,7 @@ export class Table {
     this.log(reason === 'time' ? 'Time is up. The game has ended.' : 'The game has ended.', 'game');
     this.snapshot();
     this.broadcast();
+    if (this.clubId) this.clubs.changed(this.clubId);
   }
 
   // ---------- fairness ----------
@@ -669,7 +747,7 @@ export class Table {
       const me = r.players.find((p) => p.userId === viewerId);
       const pot = (r.results?.pots || []).reduce((s, p) => s + p.amount, 0);
       return {
-        handNumber: r.handNumber, at: r.startedAt, gameType: r.gameType, isBomb: r.isBomb, runCount: r.runCount,
+        handNumber: r.handNumber, at: r.startedAt, gameType: r.gameType, isBomb: r.isBomb, runCount: r.runCount, doubleBoard: !!r.doubleBoard,
         pot, winners: [...new Set((r.results?.payouts || []).map((w) => w.name))], revealed: r.handNumber <= this.revealedThrough,
         myNet: me ? me.net : null, commitment: r.fairness.commitment,
       };
@@ -702,44 +780,44 @@ export class Table {
     return (after || eligible[0]).seat;
   }
 
-  pickGame() {
-    const games = this.settings.games;
-    if (games.length === 1) return games[0];
+  // Picks the format step for the hand about to start. A step played for an orbit ends when the
+  // button reaches a player who already had it during that step.
+  pickStep() {
+    const f = this.settings.format;
+    const r = this.rotation;
+    if (f.length === 1) return f[0];
+    if (!(r.index >= 0 && r.index < f.length)) { r.index = 0; r.seen = []; r.count = 0; }
     const btnUser = this.seats[this.buttonSeat];
-    let switched = false;
-    if (this.settings.rotateEvery === 'orbit') {
-      if (this.rotation.seen.includes(btnUser)) {
-        this.rotation.index = (this.rotation.index + 1) % games.length;
-        this.rotation.seen = [];
-        switched = true;
-      }
-      this.rotation.seen.push(btnUser);
-    } else {
-      if (this.rotation.count >= this.settings.rotateHands) {
-        this.rotation.index = (this.rotation.index + 1) % games.length;
-        this.rotation.count = 0;
-        switched = true;
-      }
-      this.rotation.count++;
+    const step = f[r.index];
+    const done = step.length === 'orbit' ? r.seen.includes(btnUser) : r.count >= step.length;
+    if (done) {
+      r.index = (r.index + 1) % f.length;
+      r.seen = [];
+      r.count = 0;
+      this.log(`Switching to ${stepText(f[r.index])}`, 'game');
     }
-    const g = games[this.rotation.index % games.length];
-    if (switched) this.log(`Switching to ${GAME_TYPES[g].name}`, 'game');
-    return g;
+    r.seen.push(btnUser);
+    r.count++;
+    return f[r.index];
   }
 
   rotationInfo() {
-    const games = this.settings.games;
-    if (games.length < 2) return null;
-    const current = games[this.rotation.index % games.length];
-    const next = games[(this.rotation.index + 1) % games.length];
+    const f = this.settings.format;
+    if (f.length < 2) return null;
+    const i = this.rotation.index >= 0 && this.rotation.index < f.length ? this.rotation.index : 0;
+    const cur = f[i];
+    const next = f[(i + 1) % f.length];
     let left;
-    if (this.settings.rotateEvery === 'orbit') {
+    if (cur.length === 'orbit') {
       const active = this.eligiblePlayers().map((p) => p.userId);
       left = active.filter((u) => !this.rotation.seen.includes(u)).length;
     } else {
-      left = Math.max(0, this.settings.rotateHands - this.rotation.count);
+      left = Math.max(0, cur.length - this.rotation.count);
     }
-    return { current, next, handsLeft: left, every: this.settings.rotateEvery };
+    return {
+      step: i, steps: f.length, current: cur.game, currentDouble: !!cur.doubleBoard,
+      next: next.game, nextDouble: !!next.doubleBoard, handsLeft: left, every: cur.length === 'orbit' ? 'orbit' : 'hands',
+    };
   }
 
   startHand() {
@@ -752,7 +830,9 @@ export class Table {
     if (eligible.length < 2) return false;
     try {
       this.buttonSeat = this.pickButton(eligible);
-      let gameType = this.pickGame();
+      const step = this.pickStep();
+      let gameType = step.game;
+      let doubleBoard = !!step.doubleBoard;
       const pend = this.fair.pending;
       const settled = settleCommitment(this.id, pend);
       const s = this.settings;
@@ -769,13 +849,21 @@ export class Table {
         this.bombNext = false;
         this.handsSinceBomb = 0;
         if (bp.game !== 'current') gameType = bp.game;
+        if (bp.doubleBoard) doubleBoard = true;
       } else {
         this.handsSinceBomb++;
       }
+      // A bomb pot called by hand can ask for more cards than the deck holds; fall back gracefully.
+      const fits = (g, db) => eligible.length * GAME_TYPES[g].holeCount + 5 * (db ? 2 : 1) <= 52;
+      if (!fits(gameType, doubleBoard) && fits(gameType, false)) {
+        doubleBoard = false;
+        this.log(`${eligible.length} players is too many for two boards of ${GAME_TYPES[gameType].short}, so this hand has one board`, 'game');
+      }
+      if (!fits(gameType, doubleBoard)) { gameType = step.game; doubleBoard = !!step.doubleBoard && fits(step.game, true); }
       const number = pend.handNumber;
       const hand = new Hand({
         number, gameType, buttonSeat: this.buttonSeat, smallBlind: s.smallBlind, bigBlind: s.bigBlind,
-        deck: settled.deck, bombAnte, ritMax: s.rit.enabled ? s.rit.maxRuns : 1, fmt: (a) => this.fmt(a),
+        deck: settled.deck, bombAnte, ritMax: s.rit.enabled ? s.rit.maxRuns : 1, fmt: (a) => this.fmt(a), doubleBoard,
         players: eligible.map((p) => ({ id: p.userId, seat: p.seat, name: p.name, stack: p.stack })),
       });
       this.handNumber = number;
@@ -787,6 +875,12 @@ export class Table {
       this.lastHand = null;
       this.fair.pending = newCommitment(number + 1);
       hand.start();
+      if (this.session.clockAtFirstHand) {
+        this.session.clockAtFirstHand = false;
+        this.session.endsAt = Date.now() + s.sessionMinutes * 60000;
+        this.scheduleSession();
+        this.log(`The clock has started: this game ends in ${s.sessionMinutes} minutes`, 'game');
+      }
       this.snapshot();
       this.afterHandChange();
       return true;
@@ -812,12 +906,16 @@ export class Table {
       this.turn = null;
     }
     if (hand.phase === 'rit') {
-      for (const id of hand.rit.eligible) {
+      // Only votes that come in count. Players who left or lost their connection are not waited for:
+      // once everyone still here has voted, the vote ends early.
+      const waiting = hand.rit.eligible.filter((id) => {
+        if (hand.rit.choices.has(id)) return false;
         const p = this.players.get(id);
-        if (!hand.rit.choices.has(id) && (!p || p.leaveAfterHand || !this.isConnected(id))) {
-          hand.setRitChoice(id, 1);
-          if (hand.phase !== 'rit') return this.afterHandChange();
-        }
+        return !!p && !p.leaveAfterHand && this.isConnected(id);
+      });
+      if (!waiting.length) {
+        hand.resolveRit();
+        return this.afterHandChange();
       }
       if (!this.timers.rit) {
         this.ritDeadline = Date.now() + DELAYS.rit;
@@ -833,7 +931,7 @@ export class Table {
     }
     if (hand.pending && !this.timers.advance) {
       let delay = DELAYS.street;
-      if (hand.pending === 'runout') delay = (hand.runCount === 1 && hand.board.length === hand.sharedCount) || (hand.runs && hand.runIndex === 0 && hand.runs[0].length === hand.sharedCount) ? DELAYS.runoutFirst : DELAYS.runout;
+      if (hand.pending === 'runout') delay = hand.runIndex === 0 && hand.boards[0].length === hand.splitAt ? DELAYS.runoutFirst : DELAYS.runout;
       if (hand.pending === 'showdown') delay = DELAYS.showdown;
       this.timers.advance = setTimeout(this.safe(() => {
         this.timers.advance = null;
@@ -959,7 +1057,8 @@ export class Table {
       this.endGame(this.endAfterHand || 'time');
       return;
     }
-    const delay = hand.results.uncontested ? DELAYS.afterUncontested : DELAYS.afterShowdown + (hand.runCount - 1) * DELAYS.perExtraRun;
+    const extra = (hand.runCount - 1) * DELAYS.perExtraRun + (hand.bpr - 1) * DELAYS.perExtraBoard;
+    const delay = hand.results.uncontested ? DELAYS.afterUncontested : DELAYS.afterShowdown + extra;
     this.timers.next = setTimeout(this.safe(() => { this.timers.next = null; this.maybeStartHand(); }), delay);
     this.broadcast();
   }
@@ -977,6 +1076,7 @@ export class Table {
       startedAt: meta.startedAt,
       endedAt: Date.now(),
       gameType: d.gameType,
+      doubleBoard: d.doubleBoard,
       isBomb: d.isBomb,
       bombAnte: d.bombAnte,
       bomb: meta.bomb,
@@ -1005,7 +1105,7 @@ export class Table {
         pots: results.pots.map((p) => ({
           amount: p.amount,
           uncontested: !!p.uncontested,
-          runs: p.runs.map((r) => ({ run: r.run, amount: r.amount, winners: r.winners.map((w) => ({ seat: w.seat, name: w.name, amount: w.amount, hand: w.hand, cards: w.cards })) })),
+          runs: p.runs.map((r) => ({ b: r.b, run: r.run, side: r.side, amount: r.amount, winners: r.winners.map((w) => ({ seat: w.seat, name: w.name, amount: w.amount, hand: w.hand, cards: w.cards })) })),
         })),
         handNames: results.handNames || null,
       },
@@ -1072,9 +1172,10 @@ export class Table {
     const seated = [...this.players.values()];
     return {
       id: this.id, name: this.name, clubId: this.clubId, status: this.status, paused: this.paused,
-      players: seated.length, maxPlayers: this.settings.maxPlayers, games: this.settings.games,
+      players: seated.length, maxPlayers: this.settings.maxPlayers, games: formatGames(this.settings.format), format: this.settings.format,
+      bombMode: this.settings.bombPot.mode,
       smallBlind: this.settings.smallBlind, bigBlind: this.settings.bigBlind, decimals: this.decimals,
-      createdAt: this.createdAt, handNumber: this.handNumber, endsAt: this.session.endsAt,
+      createdAt: this.createdAt, endedAt: this.endedAt, handNumber: this.handNumber, endsAt: this.session.endsAt,
       seated: viewerId ? this.players.has(viewerId) : undefined, isHost: viewerId ? this.isHost(viewerId) : undefined,
       names: seated.map((p) => p.name),
     };
@@ -1137,8 +1238,7 @@ export class Table {
 function describeChanges(a, b, fmt) {
   const out = [];
   const name = (g) => GAME_TYPES[g]?.short || g;
-  if (JSON.stringify(a.games) !== JSON.stringify(b.games)) out.push(`games: ${b.games.map(name).join(' / ')}`);
-  if (b.games.length > 1 && (a.rotateEvery !== b.rotateEvery || a.rotateHands !== b.rotateHands)) out.push(`rotate every ${b.rotateEvery === 'orbit' ? 'orbit' : b.rotateHands + ' hands'}`);
+  if (JSON.stringify(a.format) !== JSON.stringify(b.format)) out.push(`format: ${b.format.map((x) => stepText(x, true)).join(', then ')}`);
   if (a.smallBlind !== b.smallBlind || a.bigBlind !== b.bigBlind) out.push(`blinds ${fmt(b.smallBlind)}/${fmt(b.bigBlind)}`);
   if (a.minBuyIn !== b.minBuyIn || a.maxBuyIn !== b.maxBuyIn) out.push(`buy-in ${b.minBuyIn ? fmt(b.minBuyIn) : 'any'} to ${b.maxBuyIn ? fmt(b.maxBuyIn) : 'any'}`);
   if (a.maxPlayers !== b.maxPlayers) out.push(`${b.maxPlayers} seats`);
@@ -1146,7 +1246,7 @@ function describeChanges(a, b, fmt) {
   if (a.timeBankSeconds !== b.timeBankSeconds) out.push(`time bank ${b.timeBankSeconds}s`);
   if (JSON.stringify(a.bombPot) !== JSON.stringify(b.bombPot)) {
     const bp = b.bombPot;
-    out.push(bp.mode === 'off' ? 'bomb pots off' : `bomb pots ${bp.mode === 'every' ? `every ${bp.every} hands` : `${bp.percent}% of hands`}, ${bp.anteBB} BB each${bp.game !== 'current' ? `, played as ${name(bp.game)}` : ''}`);
+    out.push(bp.mode === 'off' ? 'bomb pots off' : `bomb pots ${bp.mode === 'every' ? `every ${bp.every} hands` : `${bp.percent}% of hands`}, ${bp.anteBB} BB each${bp.game !== 'current' ? `, played as ${name(bp.game)}` : ''}${bp.doubleBoard ? ', double board' : ''}`);
   }
   if (JSON.stringify(a.rit) !== JSON.stringify(b.rit)) out.push(b.rit.enabled ? `run it up to ${TIMES[b.rit.maxRuns]}` : 'run it more than once: off');
   if (a.sessionMinutes !== b.sessionMinutes) out.push(b.sessionMinutes ? `time limit ${b.sessionMinutes} minutes` : 'no time limit');
@@ -1192,9 +1292,10 @@ export class TableManager {
     const n = String(name || '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 40) || `${user.name}'s game`;
     const t = new Table(this, { id: randomId(7), name: n, clubId: clubId || null, ownerId: user.id, settings: s });
     this.tables.set(t.id, t);
-    if (clubId || s.autoStart) t.startSession();
+    if (s.autoStart) t.startSession({ clockAtFirstHand: true });
     t.log(`${user.name} created the table`, 'game');
     t.snapshot();
+    if (clubId) this.clubs.changed(clubId); // members on the club page see the new table
     return t;
   }
 

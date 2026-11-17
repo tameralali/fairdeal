@@ -113,13 +113,24 @@ export function rollFromBlock(block) {
 }
 
 // Rebuilds who got which card from a shuffled deck.
-// dealt = { dealOrder: [seat...], holeCount, sharedCount, boards: [[cards]...] }
+// dealt = { dealOrder: [seat...], holeCount, boards: [[cards]...], placements: [[boardIndex...]...] }
+// placements lists, for every deck card dealt after the hole cards, the board(s) it went to
+// (a card dealt before a hand is run more than once belongs to every run's copy of that board).
+// Older records have no placements: one board per run sharing its first sharedCount cards.
 export function reconstructDeal(deck, dealt) {
   let p = 0;
   const holes = {};
   for (const seat of dealt.dealOrder) holes[seat] = [];
   for (let r = 0; r < dealt.holeCount; r++) {
     for (const seat of dealt.dealOrder) holes[seat].push(deck[p++]);
+  }
+  if (Array.isArray(dealt.placements)) {
+    const boards = dealt.boards.map(() => []);
+    for (const targets of dealt.placements) {
+      const c = deck[p++];
+      for (const b of targets) (boards[b] ||= []).push(c);
+    }
+    return { holes, boards, cardsUsed: p };
   }
   const shared = deck.slice(p, p + dealt.sharedCount);
   p += dealt.sharedCount;

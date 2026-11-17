@@ -91,7 +91,7 @@ class Bot {
     if (!h) return;
     const me = h.players.find((p) => p.id === this.userId);
     if (me && me.hole) {
-      this.observed[h.number] = { mySeat: me.seat, myHole: me.hole, boards: h.runs ? h.runs : [h.board] };
+      this.observed[h.number] = { mySeat: me.seat, myHole: me.hole, boards: h.boards };
     }
     if (this.passive) return;
     if (h.legal && !this.busy) {
@@ -108,7 +108,7 @@ class Bot {
     }
     if (h.rit && h.rit.canChoose && h.rit.myChoice === null && !this.ritBusy) {
       this.ritBusy = true;
-      this.socket.emit('rit', { runs: 1 + Math.floor(this.rng() * 4) }, () => { this.ritBusy = false; });
+      this.socket.emit('rit', { runs: this.rng() < 0.25 ? 1 : 2 + Math.floor(this.rng() * 3) }, () => { this.ritBusy = false; });
     }
   }
   close() { this.socket?.close(); }
@@ -152,8 +152,9 @@ test('standalone game: approvals, mixed games, bombs, multi-runs, ledger and ver
   const { id } = await call('POST', '/api/tables', {
     name: 'Thursday game',
     settings: {
-      games: ['plo4', 'nlh'], rotateEvery: 'orbit', smallBlind: 5, bigBlind: 10, minBuyIn: 500, maxBuyIn: 3000,
-      bombPot: { mode: 'percent', percent: 30, anteBB: 2, game: 'current' }, rit: { enabled: true, maxRuns: 4 },
+      format: [{ game: 'plo4', length: 'orbit' }, { game: 'nlh', length: 4, doubleBoard: true }],
+      smallBlind: 5, bigBlind: 10, minBuyIn: 500, maxBuyIn: 3000,
+      bombPot: { mode: 'percent', percent: 30, anteBB: 2, game: 'current', doubleBoard: true }, rit: { enabled: true, maxRuns: 4 },
       decisionSeconds: 5, timeBankSeconds: 0, revealPolicy: 'hand',
     },
   }, host.token);
@@ -199,8 +200,22 @@ test('standalone game: approvals, mixed games, bombs, multi-runs, ledger and ver
   assert.ok(games.has('plo4') && games.has('nlh'), 'rotation used both games');
   const bombs = recs.filter((x) => x.isBomb).length;
   const multi = recs.filter((x) => x.runCount > 1).length;
-  console.log(`hands ${recs.length}, bombs ${bombs}, multi-run ${multi}, games ${[...games]}, rebuys ${bots.reduce((x, b) => x + (b.rebuys || 0), 0)}`);
+  const doubles = recs.filter((x) => x.doubleBoard).length;
+  console.log(`hands ${recs.length}, bombs ${bombs}, multi-run ${multi}, double board ${doubles}, games ${[...games]}, rebuys ${bots.reduce((x, b) => x + (b.rebuys || 0), 0)}`);
   assert.ok(bombs > 3, 'bomb pots happened');
+  assert.ok(doubles > 10, 'double board hands happened');
+  for (const x of recs) {
+    if (x.isBomb) assert.equal(x.doubleBoard, true, 'bomb pots are double board');
+    else if (x.gameType === 'nlh') assert.equal(x.doubleBoard, true, 'the NLH step is double board');
+    else assert.equal(x.doubleBoard, false, 'the PLO step has one board');
+    if (x.doubleBoard && !x.results.uncontested) assert.equal(x.dealt.boards.length, 2 * x.runCount);
+  }
+  // the NLH step lasts exactly 4 hands, bomb pots included (they are played as the current game)
+  let streak = 0;
+  for (const x of recs) {
+    if (x.gameType === 'nlh') streak++;
+    else { if (streak) assert.equal(streak, 4, 'NLH step lasts 4 hands'); streak = 0; }
+  }
 
   const v = await verifyAll(id, bots, host.token);
   console.log('verified', v);
@@ -266,6 +281,18 @@ test('club: invites, approvals, chips, credit limits, buy-ins draw from balance,
   assert.equal(view.club.members.find((x) => x.userId === m2.user.id).balance, undefined, 'members cannot see others by default');
 
   const { id: tableId } = await call('POST', `/api/clubs/${clubId}/tables`, { name: 'Club PLO', settings: { games: ['plo5'], smallBlind: 25, bigBlind: 50, decisionSeconds: 5, timeBankSeconds: 0, bombPot: { mode: 'every', every: 3, anteBB: 1 } } }, owner.token);
+  // the start-a-game form sends a format; PLO5 on two boards only fits eight players
+  await assert.rejects(call('POST', `/api/clubs/${clubId}/tables`, { settings: { format: [{ game: 'plo5', length: 'orbit', doubleBoard: true }], maxPlayers: 9 } }, owner.token), /at most 8 seats/);
+  await assert.rejects(call('POST', `/api/clubs/${clubId}/tables`, { settings: { format: [] } }, owner.token), /at least one game/);
+  await assert.rejects(call('POST', `/api/clubs/${clubId}/tables`, { settings: { format: [{ game: 'nlh', length: 'orbit' }] } }, m1.token), /managers/);
+  const { id: laterId } = await call('POST', `/api/clubs/${clubId}/tables`, {
+    name: 'Saturday', settings: { format: [{ game: 'plo4', length: 'orbit' }, { game: 'nlh', length: 10, doubleBoard: true }], autoStart: false, maxPlayers: 7, bombPot: { mode: 'every', every: 8, anteBB: 2, game: 'plo4', doubleBoard: true } },
+  }, owner.token);
+  view = await call('GET', `/api/clubs/${clubId}`, null, owner.token);
+  const later = view.tables.find((x) => x.id === laterId);
+  assert.equal(later.status, 'waiting', 'a table can wait for the host to start it');
+  assert.deepEqual(later.format.map((x) => [x.game, x.length, x.doubleBoard]), [['plo4', 'orbit', false], ['nlh', 10, true]]);
+  assert.equal(srv.tables.get(laterId).settings.bombPot.doubleBoard, true);
   const outsider = new Bot('Drifter', guest, 9);
   await assert.rejects(outsider.connect(tableId), /club members/);
   outsider.close();
@@ -306,6 +333,26 @@ test('club: invites, approvals, chips, credit limits, buy-ins draw from balance,
   assert.match(csv, /buyin/);
   assert.match(csv, /chips_add/);
   bots.forEach((b) => b.close());
+});
+
+test('a table that deals on its own starts its time limit with the first hand', { timeout: 60000 }, async () => {
+  const a = await call('POST', '/api/auth/guest', { name: 'Early' });
+  const b = await call('POST', '/api/auth/guest', { name: 'Late' });
+  const { id } = await call('POST', '/api/tables', { settings: { autoStart: true, autoApprove: true, sessionMinutes: 120, decisionSeconds: 5, timeBankSeconds: 0 } }, a.token);
+  let t = await call('GET', `/api/tables/${id}`, null, a.token);
+  assert.equal(t.status, 'running');
+  assert.equal(t.endsAt, null, 'no clock while nobody is playing');
+  const bots = [new Bot('Early', a, 3), new Bot('Late', b, 4)];
+  for (const x of bots) await x.connect(id);
+  await bots[0].emit('seat:request', { seat: 0, buyIn: 1000 });
+  await wait(300);
+  assert.equal((await call('GET', `/api/tables/${id}`, null, a.token)).endsAt, null, 'one player does not start the clock');
+  const before = Date.now();
+  await bots[1].emit('seat:request', { seat: 1, buyIn: 1000 });
+  await until(() => (bots[0].state?.table.handNumber || 0) >= 1, 10000, 'first hand');
+  t = await call('GET', `/api/tables/${id}`, null, a.token);
+  assert.ok(t.endsAt >= before + 120 * 60000 && t.endsAt <= Date.now() + 120 * 60000, 'clock runs from the first hand');
+  bots.forEach((x) => x.close());
 });
 
 test('accounts: login, guest upgrade, rename', async () => {

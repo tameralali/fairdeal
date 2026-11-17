@@ -7,6 +7,7 @@ import { bestHand } from '/shared/evaluator.js';
 import { GAME_TYPES } from '/shared/cards.js';
 import { app, emit, fmt, inp, parse, gameShort, now } from './table-core.js';
 import * as D from './table-dialogs.js';
+import { boardName, stepLabel } from './game-form.js';
 
 export const BRAND_HEX = '6f3ac1d0a85c2e94b7f1036d4e5a9c8b21f0e7d6c5b4a39281706f5e4d3c2b1a';
 const TIMES = ['', 'once', 'twice', 'three times', 'four times'];
@@ -154,11 +155,15 @@ function renderTop(s) {
   const t = s.table;
   const st = t.settings;
   const live = s.hand && s.hand.phase !== 'done';
-  const game = live ? s.hand.gameType : t.rotation ? t.rotation.current : st.games[0];
+  const first = st.format[0];
+  const game = live ? s.hand.gameType : t.rotation ? t.rotation.current : first.game;
+  const dbNow = live ? s.hand.doubleBoard : t.rotation ? t.rotation.currentDouble : first.doubleBoard;
   let rot = '';
   if (t.rotation) {
     const r = t.rotation;
-    rot = `${gameShort(r.current)} for ${r.handsLeft} more hand${r.handsLeft === 1 ? '' : 's'}, then ${gameShort(r.next)}`;
+    const cur = stepLabel({ game: r.current, doubleBoard: r.currentDouble });
+    const next = stepLabel({ game: r.next, doubleBoard: r.nextDouble });
+    rot = r.handsLeft > 0 ? `${cur} for ${r.handsLeft} more hand${r.handsLeft === 1 ? '' : 's'}, then ${next}` : `${next} from the next hand`;
   }
   let bomb = '';
   if (t.bombNext) bomb = '<span class="pill brass">Bomb pot next hand</span>';
@@ -180,12 +185,13 @@ function renderTop(s) {
     <a class="wordmark" href="/" title="Lobby">${sealSVG(BRAND_HEX, 26, 'The Aquarium')}<span>The <b>Aquarium</b></span></a>
     <div class="tb-title"><strong>${esc(t.name)}</strong>${t.clubId ? `<a href="/club/${esc(t.clubId)}">${esc(t.clubName || 'Club')}</a>` : ''}</div>
     <div class="tb-game">
-      <span class="pill brass" title="${esc(GAME_TYPES[game]?.name || '')}">${esc(gameShort(game))}</span>
+      <span class="pill brass" title="${esc(GAME_TYPES[game]?.name || '')}">${esc(gameShort(game))}</span>${dbNow ? '<span class="pill soft" title="Two boards, each pot split between them">Double board</span>' : ''}
       <span class="pill num">${fmt(st.smallBlind)}/${fmt(st.bigBlind)}</span>
       ${rot ? `<span class="tb-note">${esc(rot)}</span>` : ''}
       ${bomb}${status}
     </div>
     ${ends && t.status === 'running' ? `<div class="tb-clock" data-ends="${ends}" title="Time left in this game"><b>--:--</b><small>left</small></div>` : ''}
+    ${t.session && t.session.clockAtFirstHand && st.sessionMinutes ? `<span class="pill soft tb-wait" title="The time limit starts with the first hand">${st.sessionMinutes} min game, clock starts with the first hand</span>` : ''}
     <div class="tb-actions">
       <button class="seal-btn" data-open="fair" title="Deck seal for the next hand">${sealSVG(f.commitment, 30)}<span class="txt"><b>Hand #${f.handNumber} sealed</b>${f.contributions} player input${f.contributions === 1 ? '' : 's'}</span></button>
       ${reqs ? `<button class="btn primary small" data-open="requests">Requests <span class="count">${reqs}</span></button>` : ''}
@@ -206,7 +212,7 @@ function resultInfo(h) {
   for (const p of h.results.payouts) info.won.set(p.seat, (info.won.get(p.seat) || 0) + p.amount);
   if (!h.results.uncontested) {
     h.results.pots.forEach((pot, pi) => pot.runs.forEach((r) => {
-      const used = (info.boardUsed[r.run] ||= new Set());
+      const used = (info.boardUsed[r.b ?? r.run] ||= new Set());
       for (const w of r.winners) {
         if (!w.cards) continue;
         if (pi === 0) w.cards.forEach((c) => used.add(c));
@@ -281,10 +287,10 @@ function renderTable(s) {
     }
     let strength = '';
     if (isMe && prefs.handStrength && p && p.hole && !p.folded) {
-      const board = h.runs ? h.runs[0] : h.board;
-      if (board.length >= 3) {
-        const r = bestHand(p.hole, board, GAME_TYPES[h.gameType].omaha);
-        if (r) strength = `<div class="strength">${esc(r.name)}</div>`;
+      const firstRun = (h.boards || [h.board]).slice(0, h.boardsPerRun || 1);
+      if (firstRun[0].length >= 3) {
+        const names = firstRun.map((b) => bestHand(p.hole, b, GAME_TYPES[h.gameType].omaha)?.name).filter(Boolean);
+        if (names.length) strength = `<div class="strength">${esc(names.join(' / '))}</div>`;
       }
     }
     const stack = p ? p.stack : info.stack;
@@ -313,31 +319,46 @@ function centerHTML(s, R) {
   const h = s.hand;
   const t = s.table;
   if (!h) return waitingHTML(s);
-  const boards = h.runs || [h.board];
-  const k = boards.length;
-  const rows = boards.map((b, i) => {
-    let slots = '';
-    for (let j = 0; j < 5; j++) {
-      const c = b[j];
-      if (!c) { slots += slotHTML(); continue; }
+  const boards = h.boards || [h.board];
+  const bpr = h.boardsPerRun || 1;
+  const runs = Math.max(1, Math.round(boards.length / bpr));
+  // On a phone held upright, a double board with one run is stacked: board 1 above board 2.
+  const stacked = app.portrait && bpr > 1 && runs === 1;
+  let grid = '';
+  if (bpr > 1 && !stacked) grid += `${runs > 1 ? '<span></span>' : ''}${Array.from({ length: bpr }, (_, i) => `<span class="bhead">Board ${i + 1}</span>`).join('')}`;
+  for (let r = 0; r < runs; r++) {
+    if (runs > 1) grid += `<span class="run">Run ${r + 1}</span>`;
+    for (let side = 0; side < bpr; side++) {
+      const i = r * bpr + side;
+      if (stacked) grid += `<span class="run">Board ${side + 1}</span>`;
+      const b = boards[i] || [];
       const used = R.boardUsed[i];
-      const cls = [dealCls(`r${i}${j}${c}`), k > 1 && i > 0 && j < h.sharedCount ? 'shared' : '', used ? (used.has(c) ? 'win' : 'dim') : ''].join(' ');
-      slots += cardHTML(c, cls);
+      let slots = '';
+      for (let j = 0; j < 5; j++) {
+        const c = b[j];
+        if (!c) { slots += slotHTML(); continue; }
+        const cls = [dealCls(`r${i}${j}${c}`), r > 0 && j < (h.sharedCount ?? 0) ? 'shared' : '', used ? (used.has(c) ? 'win' : 'dim') : ''].join(' ');
+        slots += cardHTML(c, cls);
+      }
+      grid += `<div class="board" aria-label="${esc(boardName(i, bpr, boards.length) || 'Board')}">${slots}</div>`;
     }
-    return `<div class="board">${k > 1 ? `<span class="run">Run ${i + 1}</span>` : ''}${slots}</div>`;
-  }).join('');
+  }
+  const cols = stacked ? 'auto auto' : `${runs > 1 ? 'auto ' : ''}repeat(${bpr}, auto)`;
   let below = '';
   if (h.phase === 'done' && h.results) {
     below = `<div class="results">${resultLines(h).map((l) => `<div>${l}</div>`).join('')}</div>`;
     if (t.waiting && t.waiting !== 'Waiting for players') below += `<div class="waiting"><small>${esc(t.waiting)}</small></div>`;
   } else {
     below = `<div class="pot"><span>Pot ${fmt(h.potTotal)}</span></div>`;
-    if (h.phase === 'rit') below += '<div class="rit-note">Everyone is all in: choosing how many times to run it</div>';
-    else if (h.rit && h.rit.result > 1) below += `<div class="rit-note">Running it ${TIMES[h.rit.result]}</div>`;
+    if (h.phase === 'rit') {
+      const voted = h.rit ? h.rit.chosenSeats.length : 0;
+      const of = h.rit ? h.rit.eligibleSeats.length : 0;
+      below += `<div class="rit-note">All in. Voting on how many times to run it: ${voted} of ${of} voted, <span data-ritclock></span></div>`;
+    } else if (h.rit && h.rit.result > 1) below += `<div class="rit-note">Running it ${TIMES[h.rit.result]}</div>`;
   }
   const bombWhy = h.bombReason === 'manual' ? 'called by the host' : h.bombReason === 'every' ? 'scheduled' : h.bombReason === 'percent' ? 'random' : '';
   return `<div class="meta">${h.isBomb ? `<span class="bomb" title="${esc(bombWhy)}">Bomb pot</span>` : ''}<span>${esc(gameShort(h.gameType))} hand ${h.number}</span></div>
-    <div class="boards k${k}">${rows}</div>${below}`;
+    <div class="boards k${Math.min(runs, 4)} b${bpr}${stacked ? ' stacked' : ''}" style="grid-template-columns:${cols}">${grid}</div>${below}`;
 }
 
 function resultLines(h) {
@@ -346,27 +367,48 @@ function resultLines(h) {
     const w = r.payouts[0];
     return [`<b>${esc(w.name)}</b> wins ${fmt(w.amount)}`];
   }
-  // One line per run: each winner's total on that run and the hand that won it.
-  const k = r.boards.length;
-  const perRun = Array.from({ length: k }, () => new Map());
+  const nb = r.boards.length;
+  const bpr = h.boardsPerRun || 1;
+  // each board: every winner's total on it and the hand that won
+  const per = Array.from({ length: nb }, () => new Map());
   const alone = new Map();
   r.pots.forEach((pot) => pot.runs.forEach((run) => {
     for (const w of run.winners) {
       if (pot.uncontested) { alone.set(w.name, (alone.get(w.name) || 0) + w.amount); continue; }
-      const m = perRun[run.run];
+      const m = per[run.b ?? run.run];
       const cur = m.get(w.seat) || { name: w.name, amount: 0, hand: w.hand };
       cur.amount += w.amount;
       m.set(w.seat, cur);
     }
   }));
   const lines = [];
-  perRun.forEach((m, i) => {
-    const parts = [...m.values()].sort((a, b) => b.amount - a.amount).map((x) => `<b>${esc(x.name)}</b> ${fmt(x.amount)} with ${esc(x.hand)}`);
-    if (!parts.length) return;
-    if (k > 1) lines.push(`Run ${i + 1}: ${parts.join(', ')}`);
-    else if (parts.length === 1) lines.push(parts[0].replace('</b> ', '</b> wins '));
-    else lines.push(parts.join(', '));
-  });
+  if (nb > 2) {
+    // three or more boards: one line per winner, so the felt stays readable (the log has every board)
+    const tot = new Map();
+    per.forEach((m) => m.forEach((x, seat) => {
+      const t = tot.get(seat) || { name: x.name, amount: 0, boards: 0 };
+      t.amount += x.amount;
+      t.boards++;
+      tot.set(seat, t);
+    }));
+    const list = [...tot.values()].sort((a, b) => b.amount - a.amount);
+    if (list.length === 1) {
+      const x = list[0];
+      lines.push(`<b>${esc(x.name)}</b> wins ${fmt(x.amount)} ${x.boards === nb ? `on all ${nb} boards` : `on ${x.boards} of ${nb} boards`}`);
+    } else if (list.length) {
+      const parts = list.map((x) => `<b>${esc(x.name)}</b> ${fmt(x.amount)}`);
+      lines.push(`${parts.slice(0, -1).join(', ')} and ${parts.at(-1)} over ${nb} boards`);
+    }
+  } else {
+    per.forEach((m, i) => {
+      const parts = [...m.values()].sort((a, b) => b.amount - a.amount).map((x) => `<b>${esc(x.name)}</b> ${fmt(x.amount)} with ${esc(x.hand)}`);
+      if (!parts.length) return;
+      const label = boardName(i, bpr, nb);
+      if (label) lines.push(`${label}: ${parts.join(', ')}`);
+      else if (parts.length === 1) lines.push(parts[0].replace('</b> ', '</b> wins '));
+      else lines.push(parts.join(', '));
+    });
+  }
   for (const [name, amount] of alone) lines.push(`<b>${esc(name)}</b> takes ${fmt(amount)} from a side pot nobody else was left in`);
   return lines.slice(0, 5);
 }
@@ -438,20 +480,25 @@ function renderActions(s) {
   }
   app.actionKey = null;
   if (h && h.rit && h.rit.canChoose && h.rit.myChoice === null) {
-    els.actions.innerHTML = `<div class="rit-box"><p>Run it how many times?<small>The lowest choice is used. <span data-ritclock></span></small></p>
-      ${Array.from({ length: h.rit.max }, (_, i) => `<button class="act ${i === 0 ? 'call' : 'raise'}" data-run="${i + 1}"><span class="amt">${i + 1}×</span></button>`).join('')}</div>`;
+    els.actions.innerHTML = `<div class="rit-box" role="group" aria-label="Vote on how many times to run it"><p>Run it how many times?<small>Any vote for once wins, otherwise the lowest vote. <span data-ritclock></span></small></p>
+      ${Array.from({ length: h.rit.max }, (_, i) => `<button class="act ${i === 0 ? 'call' : 'raise'}" data-run="${i + 1}"><span>${TIMES[i + 1][0].toUpperCase() + TIMES[i + 1].slice(1)}</span></button>`).join('')}</div>`;
     tick();
     return;
   }
   let status = '';
   if (h && h.phase !== 'done') {
-    if (h.phase === 'rit') status = h.rit && h.rit.myChoice ? `You picked ${h.rit.myChoice}. Waiting for the others.` : 'Players are choosing how many times to run it';
-    else if (h.actorSeat !== null && h.actorSeat !== undefined) {
+    if (h.phase === 'rit') {
+      const left = h.rit ? h.rit.eligibleSeats.length - h.rit.chosenSeats.length : 0;
+      status = h.rit && h.rit.myChoice
+        ? `You voted ${TIMES[h.rit.myChoice]}. Waiting for ${left} more vote${left === 1 ? '' : 's'}, <span data-ritclock></span>`
+        : 'The players in the hand are voting on how many times to run it';
+    } else if (h.actorSeat !== null && h.actorSeat !== undefined) {
       const a = s.seats[h.actorSeat];
       if (a && a.userId !== s.me.userId) status = `Waiting for ${esc(a.name)}`;
     }
   }
   els.actions.innerHTML = status ? `<div class="status-line">${status}</div>` : '';
+  if (status) tick();
 }
 
 function raiseLabel(L, to) {
@@ -506,8 +553,9 @@ function tick() {
     ac.textContent = `${h.turn.usingBank ? 'Bank ' : ''}${Math.max(0, Math.ceil(left / 1000))}s`;
     ac.classList.toggle('low', left < 8000);
   }
-  const rc = document.querySelector('[data-ritclock]');
-  if (rc && h && h.ritDeadline) rc.textContent = `Once in ${Math.max(0, Math.ceil((h.ritDeadline - t) / 1000))}s if you don’t pick.`;
+  for (const rc of document.querySelectorAll('[data-ritclock]')) {
+    if (h && h.ritDeadline) rc.textContent = `${Math.max(0, Math.ceil((h.ritDeadline - t) / 1000))}s left`;
+  }
   const clk = document.querySelector('[data-ends]');
   if (clk) {
     const left = Number(clk.dataset.ends) - t;
@@ -523,7 +571,7 @@ function entryHTML(e) {
   if (e.kind === 'chat') return `<div class="e k-chat ${e.spectator ? 'spec' : ''}"><b>${esc(e.name)}</b> ${esc(e.text)}</div>`;
   let text = e.text;
   const m = /^-- starting hand #(\d+) \((.+?)\) \(dealer: (.+)\) --$/.exec(text);
-  if (m) text = `Hand #${m[1]}, ${m[2].replace('BOMB POT, ', 'bomb pot, ')}, dealer ${m[3]}`;
+  if (m) text = `Hand #${m[1]}, ${m[2].replace('BOMB POT, ', 'bomb pot, ').replace('DOUBLE BOARD, ', 'double board, ')}, dealer ${m[3]}`;
   const kinds = String(e.kind).split(' ').map((k) => 'k-' + k.replace(/[^a-z-]/g, '')).join(' ');
   return `<div class="e ${kinds}">${suitText(esc(text))}</div>`;
 }

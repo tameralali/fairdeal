@@ -138,3 +138,38 @@ test('deal reconstruction and full verification', async () => {
   bad2.fairness.serverSeed = newServerSeed();
   assert.equal((await verifyHandRecord(bad2, wc)).ok, false);
 });
+
+test('double board run twice: a played hand record passes every check, a moved card fails', async () => {
+  const { Hand } = await import('../server/engine/hand.js');
+  const wc = webCryptoAdapter();
+  const serverSeed = newServerSeed();
+  const seeds = ['aa11bb22cc33dd44', '0f1e2d3c4b5a6978'];
+  const entropy = buildEntropy('T2', 3, seeds);
+  const deck = deriveDeckSync(hmacSync, serverSeed, entropy);
+  const h = new Hand({
+    number: 3, gameType: 'plo4', smallBlind: 5, bigBlind: 10, buttonSeat: 0, deck, ritMax: 2, doubleBoard: true,
+    players: [{ id: 'a', seat: 0, name: 'A', stack: 500 }, { id: 'b', seat: 1, name: 'B', stack: 500 }, { id: 'c', seat: 2, name: 'C', stack: 500 }],
+  });
+  h.start();
+  while (h.phase === 'betting') {
+    const p = h.actor();
+    const l = h.legalActions(p.id);
+    h.act(p.id, l.canRaise ? { type: 'allin' } : { type: 'call' });
+  }
+  for (const id of h.rit.eligible) h.setRitChoice(id, 2);
+  while (h.phase !== 'done') h.advance();
+  const d = h.recordData();
+  const holes = Object.fromEntries(d.players.map((p) => [p.seat, p.hole]));
+  const record = {
+    tableId: 'T2', handNumber: 3,
+    fairness: { serverSeed, commitment: sha256Hex(serverSeed), entropy, contributions: seeds.map((seed, i) => ({ seat: i, seed })), deck },
+    dealt: { ...d.dealt, holes },
+  };
+  assert.equal(record.dealt.boards.length, 4);
+  const res = await verifyHandRecord(record, wc, { commitment: record.fairness.commitment, mySeed: seeds[1], mySeat: 1, myHole: holes[1], boards: record.dealt.boards });
+  assert.ok(res.ok, JSON.stringify(res.checks, null, 1));
+  assert.ok(res.checks.some((c) => /All 4 boards/.test(c.label)));
+  const bad = structuredClone(record);
+  [bad.dealt.boards[1][4], bad.dealt.boards[3][4]] = [bad.dealt.boards[3][4], bad.dealt.boards[1][4]];
+  assert.equal((await verifyHandRecord(bad, wc)).ok, false);
+});

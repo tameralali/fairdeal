@@ -26,7 +26,7 @@ function mk(players, opts = {}) {
   return new Hand({
     number: 1, gameType: opts.gameType || 'nlh', smallBlind: opts.sb ?? 5, bigBlind: opts.bb ?? 10,
     buttonSeat: opts.button ?? players[0].seat, deck: opts.deck || CANONICAL_DECK.slice(),
-    bombAnte: opts.bombAnte || 0, ritMax: opts.ritMax || 1,
+    bombAnte: opts.bombAnte || 0, ritMax: opts.ritMax || 1, doubleBoard: !!opts.doubleBoard,
     players: players.map((p, i) => ({ id: p.id || 'p' + p.seat, seat: p.seat, name: p.name || 'P' + p.seat, stack: p.stack ?? 1000 })),
   });
 }
@@ -161,7 +161,7 @@ test('run it twice: two boards from consecutive deck cards, pot split per run', 
   h.setRitChoice('p1', 4); // capped at max 2; result = min = 2
   assert.equal(h.phase, 'runout');
   while (h.phase !== 'done') h.advance();
-  assert.equal(h.runs.length, 2);
+  assert.equal(h.boards.length, 2);
   const rec = h.recordData();
   const rebuilt = reconstructDeal(deck, rec.dealt);
   assert.deepEqual(rebuilt.boards, rec.dealt.boards);
@@ -170,18 +170,114 @@ test('run it twice: two boards from consecutive deck cards, pot split per run', 
   assert.equal(total(h), 2000);
 });
 
-test('run it: lowest choice wins, and missing answers count as once', () => {
-  const h = mk([{ seat: 0 }, { seat: 1 }, { seat: 2 }], { button: 0, ritMax: 4, gameType: 'nlh' });
+function allInPreflop(n, opts = {}) {
+  const h = mk(Array.from({ length: n }, (_, i) => ({ seat: i })), { button: 0, ritMax: 4, ...opts });
+  h.start();
+  while (h.phase === 'betting') {
+    const a = h.actor();
+    const l = h.legalActions(a.id);
+    h.act(a.id, l.canRaise ? { type: 'allin' } : { type: 'call' });
+  }
+  return h;
+}
+
+test('run it vote: only votes that came in count, and the lowest one is used', () => {
+  const h = allInPreflop(3);
+  assert.equal(h.phase, 'rit');
+  h.setRitChoice('p0', 4);
+  h.setRitChoice('p1', 3);
+  assert.equal(h.phase, 'rit', 'still waiting for the third player');
+  h.resolveRit(); // the 15 second timer ran out; p2 never voted
+  assert.equal(h.runCount, 3);
+  while (h.phase !== 'done') h.advance();
+  assert.equal(h.boards.length, 3);
+  assert.equal(total(h), 3000);
+});
+
+test('run it vote: one vote for once decides it straight away', () => {
+  const h = allInPreflop(3);
+  h.setRitChoice('p0', 4);
+  h.setRitChoice('p2', 1);
+  assert.equal(h.phase, 'runout', 'no need to wait for the last vote');
+  assert.equal(h.runCount, 1);
+  assert.equal(h.rit.result, 1);
+  assert.throws(() => h.setRitChoice('p1', 4), /no vote/);
+});
+
+test('run it vote: nobody voting means once, and a vote cannot be changed', () => {
+  const h = allInPreflop(2);
+  h.resolveRit();
+  assert.equal(h.runCount, 1);
+  const h2 = allInPreflop(3);
+  h2.setRitChoice('p0', 3);
+  assert.throws(() => h2.setRitChoice('p0', 2), /already voted/);
+});
+
+test('run it vote happens before anyone turns their cards over', () => {
+  const h = allInPreflop(2);
+  assert.equal(h.phase, 'rit');
+  assert.equal(h.publicState('p1').players.find((p) => p.id === 'p0').hole, null, 'cards still face down while voting');
+  assert.ok(!h.players.some((p) => p.shown));
+  h.setRitChoice('p0', 2);
+  h.setRitChoice('p1', 2);
+  assert.ok(h.players.every((p) => p.shown), 'cards turned over once the vote is done');
+  assert.deepEqual(h.publicState('p1').players.find((p) => p.id === 'p0').hole, h.byId('p0').hole);
+});
+
+test('double board: one pot, half on each board', () => {
+  // heads-up, button seat 0: dealing starts with seat 1. Seat 0 holds aces, seat 1 holds 7-2.
+  // board 1 is dry (aces win), board 2 fills up seat 1 (sevens full).
+  const deck = stackedDeck(['7c', 'As', '2d', 'Ah', 'Kd', '9s', '4c', '7h', '7s', '2c', '3h', 'Jd', '8d', 'Qc']);
+  const h = mk([{ seat: 0 }, { seat: 1 }], { button: 0, deck, doubleBoard: true });
   h.start();
   h.act('p0', { type: 'allin' });
   h.act('p1', { type: 'call' });
-  h.act('p2', { type: 'call' });
-  h.setRitChoice('p0', 4);
-  h.setRitChoice('p1', 3);
-  h.resolveRit();
-  assert.equal(h.runCount, 1);
   while (h.phase !== 'done') h.advance();
-  assert.equal(total(h), 3000);
+  assert.deepEqual(h.boards, [['Kd', '9s', '4c', '3h', '8d'], ['7h', '7s', '2c', 'Jd', 'Qc']]);
+  const runs = h.results.pots[0].runs;
+  assert.equal(runs.length, 2);
+  assert.deepEqual(runs.map((r) => r.winners.map((w) => w.id)), [['p0'], ['p1']]);
+  assert.deepEqual(runs.map((r) => r.amount), [1000, 1000]);
+  assert.equal(h.byId('p0').stack, 1000);
+  assert.equal(h.byId('p1').stack, 1000);
+  const rec = h.recordData();
+  assert.equal(rec.doubleBoard, true);
+  assert.deepEqual(reconstructDeal(deck, rec.dealt).boards, rec.dealt.boards);
+});
+
+test('double board run twice: four boards, shared flops, every card rebuilt from the deck', () => {
+  const h = mk([{ seat: 0 }, { seat: 1 }], { button: 0, doubleBoard: true, ritMax: 4, deck: deriveDeckSync(hmacSync, 'db-seed', 'db') });
+  h.start();
+  h.act('p0', { type: 'call' });
+  h.act('p1', { type: 'check' });
+  h.advance(); // flop on both boards
+  assert.equal(h.boards.length, 2);
+  assert.ok(h.boards.every((b) => b.length === 3));
+  h.act('p1', { type: 'allin' });
+  h.act('p0', { type: 'call' });
+  assert.equal(h.phase, 'rit');
+  h.setRitChoice('p0', 2);
+  h.setRitChoice('p1', 3);
+  assert.equal(h.runCount, 2);
+  while (h.phase !== 'done') h.advance();
+  assert.equal(h.boards.length, 4);
+  assert.ok(h.boards.every((b) => b.length === 5));
+  assert.deepEqual(h.boards[2].slice(0, 3), h.boards[0].slice(0, 3), 'run 2 board 1 keeps the board 1 flop');
+  assert.deepEqual(h.boards[3].slice(0, 3), h.boards[1].slice(0, 3), 'run 2 board 2 keeps the board 2 flop');
+  const runs = h.results.pots[0].runs;
+  assert.deepEqual(runs.map((r) => [r.run, r.side]), [[0, 0], [0, 1], [1, 0], [1, 1]]);
+  assert.equal(runs.reduce((s, r) => s + r.amount, 0), 2000);
+  assert.equal(total(h), 2000);
+  const rec = h.recordData();
+  const rebuilt = reconstructDeal(h.deck, rec.dealt);
+  assert.deepEqual(rebuilt.boards, rec.dealt.boards);
+  assert.equal(rebuilt.cardsUsed, 4 + 6 + 8);
+});
+
+test('double board needs ten board cards: a full PLO5 table cannot have it', () => {
+  const players = Array.from({ length: 9 }, (_, i) => ({ seat: i }));
+  assert.throws(() => mk(players, { gameType: 'plo5', doubleBoard: true }), /too many players/);
+  assert.doesNotThrow(() => mk(players.slice(0, 8), { gameType: 'plo5', doubleBoard: true }));
 });
 
 test('PLO5 deck limits how many runs are possible', () => {
@@ -215,7 +311,7 @@ function randomAction(legal, rng) {
 function simulate(seed, hands) {
   const rng = rngFrom(seed);
   const games = Object.keys(GAME_TYPES);
-  let multiRuns = 0, bombs = 0, sidePots = 0;
+  let multiRuns = 0, bombs = 0, sidePots = 0, doubleBoards = 0;
   for (let n = 0; n < hands; n++) {
     const gameType = games[Math.floor(rng() * games.length)];
     const maxP = GAME_TYPES[gameType].maxPlayers;
@@ -226,7 +322,9 @@ function simulate(seed, hands) {
     const deck = deriveDeckSync(hmacSync, 'seed' + seed + ':' + n, 'sim');
     const bombAnte = rng() < 0.15 ? bb * 2 : 0;
     if (bombAnte) bombs++;
-    const h = mk(players, { gameType, bb, sb: bb / 2, button: seats[Math.floor(rng() * seats.length)], deck, bombAnte, ritMax: 1 + Math.floor(rng() * 4) });
+    const doubleBoard = rng() < 0.3 && count * GAME_TYPES[gameType].holeCount + 10 <= 52;
+    if (doubleBoard) doubleBoards++;
+    const h = mk(players, { gameType, bb, sb: bb / 2, button: seats[Math.floor(rng() * seats.length)], deck, bombAnte, doubleBoard, ritMax: 1 + Math.floor(rng() * 4) });
     const before = players.reduce((s, p) => s + p.stack, 0);
     h.start();
     let steps = 0;
@@ -239,7 +337,7 @@ function simulate(seed, hands) {
         assert.ok(l.toCall >= 0 && l.minTo <= l.maxTo && l.maxTo <= l.allInTo, JSON.stringify(l));
         h.act(a.id, randomAction(l, rng));
       } else if (h.phase === 'rit') {
-        for (const id of h.rit.eligible) if (rng() < 0.9) h.setRitChoice(id, 1 + Math.floor(rng() * 4));
+        for (const id of h.rit.eligible) if (h.phase === 'rit' && rng() < 0.9) h.setRitChoice(id, 1 + Math.floor(rng() * 4));
         if (h.phase === 'rit') h.resolveRit();
       } else if (h.pending) {
         h.advance();
@@ -262,7 +360,7 @@ function simulate(seed, hands) {
     const used = new Set([...rec.players.flatMap((p) => p.hole), ...rec.dealt.boards.flat()]);
     assert.equal(used.size, rebuilt.cardsUsed, 'no card dealt twice');
   }
-  return { multiRuns, bombs, sidePots };
+  return { multiRuns, bombs, sidePots, doubleBoards };
 }
 
 test('randomized: 6000 hands across all games conserve chips and reconstruct exactly', () => {
@@ -270,5 +368,6 @@ test('randomized: 6000 hands across all games conserve chips and reconstruct exa
   assert.ok(stats.multiRuns > 50, 'exercised multi-run: ' + stats.multiRuns);
   assert.ok(stats.bombs > 300, 'exercised bombs: ' + stats.bombs);
   assert.ok(stats.sidePots > 100, 'exercised side pots: ' + stats.sidePots);
+  assert.ok(stats.doubleBoards > 1000, 'exercised double board: ' + stats.doubleBoards);
   console.log('simulation stats', stats);
 });
