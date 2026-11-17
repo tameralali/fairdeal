@@ -9,7 +9,7 @@ const BRAND_HEX = '6f3ac1d0a85c2e94b7f1036d4e5a9c8b21f0e7d6c5b4a39281706f5e4d3c2
 const wc = webCryptoAdapter();
 const out = $('#out');
 applyPrefs(document.body);
-$('#brand').innerHTML = `${sealSVG(BRAND_HEX, 30, 'FairDeal')}<span>Fair<b>Deal</b></span>`;
+$('#brand').innerHTML = `${sealSVG(BRAND_HEX, 30, 'The Aquarium')}<span>The <b>Aquarium</b></span>`;
 
 function token() { try { return localStorage.getItem('fd:token'); } catch { return null; } }
 function observedFor(rec) {

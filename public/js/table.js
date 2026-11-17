@@ -177,7 +177,7 @@ function renderTop(s) {
   const acct = app.me && !app.me.username ? '<button class="btn ghost small" data-open="account" title="Create an account">Save account</button>' : '';
   els.top.innerHTML = `
     <span class="conn ${app.connected ? '' : 'off'}" title="${app.connected ? 'Connected' : 'Reconnecting'}"></span>
-    <a class="wordmark" href="/" title="Lobby">${sealSVG(BRAND_HEX, 26, 'FairDeal')}<span>Fair<b>Deal</b></span></a>
+    <a class="wordmark" href="/" title="Lobby">${sealSVG(BRAND_HEX, 26, 'The Aquarium')}<span>The <b>Aquarium</b></span></a>
     <div class="tb-title"><strong>${esc(t.name)}</strong>${t.clubId ? `<a href="/club/${esc(t.clubId)}">${esc(t.clubName || 'Club')}</a>` : ''}</div>
     <div class="tb-game">
       <span class="pill brass" title="${esc(GAME_TYPES[game]?.name || '')}">${esc(gameShort(game))}</span>

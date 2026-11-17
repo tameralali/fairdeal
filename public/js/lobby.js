@@ -31,7 +31,7 @@ function go(url) { history.pushState(null, '', url); route(); }
 
 function renderHead() {
   const u = me.user;
-  head.innerHTML = `<a class="wordmark" href="/">${sealSVG(BRAND_HEX, 30, 'FairDeal')}<span>Fair<b>Deal</b></span></a>
+  head.innerHTML = `<a class="wordmark" href="/">${sealSVG(BRAND_HEX, 30, 'The Aquarium')}<span>The <b>Aquarium</b></span></a>
     <div class="who"><span>Playing as <b>${esc(u.name)}</b>${u.username ? ` <span class="faint">@${esc(u.username)}</span>` : ''}</span>
       <button class="btn small ghost" data-h="rename">Change name</button>
       ${u.username ? '<button class="btn small ghost" data-h="logout">Sign out</button>' : '<button class="btn small" data-h="register">Create account</button><button class="btn small ghost" data-h="login">Sign in</button>'}
@@ -111,7 +111,7 @@ function readTableForm(f, dec) {
 async function home() {
   unwatch();
   me = await api.get('/api/me');
-  document.title = 'FairDeal';
+  document.title = 'The Aquarium';
   const clubs = me.clubs.length ? me.clubs.map((c) => `<a href="/club/${esc(c.id)}"><span><b>${esc(c.name)}</b><br><small>${c.status === 'pending' ? 'Waiting for approval' : c.role}</small></span>${c.status === 'active' ? `<span class="num">${fmtChips(c.balance, c.decimals)}</span>` : ''}</a>`).join('') : '<p class="muted">You are not in a club yet.</p>';
   main.innerHTML = `<div class="lob-grid">
     <div>
@@ -238,7 +238,7 @@ async function clubPage(id, tab) {
   try { data = await api.get('/api/clubs/' + encodeURIComponent(id)); }
   catch (e) { main.innerHTML = `<p class="bad">${esc(e.message)}</p><p><a href="/">Back to the lobby</a></p>`; return; }
   const c = data.club;
-  document.title = `${c.name} | FairDeal`;
+  document.title = `${c.name} | The Aquarium`;
   if (c.myStatus !== 'active') {
     main.innerHTML = `<section class="panel" style="max-width:560px"><h2>${esc(c.name)}</h2><p>${c.myStatus === 'pending' ? 'Your request to join is waiting for a manager.' : 'You are not a member of this club.'}</p><a href="/">Back to the lobby</a></section>`;
     return;

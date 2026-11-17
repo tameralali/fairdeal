@@ -1,4 +1,4 @@
-# FairDeal
+# The Aquarium
 
 Private online poker for a home game. It plays like PokerNow (share a link, approve seats, track the ledger), and every deal can be checked by the players themselves.
 
@@ -59,8 +59,8 @@ The app is a single Node.js process that keeps live games in memory, so run exac
 **Docker** (Fly.io, Railway, or any server):
 
 ```
-docker build -t fairdeal .
-docker run -p 3000:3000 -v fairdeal-data:/data fairdeal
+docker build -t the-aquarium .
+docker run -p 3000:3000 -v aquarium-data:/data the-aquarium
 ```
 
 Serve it over HTTPS (Render and Fly do this automatically). Settings come from environment variables:

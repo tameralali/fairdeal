@@ -4,7 +4,8 @@
 //    commitment = SHA-256(serverSeed). It cannot change the seed afterwards without breaking the hash.
 // 2. Every seated player's browser sends a random contribution (hex) after seeing the commitment.
 //    The server cannot know these when it commits, so it cannot pick a seed that favours anyone.
-// 3. entropy = "fairdeal-v1|<tableId>|<handNumber>|<contributions sorted alphabetically, comma separated>"
+// 3. entropy = "<protocol version>|<tableId>|<handNumber>|<contributions sorted alphabetically, comma separated>"
+//    where the protocol version is stored with every hand record (currently "aquarium-v1").
 //    Sorting makes the order independent of the server.
 // 4. A byte stream is produced with HMAC-SHA256(key = serverSeed, message = entropy + "|" + counter)
 //    for counter = 0, 1, 2 ... Each 32-byte block yields eight big-endian unsigned 32-bit integers.
@@ -21,16 +22,16 @@
 
 import { CANONICAL_DECK } from './cards.js';
 
-export const FAIRNESS_VERSION = 'fairdeal-v1';
+export const FAIRNESS_VERSION = 'aquarium-v1';
 const SEED_RE = /^[0-9a-f]{16,64}$/;
 
 export function isValidContribution(seed) {
   return typeof seed === 'string' && SEED_RE.test(seed);
 }
 
-export function buildEntropy(tableId, handNumber, seeds) {
+export function buildEntropy(tableId, handNumber, seeds, version = FAIRNESS_VERSION) {
   const sorted = [...seeds].sort();
-  return `${FAIRNESS_VERSION}|${tableId}|${handNumber}|${sorted.join(',')}`;
+  return `${version}|${tableId}|${handNumber}|${sorted.join(',')}`;
 }
 
 export class NeedMoreBlocks extends Error {}
@@ -172,7 +173,7 @@ export async function verifyHandRecord(record, crypto, observed = {}) {
     add('Commitment matches the one your browser saw before the deal', observed.commitment === f.commitment);
   }
   const seeds = (f.contributions || []).map((c) => c.seed);
-  const entropy = buildEntropy(record.tableId, record.handNumber, seeds);
+  const entropy = buildEntropy(record.tableId, record.handNumber, seeds, f.version || FAIRNESS_VERSION);
   add('Entropy string rebuilt from the player contributions', entropy === f.entropy);
   if (observed.mySeed) {
     add('Your browser’s contribution was included', seeds.includes(observed.mySeed));

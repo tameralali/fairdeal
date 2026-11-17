@@ -195,7 +195,7 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const srv = createServer();
-  srv.listen().then((port) => console.log(`FairDeal running on http://localhost:${port}`));
+  srv.listen().then((port) => console.log(`The Aquarium is running on http://localhost:${port}`));
   const shutdown = () => { try { srv.store.flush(); } finally { process.exit(0); } };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

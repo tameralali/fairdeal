@@ -15,7 +15,7 @@ let srv, url, dataDir;
 const wc = webCryptoAdapter();
 
 before(async () => {
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fairdeal-'));
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aquarium-'));
   srv = createServer({ dataDir });
   const port = await srv.listen(0);
   url = `http://127.0.0.1:${port}`;
