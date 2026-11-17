@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: fairdeal
+    runtime: node
+    plan: starter
+    region: frankfurt
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: NODE_VERSION
+        value: "22"
+    disk:
+      name: fairdeal-data
+      mountPath: /data
+      sizeGB: 1

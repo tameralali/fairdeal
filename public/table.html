@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#191512">
+  <title>FairDeal table</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="/fonts/barlow-condensed-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/css/base.css">
+  <link rel="stylesheet" href="/css/table.css">
+</head>
+<body>
+  <div class="tbl-app">
+    <header class="topbar" id="top"></header>
+    <main class="stage" id="stage">
+      <div class="table-area" id="area">
+        <div class="felt" id="felt"></div>
+        <div class="center" id="center"></div>
+        <div class="layer" id="chips"></div>
+        <div class="layer" id="seats"></div>
+      </div>
+    </main>
+    <div class="bottom">
+      <div class="mybar" id="mybar"></div>
+      <div class="actionbar" id="actions" aria-live="polite"></div>
+    </div>
+    <aside class="drawer" id="drawer" aria-label="Table log and chat">
+      <div class="drawer-head">
+        <div class="seg"><button type="button" class="on" data-logfilter="all">Log and chat</button><button type="button" data-logfilter="chat">Chat only</button></div>
+        <span class="grow"></span>
+        <button class="btn ghost small" data-open="log" aria-label="Hide log">Hide</button>
+      </div>
+      <div class="log" id="log" role="log"></div>
+      <form class="chatbox" id="chat" autocomplete="off">
+        <input type="text" maxlength="300" placeholder="Say something to the table" aria-label="Chat message">
+        <button class="btn small" type="submit">Send</button>
+      </form>
+    </aside>
+  </div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script type="module" src="/js/table.js"></script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#191512">
+  <title>Check a hand | FairDeal</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/base.css">
+  <link rel="stylesheet" href="/css/lobby.css">
+  <link rel="stylesheet" href="/css/table.css">
+  <style>
+    html, body { overflow: auto; }
+    .vgrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 22px; }
+    @media (max-width: 860px) { .vgrid { grid-template-columns: 1fr; } }
+    .deck { display: grid; grid-template-columns: repeat(13, minmax(0, 1fr)); gap: 6px 4px; }
+    .deck figure { margin: 0; text-align: center; font: 500 11px var(--num); color: var(--faint); }
+    .deck .card { --w: 100%; width: 100%; height: auto; aspect-ratio: 1 / 1.4; font-size: 0; }
+    .deck .card .ci b { font-size: clamp(9px, 1.6vw, 16px); }
+    .deck .card .ci i { font-size: clamp(8px, 1.2vw, 13px); }
+    .deck .card .cp { display: none; }
+    .deck figure.used .card { box-shadow: 0 0 0 2px var(--brass); }
+    .result-head { display: flex; gap: 16px; align-items: center; margin-bottom: 12px; }
+    .result-head h2 { margin: 0; }
+    .sum-row { cursor: pointer; }
+    textarea { min-height: 120px; font: 13px/1.4 var(--mono); }
+    .drop { border: 1px dashed var(--line); border-radius: var(--r-md); padding: 14px; text-align: center; color: var(--muted); }
+    .drop.over { border-color: var(--brass); color: var(--text); }
+  </style>
+</head>
+<body data-deck="big" data-back="oxblood">
+  <div class="lobby">
+    <header class="lob-head"><a class="wordmark" href="/" id="brand">FairDeal</a></header>
+    <main>
+      <section class="panel">
+        <h1>Check a hand</h1>
+        <p class="lead">Rebuilds a hand's deck from its revealed seed and the players' inputs using your browser's built-in cryptography, then checks every card that was dealt. You can also hash the server seed with any SHA-256 tool and compare it to the commitment yourself.</p>
+        <form id="fetch" class="row">
+          <label style="flex:1;min-width:180px"><span class="lbl">Table ID (the part after /t/ in the table link)</span><input name="table" type="text" required></label>
+          <label style="width:140px"><span class="lbl">Hand number</span><input name="hand" type="number" min="1"></label>
+          <div class="row" style="align-self:flex-end"><button class="btn primary" type="submit">Check hand</button><button class="btn" type="button" data-all>Check every hand</button></div>
+        </form>
+        <div class="stack" style="margin-top:1.2rem">
+          <div class="drop" id="drop">Drop a downloaded hand file here, or <label style="display:inline;color:var(--brass-hi);cursor:pointer">choose one<input type="file" accept=".json,application/json" id="file" hidden></label></div>
+          <textarea id="paste" placeholder="Or paste a hand's JSON here"></textarea>
+          <div><button class="btn" id="checkPaste" type="button">Check pasted data</button></div>
+        </div>
+      </section>
+      <div id="out" style="margin-top:22px"></div>
+    </main>
+  </div>
+  <script type="module" src="/js/verify.js"></script>
+</body>
+</html>

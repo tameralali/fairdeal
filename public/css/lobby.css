@@ -1,0 +1,55 @@
+.lobby { max-width: 1180px; margin: 0 auto; padding: 0 20px 60px; }
+.lob-head { display: flex; align-items: center; gap: 14px; padding: 16px 0; border-bottom: 1px solid var(--line-soft); margin-bottom: 26px; }
+.lob-head .who { margin-left: auto; display: flex; gap: 8px; align-items: center; color: var(--muted); }
+.lob-head .who b { color: var(--text); font-weight: 600; }
+.lob-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+@media (max-width: 900px) { .lob-grid { grid-template-columns: 1fr; } }
+.panel { background: var(--panel); border: 1px solid var(--line-soft); border-radius: var(--r-lg); padding: 20px 22px 22px; }
+.panel + .panel { margin-top: 22px; }
+.panel h2 { font-size: 1.35rem; margin-bottom: .35rem; }
+.panel > p.muted { margin-bottom: 1rem; }
+.lead { font-size: 1.05rem; color: var(--muted); margin: -.2rem 0 1.2rem; }
+.game-pick { display: flex; gap: 8px; flex-wrap: wrap; }
+.game-pick label { cursor: pointer; }
+.game-pick input { position: absolute; opacity: 0; pointer-events: none; }
+.game-pick span {
+  display: inline-flex; flex-direction: column; padding: .55em .9em .5em; border-radius: var(--r-md); border: 1px solid var(--line);
+  color: var(--text); font-weight: 600; min-width: 108px; background: var(--room-2);
+}
+.game-pick span small { font-weight: 400; color: var(--muted); font-size: 13px; }
+.game-pick input:checked + span { border-color: var(--brass); box-shadow: inset 0 0 0 1px var(--brass); background: #31281f; }
+.game-pick input:focus-visible + span { outline: 2px solid var(--brass); outline-offset: 2px; }
+/* games board: running tables listed like a card room's game board */
+.gboard { border-top: 1px solid var(--line); }
+.gboard a { display: grid; grid-template-columns: 6.5rem 6rem minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 4px; border-bottom: 1px solid var(--line-soft); color: var(--text); text-decoration: none; }
+.gboard a:hover { background: rgba(255, 255, 255, .025); }
+.gboard .g { font: 700 19px/1 var(--num); color: var(--brass-hi); letter-spacing: .01em; }
+.gboard .stakes { font: 600 18px/1 var(--num); font-variant-numeric: tabular-nums; }
+.gboard .nm { min-width: 0; }
+.gboard .nm b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gboard .nm small { color: var(--muted); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gboard .seats { font: 600 16px/1 var(--num); color: var(--muted); text-align: right; white-space: nowrap; }
+.gboard .seats b { color: var(--text); }
+.gboard .empty { color: var(--muted); padding: 14px 4px; }
+.club-list a { display: flex; justify-content: space-between; gap: 12px; padding: 11px 2px; border-bottom: 1px solid var(--line-soft); color: var(--text); text-decoration: none; }
+.club-list a:hover b { color: var(--brass-hi); }
+.club-list small { color: var(--muted); }
+.club-head { display: flex; align-items: flex-end; gap: 22px; flex-wrap: wrap; margin-bottom: 18px; }
+.club-head h1 { margin: 0; font-size: 2.2rem; }
+.club-head .bal { display: flex; gap: 22px; margin-left: auto; }
+.club-head .bal div { text-align: right; }
+.club-head .bal small { display: block; color: var(--muted); font-size: 13.5px; }
+.club-head .bal b { font: 700 28px/1.05 var(--num); font-variant-numeric: tabular-nums; }
+.announce { border-left: 3px solid var(--brass); padding: 6px 12px; color: var(--text); background: rgba(211, 170, 94, .06); margin-bottom: 18px; border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.page-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line-soft); margin-bottom: 18px; overflow-x: auto; }
+.page-tabs a { padding: .7em .9em; color: var(--muted); text-decoration: none; font-weight: 600; border-bottom: 2px solid transparent; white-space: nowrap; }
+.page-tabs a.on { color: var(--text); border-bottom-color: var(--brass); }
+.totals { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.totals div { background: var(--room-2); border: 1px solid var(--line-soft); border-radius: var(--r-md); padding: 10px 12px; }
+.totals small { display: block; color: var(--muted); }
+.totals b { font: 700 22px/1.1 var(--num); font-variant-numeric: tabular-nums; }
+.member-actions { display: flex; gap: 4px; justify-content: flex-end; flex-wrap: wrap; }
+.invite { display: flex; gap: 8px; align-items: center; background: var(--room-2); border: 1px dashed var(--line); border-radius: var(--r-md); padding: 8px 10px; }
+.invite code { font: 600 15px/1.2 var(--mono); color: var(--brass-hi); overflow-wrap: anywhere; }
+.tx-type { white-space: nowrap; }
+.scroll-x { overflow-x: auto; }

@@ -1,0 +1,611 @@
+// One hand of poker: blinds or bomb-pot antes, dealing, NL/PL betting, side pots,
+// all-in runouts run 1 to 4 times, showdown and payouts. Pure state machine: the Table drives
+// timing by calling advance() when `pending` is set.
+
+import { gameInfo, SUIT_SYMBOLS } from '../../shared/cards.js';
+import { bestHand } from '../../shared/evaluator.js';
+
+export function pretty(card) {
+  const r = card[0] === 'T' ? '10' : card[0];
+  return r + SUIT_SYMBOLS[card[1]];
+}
+const prettyList = (cards) => cards.map(pretty).join(', ');
+
+export function splitEven(amount, n) {
+  const base = Math.floor(amount / n);
+  const rem = amount - base * n;
+  return Array.from({ length: n }, (_, i) => base + (i < rem ? 1 : 0));
+}
+
+const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
+
+// Main pot and side pots from each player's total contribution this hand.
+export function buildPots(players) {
+  const contrib = players.map((p) => ({ id: p.id, amt: p.committed, live: !p.folded }));
+  const levels = [...new Set(contrib.filter((c) => c.live && c.amt > 0).map((c) => c.amt))].sort((a, b) => a - b);
+  const pots = [];
+  let prev = 0;
+  for (const level of levels) {
+    let amount = 0;
+    for (const c of contrib) amount += Math.max(0, Math.min(c.amt, level) - prev);
+    const eligible = contrib.filter((c) => c.live && c.amt >= level).map((c) => c.id);
+    if (amount > 0) {
+      const last = pots[pots.length - 1];
+      if (last && sameSet(last.eligible, eligible)) last.amount += amount;
+      else pots.push({ amount, eligible });
+    }
+    prev = level;
+  }
+  const total = contrib.reduce((s, c) => s + c.amt, 0);
+  const counted = pots.reduce((s, p) => s + p.amount, 0);
+  if (total > counted && pots.length) pots[pots.length - 1].amount += total - counted;
+  return pots;
+}
+
+const TIMES = ['once', 'once', 'twice', 'three times', 'four times'];
+
+export class Hand {
+  constructor(opts) {
+    const {
+      number, gameType, players, buttonSeat, smallBlind, bigBlind, deck,
+      bombAnte = 0, ritMax = 1, fmt = String,
+    } = opts;
+    this.number = number;
+    this.game = gameInfo(gameType);
+    this.gameType = this.game.id;
+    this.limit = this.game.limit;
+    this.omaha = this.game.omaha;
+    this.sb = smallBlind;
+    this.bb = bigBlind;
+    this.isBomb = bombAnte > 0;
+    this.bombAnte = bombAnte;
+    this.ritMax = Math.max(1, Math.min(4, ritMax | 0));
+    this.fmt = fmt;
+    this.deck = deck;
+    this.deckPtr = 0;
+    this.players = players
+      .slice()
+      .sort((a, b) => a.seat - b.seat)
+      .map((p) => ({
+        id: p.id, seat: p.seat, name: p.name, stack: p.stack, startStack: p.stack,
+        hole: [], folded: false, allIn: false, bet: 0, committed: 0,
+        hasActed: false, actedAtLevel: 0, lastAction: null, shown: false,
+      }));
+    this.n = this.players.length;
+    if (this.n < 2) throw new Error('need at least two players');
+    if (this.n * this.game.holeCount + 5 > deck.length) throw new Error('too many players for this game');
+    this.btnIdx = this.players.findIndex((p) => p.seat === buttonSeat);
+    if (this.btnIdx < 0) throw new Error('button must be on a dealt-in player');
+    if (this.n === 2) { this.sbIdx = this.btnIdx; this.bbIdx = (this.btnIdx + 1) % 2; }
+    else { this.sbIdx = (this.btnIdx + 1) % this.n; this.bbIdx = (this.btnIdx + 2) % this.n; }
+    this.board = [];
+    this.runs = null;
+    this.runCount = 1;
+    this.sharedCount = null;
+    this.runIndex = 0;
+    this.street = 'preflop';
+    this.phase = 'init'; // betting | pending | rit | runout | done
+    this.pending = null; // next-street | runout | showdown
+    this.currentBet = 0;
+    this.minRaise = bigBlind;
+    this.lastAggressorId = null;
+    this.actorIndex = -1;
+    this.dealOrder = [];
+    this.events = [];
+    this.results = null;
+    this.rit = null;
+    this.version = 0;
+  }
+
+  // ---------- helpers ----------
+  log(text, kind = 'hand') { this.events.push({ text, kind }); }
+  drainEvents() { const e = this.events; this.events = []; return e; }
+  byId(id) { return this.players.find((p) => p.id === id); }
+  get live() { return this.players.filter((p) => !p.folded); }
+  potTotal() { return this.players.reduce((s, p) => s + p.committed, 0); }
+  collectedPot() { return this.players.reduce((s, p) => s + p.committed - p.bet, 0); }
+  draw() {
+    if (this.deckPtr >= this.deck.length) throw new Error('deck exhausted');
+    return this.deck[this.deckPtr++];
+  }
+  actor() { return this.phase === 'betting' && this.actorIndex >= 0 ? this.players[this.actorIndex] : null; }
+  needsToAct(p) { return !p.folded && !p.allIn && (!p.hasActed || p.bet < this.currentBet); }
+  nextActorFrom(idx) {
+    for (let k = 1; k <= this.n; k++) {
+      const i = (idx + k) % this.n;
+      if (this.needsToAct(this.players[i])) return i;
+    }
+    return -1;
+  }
+  orderFromButton(ids) {
+    const pos = (id) => {
+      const i = this.players.findIndex((p) => p.id === id);
+      return (i - this.btnIdx - 1 + this.n) % this.n;
+    };
+    return ids.slice().sort((a, b) => pos(a) - pos(b));
+  }
+
+  // ---------- start ----------
+  start() {
+    const btn = this.players[this.btnIdx];
+    this.log(`-- starting hand #${this.number} (${this.isBomb ? 'BOMB POT, ' : ''}${this.game.name}) (dealer: ${btn.name}) --`, 'hand-start');
+    this.log('Player stacks: ' + this.players.map((p) => `#${p.seat + 1} ${p.name} (${this.fmt(p.stack)})`).join(' | '), 'stacks');
+    if (this.isBomb) {
+      for (const p of this.players) {
+        const amt = Math.min(p.stack, this.bombAnte);
+        p.stack -= amt;
+        p.committed += amt;
+        if (p.stack === 0) p.allIn = true;
+        this.log(`${p.name} posts a bomb pot ante of ${this.fmt(amt)}${p.allIn ? ' and is all in' : ''}`);
+      }
+    } else {
+      this.postBlind(this.sbIdx, this.sb, 'small blind');
+      this.postBlind(this.bbIdx, this.bb, 'big blind');
+      this.currentBet = this.bb;
+      this.minRaise = this.bb;
+    }
+    this.dealHoles();
+    if (this.isBomb) {
+      this.dealStreet();
+      this.startBettingRound();
+    } else {
+      this.street = 'preflop';
+      this.beginRound(this.bbIdx);
+    }
+    this.version++;
+  }
+
+  postBlind(idx, amount, label) {
+    const p = this.players[idx];
+    const amt = Math.min(p.stack, amount);
+    p.stack -= amt;
+    p.bet += amt;
+    p.committed += amt;
+    if (p.stack === 0) p.allIn = true;
+    this.log(`${p.name} posts a ${label} of ${this.fmt(amt)}${p.allIn ? ' and is all in' : ''}`);
+  }
+
+  dealHoles() {
+    const order = [];
+    for (let k = 1; k <= this.n; k++) order.push((this.btnIdx + k) % this.n);
+    this.dealOrder = order.map((i) => this.players[i].seat);
+    for (let r = 0; r < this.game.holeCount; r++) {
+      for (const i of order) this.players[i].hole.push(this.draw());
+    }
+  }
+
+  dealStreet() {
+    if (this.board.length === 0) {
+      this.board.push(this.draw(), this.draw(), this.draw());
+      this.street = 'flop';
+      this.log(`Flop: [${prettyList(this.board)}]`, 'board');
+    } else if (this.board.length < 5) {
+      const c = this.draw();
+      const prev = prettyList(this.board);
+      this.board.push(c);
+      this.street = this.board.length === 4 ? 'turn' : 'river';
+      this.log(`${this.street === 'turn' ? 'Turn' : 'River'}: ${prev} [${pretty(c)}]`, 'board');
+    }
+  }
+
+  startBettingRound() {
+    for (const p of this.players) {
+      p.bet = 0;
+      p.hasActed = false;
+      p.actedAtLevel = 0;
+      if (!p.folded && !p.allIn) p.lastAction = null;
+    }
+    this.currentBet = 0;
+    this.minRaise = this.bb;
+    this.lastAggressorId = null;
+    this.beginRound(this.btnIdx);
+  }
+
+  beginRound(fromIdx) {
+    this.phase = 'betting';
+    this.actorIndex = -1;
+    if (this.live.length === 1) return this.finishUncontested(this.live[0]);
+    if (this.isRoundComplete()) return this.endBettingRound();
+    this.actorIndex = this.nextActorFrom(fromIdx);
+    if (this.actorIndex < 0) return this.endBettingRound();
+  }
+
+  isRoundComplete() {
+    const live = this.live;
+    const canAct = live.filter((p) => !p.allIn);
+    if (canAct.length === 0) return true;
+    if (canAct.length === 1) {
+      const p = canAct[0];
+      const maxOther = Math.max(0, ...live.filter((q) => q !== p).map((q) => q.bet));
+      return p.bet >= maxOther;
+    }
+    return canAct.every((p) => p.hasActed && p.bet === this.currentBet);
+  }
+
+  // ---------- actions ----------
+  legalActions(id) {
+    const p = this.actor();
+    if (!p || p.id !== id) return null;
+    const toCall = Math.min(this.currentBet - p.bet, p.stack);
+    const canCheck = this.currentBet === p.bet;
+    const othersCanAct = this.players.some((q) => q !== p && !q.folded && !q.allIn);
+    const reopened = !p.hasActed || this.currentBet - p.actedAtLevel >= this.minRaise;
+    const canRaise = othersCanAct && reopened && p.stack > toCall;
+    const allInTo = p.bet + p.stack;
+    let minTo = this.currentBet + this.minRaise;
+    let maxTo = allInTo;
+    const potTotal = this.potTotal();
+    if (this.limit === 'pl') {
+      const potAfterCall = potTotal + (this.currentBet - p.bet);
+      maxTo = Math.min(allInTo, this.currentBet + potAfterCall);
+    }
+    if (minTo > allInTo) minTo = allInTo;
+    if (maxTo < minTo) maxTo = minTo;
+    return {
+      toCall, canCheck, canCall: toCall > 0, canRaise, minTo, maxTo, allInTo,
+      isBet: this.currentBet === 0, currentBet: this.currentBet, myBet: p.bet, stack: p.stack,
+      potTotal, limit: this.limit, bigBlind: this.bb,
+    };
+  }
+
+  act(id, action) {
+    const legal = this.legalActions(id);
+    if (!legal) throw new Error('It is not your turn');
+    const idx = this.actorIndex;
+    const p = this.players[idx];
+    let type = action.type;
+    if (type === 'call' && !legal.canCall) type = 'check';
+    if (type === 'check' && !legal.canCheck) throw new Error('You cannot check, there is a bet to call');
+    if ((type === 'bet' || type === 'raise' || type === 'allin') && !legal.canRaise) {
+      if (type === 'allin' && legal.canCall) type = 'call';
+      else throw new Error('Raising is not allowed here');
+    }
+    switch (type) {
+      case 'fold':
+        p.folded = true;
+        p.lastAction = 'Fold';
+        this.log(`${p.name} folds`);
+        break;
+      case 'check':
+        p.hasActed = true;
+        p.actedAtLevel = this.currentBet;
+        p.lastAction = 'Check';
+        this.log(`${p.name} checks`);
+        break;
+      case 'call': {
+        const amt = legal.toCall;
+        p.stack -= amt;
+        p.bet += amt;
+        p.committed += amt;
+        if (p.stack === 0) p.allIn = true;
+        p.hasActed = true;
+        p.actedAtLevel = this.currentBet;
+        p.lastAction = p.allIn ? 'All-in' : 'Call';
+        this.log(`${p.name} calls ${this.fmt(p.bet)}${p.allIn ? ' and is all in' : ''}`);
+        break;
+      }
+      case 'bet':
+      case 'raise':
+      case 'allin': {
+        let to = type === 'allin' ? legal.maxTo : Math.floor(Number(action.to ?? action.amount));
+        if (!Number.isFinite(to)) throw new Error('Invalid amount');
+        if (to > legal.maxTo) to = legal.maxTo;
+        if (to < legal.minTo) to = legal.minTo;
+        if (to <= this.currentBet) throw new Error('Raise must be larger than the current bet');
+        const add = to - p.bet;
+        const raiseSize = to - this.currentBet;
+        const wasBet = this.currentBet === 0;
+        p.stack -= add;
+        p.bet = to;
+        p.committed += add;
+        if (p.stack === 0) p.allIn = true;
+        if (raiseSize >= this.minRaise) this.minRaise = raiseSize;
+        this.currentBet = to;
+        this.lastAggressorId = p.id;
+        p.hasActed = true;
+        p.actedAtLevel = to;
+        p.lastAction = p.allIn ? 'All-in' : wasBet ? 'Bet' : 'Raise';
+        this.log(wasBet
+          ? `${p.name} bets ${this.fmt(to)}${p.allIn ? ' and is all in' : ''}`
+          : `${p.name} raises to ${this.fmt(to)}${p.allIn ? ' and is all in' : ''}`);
+        break;
+      }
+      default:
+        throw new Error('Unknown action');
+    }
+    this.afterAction(idx);
+    this.version++;
+  }
+
+  afterAction(idx) {
+    const live = this.live;
+    if (live.length === 1) return this.finishUncontested(live[0]);
+    if (this.isRoundComplete()) return this.endBettingRound();
+    this.actorIndex = this.nextActorFrom(idx);
+    if (this.actorIndex < 0) return this.endBettingRound();
+  }
+
+  returnUncalled() {
+    let top = -1, topIdx = -1, second = 0;
+    this.players.forEach((p, i) => {
+      if (p.bet > top) { second = Math.max(second, top); top = p.bet; topIdx = i; }
+      else if (p.bet > second) second = p.bet;
+    });
+    if (topIdx >= 0 && top > second) {
+      const refund = top - second;
+      const p = this.players[topIdx];
+      p.bet -= refund;
+      p.committed -= refund;
+      p.stack += refund;
+      if (p.stack > 0) p.allIn = false;
+      this.log(`Uncalled bet of ${this.fmt(refund)} returned to ${p.name}`);
+    }
+  }
+
+  endBettingRound() {
+    this.returnUncalled();
+    for (const p of this.players) p.bet = 0;
+    this.actorIndex = -1;
+    const canAct = this.live.filter((p) => !p.allIn);
+    if (this.board.length === 5 || this.street === 'river') {
+      this.phase = 'pending';
+      this.pending = 'showdown';
+      return;
+    }
+    if (canAct.length <= 1) return this.beginAllInRunout();
+    this.phase = 'pending';
+    this.pending = 'next-street';
+  }
+
+  beginAllInRunout() {
+    for (const p of this.live) {
+      if (!p.shown) {
+        p.shown = true;
+        this.log(`${p.name} shows [${prettyList(p.hole)}]`, 'show');
+      }
+    }
+    const need = 5 - this.board.length;
+    const remaining = this.deck.length - this.deckPtr;
+    const maxRuns = Math.min(this.ritMax, Math.floor(remaining / need));
+    if (maxRuns >= 2) {
+      this.phase = 'rit';
+      this.pending = null;
+      this.rit = { max: maxRuns, eligible: this.live.map((p) => p.id), choices: new Map(), result: null };
+      return;
+    }
+    this.enterRunout(1);
+  }
+
+  setRitChoice(id, runs) {
+    if (this.phase !== 'rit') throw new Error('Not choosing how many times to run it');
+    if (!this.rit.eligible.includes(id)) throw new Error('You are not in this all-in');
+    const n = Math.max(1, Math.min(this.rit.max, Math.floor(Number(runs)) || 1));
+    this.rit.choices.set(id, n);
+    this.version++;
+    if (this.rit.choices.size === this.rit.eligible.length) this.resolveRit();
+  }
+
+  resolveRit() {
+    if (this.phase !== 'rit') return;
+    const k = Math.min(...this.rit.eligible.map((id) => this.rit.choices.get(id) ?? 1));
+    this.rit.result = k;
+    const picks = this.rit.eligible.map((id) => `${this.byId(id).name}: ${this.rit.choices.has(id) ? this.rit.choices.get(id) : '1 (no answer)'}`).join(', ');
+    this.log(`Run it: ${picks}. Running it ${TIMES[k]}.`, 'rit');
+    this.enterRunout(k);
+    this.version++;
+  }
+
+  enterRunout(k) {
+    this.runCount = k;
+    this.sharedCount = this.board.length;
+    if (k > 1) {
+      this.runs = Array.from({ length: k }, () => this.board.slice());
+      this.runIndex = 0;
+    }
+    this.phase = 'runout';
+    this.pending = 'runout';
+  }
+
+  runoutStep() {
+    if (this.runCount === 1) {
+      this.dealStreet();
+      this.pending = this.board.length >= 5 ? 'showdown' : 'runout';
+      return;
+    }
+    const run = this.runs[this.runIndex];
+    const label = `Run ${this.runIndex + 1}`;
+    if (run.length < 3) {
+      run.push(this.draw(), this.draw(), this.draw());
+      this.log(`${label} flop: [${prettyList(run)}]`, 'board');
+    } else {
+      const c = this.draw();
+      const prev = prettyList(run);
+      run.push(c);
+      this.log(`${label} ${run.length === 4 ? 'turn' : 'river'}: ${prev} [${pretty(c)}]`, 'board');
+    }
+    if (run.length >= 5) this.runIndex++;
+    this.pending = this.runIndex >= this.runCount ? 'showdown' : 'runout';
+  }
+
+  // Called by the table after a delay whenever `pending` is set.
+  advance() {
+    const step = this.pending;
+    if (!step) return;
+    this.pending = null;
+    if (step === 'next-street') {
+      this.dealStreet();
+      this.startBettingRound();
+    } else if (step === 'runout') {
+      this.runoutStep();
+    } else if (step === 'showdown') {
+      this.showdown();
+    }
+    this.version++;
+  }
+
+  // Players who stand up or time out after leaving: fold if it is their turn.
+  // ---------- endings ----------
+  finishUncontested(winner) {
+    this.returnUncalled();
+    for (const p of this.players) p.bet = 0;
+    const pot = this.potTotal();
+    winner.stack += pot;
+    this.results = {
+      uncontested: true,
+      boards: [this.board.slice()],
+      pots: [{ amount: pot, eligible: [winner.id], runs: [{ run: 0, amount: pot, winners: [{ id: winner.id, seat: winner.seat, name: winner.name, amount: pot, hand: null, cards: null }] }] }],
+      payouts: [{ id: winner.id, seat: winner.seat, name: winner.name, amount: pot }],
+    };
+    this.log(`${winner.name} collected ${this.fmt(pot)} from pot`, 'win');
+    this.finish();
+  }
+
+  showdown() {
+    const live = this.live;
+    let start = this.lastAggressorId ? this.players.findIndex((p) => p.id === this.lastAggressorId) : -1;
+    if (start < 0 || this.players[start].folded) {
+      start = -1;
+      for (let k = 1; k <= this.n; k++) {
+        const i = (this.btnIdx + k) % this.n;
+        if (!this.players[i].folded) { start = i; break; }
+      }
+    }
+    const boards = this.runs || [this.board];
+    for (let k = 0; k < this.n; k++) {
+      const p = this.players[(start + k) % this.n];
+      if (p.folded || p.shown) continue;
+      p.shown = true;
+      const h = bestHand(p.hole, boards[0], this.omaha);
+      this.log(`${p.name} shows [${prettyList(p.hole)}]${h && boards.length === 1 ? ` (${h.name})` : ''}`, 'show');
+    }
+    const pots = buildPots(this.players);
+    const evals = boards.map((b) => {
+      const m = new Map();
+      for (const p of live) m.set(p.id, bestHand(p.hole, b, this.omaha));
+      return m;
+    });
+    const payouts = new Map();
+    const potResults = [];
+    pots.forEach((pot, pi) => {
+      const potLabel = pots.length === 1 ? 'the pot' : pi === 0 ? 'the main pot' : `side pot ${pi}`;
+      if (pot.eligible.length === 1) {
+        // Only one player can win this pot (everyone else who paid into it folded): it is not split by run.
+        const id = pot.eligible[0];
+        const p = this.byId(id);
+        payouts.set(id, (payouts.get(id) || 0) + pot.amount);
+        this.log(`${p.name} collected ${this.fmt(pot.amount)} from ${potLabel}`, 'win');
+        potResults.push({ amount: pot.amount, eligible: pot.eligible, uncontested: true, runs: [{ run: 0, amount: pot.amount, winners: [{ id, seat: p.seat, name: p.name, amount: pot.amount, hand: null, cards: null }] }] });
+        return;
+      }
+      const portions = splitEven(pot.amount, boards.length);
+      const runs = boards.map((b, k) => {
+        const ev = evals[k];
+        let best = -1;
+        for (const id of pot.eligible) best = Math.max(best, ev.get(id).score);
+        const winners = this.orderFromButton(pot.eligible.filter((id) => ev.get(id).score === best));
+        const shares = splitEven(portions[k], winners.length);
+        const ws = winners.map((id, i) => {
+          payouts.set(id, (payouts.get(id) || 0) + shares[i]);
+          const p = this.byId(id);
+          const e = ev.get(id);
+          return { id, seat: p.seat, name: p.name, amount: shares[i], hand: e.name, cards: e.cards };
+        });
+        for (const w of ws) {
+          if (w.amount > 0) this.log(`${w.name} collected ${this.fmt(w.amount)} from ${potLabel}${boards.length > 1 ? ` on run ${k + 1}` : ''} with ${w.hand}`, 'win');
+        }
+        return { run: k, amount: portions[k], winners: ws };
+      });
+      potResults.push({ amount: pot.amount, eligible: pot.eligible, runs });
+    });
+    for (const [id, amt] of payouts) this.byId(id).stack += amt;
+    const handNames = boards.map((b, k) => Object.fromEntries(live.map((p) => [p.seat, evals[k].get(p.id).name])));
+    this.results = {
+      uncontested: false,
+      boards: boards.map((b) => b.slice()),
+      pots: potResults,
+      payouts: [...payouts].map(([id, amount]) => { const p = this.byId(id); return { id, seat: p.seat, name: p.name, amount }; }),
+      handNames,
+    };
+    this.finish();
+  }
+
+  finish() {
+    this.phase = 'done';
+    this.pending = null;
+    this.actorIndex = -1;
+    this.log(`-- ending hand #${this.number} --`, 'hand-end');
+  }
+
+  showCards(id) {
+    const p = this.byId(id);
+    if (!p || this.phase !== 'done' || p.shown) return false;
+    p.shown = true;
+    this.log(`${p.name} shows [${prettyList(p.hole)}]`, 'show');
+    this.version++;
+    return true;
+  }
+
+  // ---------- views ----------
+  publicState(viewerId) {
+    const actor = this.actor();
+    return {
+      number: this.number,
+      gameType: this.gameType,
+      limit: this.limit,
+      isBomb: this.isBomb,
+      bombAnte: this.bombAnte,
+      buttonSeat: this.players[this.btnIdx].seat,
+      sbSeat: this.isBomb ? null : this.players[this.sbIdx].seat,
+      bbSeat: this.isBomb ? null : this.players[this.bbIdx].seat,
+      street: this.street,
+      phase: this.phase,
+      board: this.board.slice(),
+      runs: this.runs ? this.runs.map((r) => r.slice()) : null,
+      runCount: this.runCount,
+      sharedCount: this.sharedCount,
+      pot: this.collectedPot(),
+      potTotal: this.potTotal(),
+      currentBet: this.currentBet,
+      players: this.players.map((p) => ({
+        seat: p.seat, id: p.id, stack: p.stack, bet: p.bet, committed: p.committed,
+        folded: p.folded, allIn: p.allIn, lastAction: p.lastAction, shown: p.shown,
+        holeCount: p.hole.length,
+        hole: p.id === viewerId || p.shown ? p.hole.slice() : null,
+      })),
+      actorSeat: actor ? actor.seat : null,
+      legal: actor && actor.id === viewerId ? this.legalActions(viewerId) : null,
+      rit: this.phase === 'rit' || (this.rit && this.rit.result) ? {
+        max: this.rit.max,
+        eligibleSeats: this.rit.eligible.map((id) => this.byId(id).seat),
+        chosenSeats: [...this.rit.choices.keys()].map((id) => this.byId(id).seat),
+        myChoice: this.rit.choices.get(viewerId) ?? null,
+        canChoose: this.phase === 'rit' && this.rit.eligible.includes(viewerId),
+        result: this.rit.result,
+      } : null,
+      results: this.results,
+    };
+  }
+
+  recordData() {
+    return {
+      gameType: this.gameType,
+      isBomb: this.isBomb,
+      bombAnte: this.bombAnte,
+      buttonSeat: this.players[this.btnIdx].seat,
+      smallBlind: this.sb,
+      bigBlind: this.bb,
+      players: this.players.map((p) => ({
+        seat: p.seat, id: p.id, name: p.name, startStack: p.startStack, endStack: p.stack,
+        hole: p.hole.slice(), shown: p.shown, folded: p.folded,
+      })),
+      dealt: {
+        dealOrder: this.dealOrder.slice(),
+        holeCount: this.game.holeCount,
+        sharedCount: this.runs ? this.sharedCount : this.board.length,
+        boards: this.runs ? this.runs.map((r) => r.slice()) : [this.board.slice()],
+      },
+      runCount: this.runCount,
+      results: this.results,
+    };
+  }
+}
