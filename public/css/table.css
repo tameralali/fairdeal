@@ -396,6 +396,13 @@ html, body { overflow: hidden; }
 .rit-box .rit-picks b { color: var(--brass-hi); font-weight: 700; }
 /* your current pick */
 .rit-box .act.on { box-shadow: 0 0 0 3px var(--room-2), 0 0 0 5px #fff; }
+/* what someone else picked: a faint version of your own pick, with their name */
+.rit-box .act.theirs { box-shadow: 0 0 0 3px var(--room-2), 0 0 0 5px rgba(255, 255, 255, .38); }
+.rit-box .act.on.theirs { box-shadow: 0 0 0 3px var(--room-2), 0 0 0 5px #fff; }
+.rit-box .act .who { font: 700 11.5px/1.1 var(--ui); letter-spacing: 0; opacity: .75; max-width: 9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* numbers nobody else picked fade back, but still work */
+.rit-box .act.dim { opacity: .45; }
+.rit-box .act.dim:hover { opacity: .8; }
 
 /* ---------- drawer ---------- */
 .drawer { width: 330px; background: var(--room-2); border-left: 1px solid #1c1c1c; display: flex; flex-direction: column; min-height: 0; }

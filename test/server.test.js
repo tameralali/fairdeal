@@ -432,6 +432,59 @@ test('the rathole rule: a player who stands up comes back with at least what the
   bot.close();
 });
 
+test('run it: matching picks settle it at once; different picks get a short time to settle, then it runs once', { timeout: 60000 }, async () => {
+  const keep = { rit: DELAYS.rit, ritSettle: DELAYS.ritSettle };
+  Object.assign(DELAYS, { rit: 8000, ritSettle: 500 });
+  try {
+    const a = await admin('Ria', { fund: 500000 });
+    const b = await member('Tom', null, { fund: 500000 });
+    const { id } = await call('POST', '/api/tables', { settings: { autoApprove: true, autoStart: true, smallBlind: 5, bigBlind: 10, rit: { enabled: true, maxRuns: 4 } } }, a.token);
+    const ba = new Bot('Ria', a, 11);
+    const bb = new Bot('Tom', b, 12);
+    ba.passive = bb.passive = true;
+    await ba.connect(id);
+    await bb.connect(id);
+    assert.ok((await ba.emit('seat:request', { seat: 0, buyIn: 1000 })).ok);
+    assert.ok((await bb.emit('seat:request', { seat: 1, buyIn: 1000 })).ok);
+    const t = srv.tables.get(id);
+    const allIn = async () => {
+      await until(() => t.hand && t.hand.phase === 'betting' && t.hand.actor(), 8000, 'a hand to start');
+      const first = t.hand.actor().id === a.user.id ? ba : bb;
+      const second = first === ba ? bb : ba;
+      assert.ok((await first.emit('action', { type: 'allin' })).ok);
+      assert.ok((await second.emit('action', { type: 'call' })).ok);
+      await until(() => t.hand.phase === 'rit', 3000, 'the vote');
+      await until(() => ba.state.hand?.rit?.canChoose && bb.state.hand?.rit?.canChoose, 3000, 'both can pick');
+    };
+    // different picks: everyone has picked, so the time left drops to the short settle window
+    await allIn();
+    const h1 = t.hand;
+    assert.ok((await ba.emit('rit', { runs: 2 })).ok);
+    assert.ok((await bb.emit('rit', { runs: 3 })).ok);
+    assert.equal(h1.phase, 'rit', 'not agreed yet');
+    assert.ok(t.ritDeadline - Date.now() <= 600, 'a short time to settle');
+    await until(() => bb.state.hand?.rit?.picks?.every((x) => x.pick !== null), 3000, 'each sees the other pick');
+    assert.deepEqual(bb.state.hand.rit.picks.map((x) => x.pick).sort(), [2, 3]);
+    await until(() => h1.phase !== 'rit', 3000, 'the vote to end');
+    assert.equal(h1.runCount, 1, 'no agreement: once');
+    // matching picks run it that many times straight away (both stacks topped up for the next hand)
+    await until(() => h1.phase === 'done', 8000, 'the first hand to end');
+    for (const u of [a, b]) t.players.get(u.user.id).stack = 1000;
+    t.maybeStartHand();
+    await until(() => t.hand && t.hand !== h1, 15000, 'the next hand');
+    await allIn();
+    const h2 = t.hand;
+    assert.ok((await ba.emit('rit', { runs: 3 })).ok);
+    assert.ok((await bb.emit('rit', { runs: 3 })).ok);
+    assert.equal(h2.rit.result, 3);
+    assert.equal(h2.runCount, 3);
+    ba.close();
+    bb.close();
+  } finally {
+    Object.assign(DELAYS, keep);
+  }
+});
+
 test('game presets: admins save, update and delete them; members cannot', async () => {
   const a = await admin('Preset');
   const m = await member('Plain');

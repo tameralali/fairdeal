@@ -13,7 +13,7 @@ import { fmtMoney } from '../shared/money.js';
 export const DELAYS = {
   street: 1400, runoutFirst: 2400, runout: 2200, showdown: 1400,
   afterUncontested: 3000, afterShowdown: 5500, perExtraRun: 1500, perExtraBoard: 1000,
-  rit: 20000, autoAct: 400,
+  rit: 20000, ritSettle: 8000, autoAct: 400,
 };
 
 // The format is a list of steps played in order, then repeated from the top. Each step is one game
@@ -1076,15 +1076,18 @@ export class Table {
         hand.resolveRit(k);
         return this.afterHandChange();
       }
-      if (!this.timers.rit) {
-        this.ritDeadline = Date.now() + DELAYS.rit;
+      // Everyone has picked but the numbers differ: a short time to settle on one, then once.
+      const settle = here.every((id) => hand.rit.choices.has(id)) ? Date.now() + DELAYS.ritSettle : Infinity;
+      if (!this.timers.rit || settle < this.ritDeadline) {
+        clearTimeout(this.timers.rit);
+        this.ritDeadline = Math.min(this.timers.rit ? this.ritDeadline : Date.now() + DELAYS.rit, settle);
         this.timers.rit = setTimeout(this.safe(() => {
           this.timers.rit = null;
           if (this.hand !== hand || hand.phase !== 'rit') return;
           const now = voters();
           hand.resolveRit((now.length ? hand.ritAgreement(now) : null) ?? 1);
           this.afterHandChange();
-        }), DELAYS.rit);
+        }), Math.max(0, this.ritDeadline - Date.now()));
       }
     } else if (this.timers.rit) {
       clearTimeout(this.timers.rit);

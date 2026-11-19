@@ -761,14 +761,31 @@ function renderActions(s) {
     return;
   }
   app.actionKey = null;
-  // The vote stays open while it lasts, so a pick can be changed to meet the others'.
+  // The vote stays open while it lasts, so a pick can be changed to meet the others'. What the others
+  // picked shows on the buttons themselves: their number gets a faint ring and their name, and the
+  // numbers nobody else picked are dimmed, so meeting them is one tap.
   if (h && h.rit && h.rit.canChoose) {
     const mine = h.rit.myChoice;
-    const others = (h.rit.picks || []).filter((x) => x.seat !== s.me.seat)
-      .map((x) => `${esc(s.seats[x.seat]?.name || `Seat ${x.seat + 1}`)} <b>${x.pick === null ? 'is picking' : pickWord(x.pick)}</b>`).join(', ');
-    const where = mine === null ? 'Pick one.' : mine === 'any' ? 'You go with the others.' : `You picked ${TIMES[mine]}${others ? '; change it to meet the others if you like' : ''}.`;
-    els.actions.innerHTML = `<div class="rit-box" role="group" aria-label="Pick how many times to run it"><p>Run it how many times?<small>It runs more than once only if everyone picks the same number. Picking once settles it, and so does time running out before you agree. <span data-ritclock></span></small>${others ? `<small class="rit-picks">${others}. ${esc(where)}</small>` : ''}</p>
-      ${Array.from({ length: h.rit.max }, (_, i) => `<button class="act ${i === 0 ? 'call' : 'raise'}${mine === i + 1 ? ' on' : ''}" data-run="${i + 1}" aria-pressed="${mine === i + 1}"><span>${cap(TIMES[i + 1])}</span></button>`).join('')}</div>`;
+    const others = (h.rit.picks || []).filter((x) => x.seat !== s.me.seat);
+    const nameOf = (x) => s.seats[x.seat]?.name || `Seat ${x.seat + 1}`;
+    const by = new Map();
+    for (const x of others) if (typeof x.pick === 'number') by.set(x.pick, [...(by.get(x.pick) || []), nameOf(x)]);
+    const waiting = others.filter((x) => x.pick === null).map(nameOf);
+    const any = others.filter((x) => x.pick === 'any').map(nameOf);
+    const notes = [];
+    if (by.size === 1) {
+      const [k] = [...by.keys()];
+      if (mine !== k) notes.push(`${[...by.values()][0].join(' and ')} picked ${TIMES[k]}: pick the same to run it ${TIMES[k]}.`);
+    } else if (by.size > 1) notes.push('The picks differ: settle on one number.');
+    if (any.length) notes.push(`${any.join(' and ')} ${any.length === 1 ? 'goes' : 'go'} with any number.`);
+    if (waiting.length) notes.push(`Waiting for ${waiting.join(' and ')}.`);
+    const buttons = Array.from({ length: h.rit.max }, (_, i) => {
+      const k = i + 1;
+      const names = by.get(k) || [];
+      const dim = by.size > 0 && k > 1 && !names.length && mine !== k;
+      return `<button class="act ${k === 1 ? 'call' : 'raise'}${mine === k ? ' on' : ''}${names.length ? ' theirs' : ''}${dim ? ' dim' : ''}" data-run="${k}" aria-pressed="${mine === k}"${names.length ? ` aria-label="${esc(cap(TIMES[k]))}, picked by ${esc(names.join(' and '))}"` : ''}><span>${cap(TIMES[k])}</span>${names.length ? `<small class="who">${esc(names.join(', '))}</small>` : ''}</button>`;
+    }).join('');
+    els.actions.innerHTML = `<div class="rit-box" role="group" aria-label="Pick how many times to run it"><p>Run it how many times?<small>It runs more than once only if everyone picks the same number. Picking once settles it, and so does time running out before you agree. <span data-ritclock></span></small>${notes.length ? `<small class="rit-picks">${esc(notes.join(' '))}</small>` : ''}</p>${buttons}</div>`;
     tick();
     return;
   }
