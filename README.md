@@ -4,7 +4,7 @@ Private online poker for a home game. It plays like PokerNow (share a link, appr
 
 ## What it does
 
-**One club, in dollars and cents.** The site is a single club, The Aquarium, and every account is in it. All amounts are dollars and cents, down to $0.01 (blinds of $0.10/$0.25 work). The home page is the club: your balance, the games running now, every member's balance, credit limit and net from play, the ledger of every movement, and all-time stats. Admins add to or take from balances, set credit limits and settle up from there (on a phone, tap a member).
+**One club, in dollars and cents.** The site is a single club, The Aquarium, and every account is in it. All amounts are dollars and cents, down to $0.01 (blinds of $0.10/$0.25 work). The home page is the club: your balance, the games running now, every member's balance, credit limit and net from play, the ledger of every movement, and all-time stats. Admins add to or take from balances, set credit limits and settle up from there (on a phone, tap a member). The home page, the sign-in page and the hand checker wear the table's green felt, with brass buttons and cream text.
 
 **Start a game.** Admins open games from a pop-out that sets the format, stakes and seats, players needed to start, the clock, bomb pots, running it, the rathole time, what happens to folded cards, and seating. It remembers the last game.
 

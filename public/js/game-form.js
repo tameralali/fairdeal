@@ -253,7 +253,7 @@ export function fitMinPlayers(select, seats) {
   select.innerHTML = Array.from({ length: seats - 1 }, (_, i) => i + 2).map((n) => `<option value="${n}" ${n === cur ? 'selected' : ''}>${n === 2 ? '2 (deal right away)' : n}</option>`).join('');
 }
 
-export const ritText = 'When everyone is all in before the river, the players in the hand get 15 seconds to vote, before any cards are turned over. Any vote for once wins; otherwise the lowest vote is used. Only votes that come in count, and no votes means once.';
+export const ritText = "When everyone is all in before the river, the players in the hand pick how many times to run it, before any cards are turned over, and see each other's picks. If they all pick the same number, it runs that many times straight away; a pick of once settles it at once. If the picks still differ 8 seconds after everyone has picked, or the vote is still open after 20 seconds, it runs once.";
 
 // Seats select limited to what the format can deal.
 export function fitSeats(select, format, bombPot, hintEl) {
