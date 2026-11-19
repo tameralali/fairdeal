@@ -430,33 +430,47 @@ export class Hand {
       this.phase = 'rit';
       this.pending = null;
       this.rit = { max: maxRuns, eligible: this.live.map((p) => p.id), choices: new Map(), result: null };
-      this.log(`Everyone is all in. Voting on how many times to run it (up to ${TIMES[maxRuns]}).`, 'rit');
+      this.log(`Everyone is all in. Picking how many times to run it (up to ${TIMES[maxRuns]}): it runs more than once only if everyone picks the same number.`, 'rit');
       return;
     }
     this.revealLive();
     this.enterRunout(1);
   }
 
+  // The players in the all-in pick in the open: everyone sees every pick and anyone may change theirs
+  // until it is decided. runs: 1 to the most allowed, or 'any' to go with whatever the others pick.
   setRitChoice(id, runs) {
     if (this.phase !== 'rit') throw new Error('There is no vote right now');
     if (!this.rit.eligible.includes(id)) throw new Error('You are not in this all-in');
-    if (this.rit.choices.has(id)) throw new Error('You already voted');
-    const n = Math.max(1, Math.min(this.rit.max, Math.floor(Number(runs)) || 1));
-    this.rit.choices.set(id, n);
+    const pick = runs === 'any' ? 'any' : Math.max(1, Math.min(this.rit.max, Math.floor(Number(runs)) || 1));
+    this.rit.choices.set(id, pick);
     this.version++;
-    // A vote for once decides it on the spot; otherwise wait until everyone has voted (or time runs out).
-    if (n === 1 || this.rit.choices.size === this.rit.eligible.length) this.resolveRit();
+    const k = this.ritAgreement();
+    if (k !== null) this.resolveRit(k);
   }
 
-  // Only votes that came in count. Any vote for once wins; otherwise the lowest vote is used.
-  // Nobody voting means once.
-  resolveRit() {
+  // What the players in ids agree on, or null while they have not. A pick of once settles it at once.
+  // Otherwise everyone has to have picked the same number; going with the others agrees with any
+  // number, and if that is all anyone picked, it runs the most allowed.
+  ritAgreement(ids = this.rit.eligible) {
+    const picks = ids.map((id) => this.rit.choices.get(id));
+    if (picks.includes(1)) return 1;
+    if (!ids.length || picks.includes(undefined)) return null;
+    const nums = picks.filter((x) => x !== 'any');
+    if (!nums.length) return this.rit.max;
+    return nums.every((x) => x === nums[0]) ? nums[0] : null;
+  }
+
+  // Ends the vote with k runs; with k left out (time is up), what everyone agrees on, or once.
+  resolveRit(k = null) {
     if (this.phase !== 'rit') return;
-    const votes = this.rit.eligible.filter((id) => this.rit.choices.has(id)).map((id) => this.rit.choices.get(id));
-    const k = votes.length ? Math.min(...votes) : 1;
+    if (k === null) k = this.ritAgreement() ?? 1;
     this.rit.result = k;
-    const picks = this.rit.eligible.map((id) => `${this.byId(id).name}: ${this.rit.choices.has(id) ? this.rit.choices.get(id) : 'no vote'}`).join(', ');
-    this.log(`Run it vote: ${picks}. Running it ${TIMES[k]}.`, 'rit');
+    const word = (x) => (x === undefined ? 'no pick' : x === 'any' ? 'any number' : TIMES[x]);
+    const picked = this.rit.eligible.map((id) => this.rit.choices.get(id));
+    const picks = this.rit.eligible.map((id, i) => `${this.byId(id).name} ${word(picked[i])}`).join(', ');
+    const why = k === 1 && !picked.includes(1) ? 'No agreement, so it runs once.' : `Running it ${TIMES[k]}.`;
+    this.log(`Run it: ${picks}. ${why}`, 'rit');
     this.revealLive();
     this.enterRunout(k);
     this.version++;
@@ -651,6 +665,8 @@ export class Hand {
         max: this.rit.max,
         eligibleSeats: this.rit.eligible.map((id) => this.byId(id).seat),
         chosenSeats: [...this.rit.choices.keys()].map((id) => this.byId(id).seat),
+        // every pick is open to the whole table
+        picks: this.rit.eligible.map((id) => ({ seat: this.byId(id).seat, pick: this.rit.choices.get(id) ?? null })),
         myChoice: this.rit.choices.get(viewerId) ?? null,
         canChoose: this.phase === 'rit' && this.rit.eligible.includes(viewerId),
         result: this.rit.result,

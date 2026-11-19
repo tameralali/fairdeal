@@ -130,9 +130,16 @@ class Bot {
       else a = { type: 'fold' };
       this.socket.emit('action', a, (ack) => { this.busy = false; if (!ack.ok) this.errors.push(ack.error); });
     }
-    if (h.rit && h.rit.canChoose && h.rit.myChoice === null && !this.ritBusy) {
-      this.ritBusy = true;
-      this.socket.emit('rit', { runs: this.rng() < 0.25 ? 1 : 2 + Math.floor(this.rng() * 3) }, () => { this.ritBusy = false; });
+    if (h.rit && h.rit.canChoose && !this.ritBusy) {
+      // pick at random; seeing someone else's pick of more than once, sometimes come over to it
+      const other = (h.rit.picks || []).find((x) => x.seat !== s.me.seat && typeof x.pick === 'number' && x.pick > 1);
+      let runs = null;
+      if (h.rit.myChoice === null) runs = this.rng() < 0.2 ? 1 : 2 + Math.floor(this.rng() * 3);
+      else if (other && other.pick !== h.rit.myChoice && h.rit.myChoice !== 1 && this.ritMoved !== h.number) { this.ritMoved = h.number; runs = this.rng() < 0.7 ? other.pick : 1; }
+      if (runs !== null) {
+        this.ritBusy = true;
+        this.socket.emit('rit', { runs }, () => { this.ritBusy = false; });
+      }
     }
   }
   close() { this.socket?.close(); }

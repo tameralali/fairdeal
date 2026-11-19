@@ -83,8 +83,12 @@ test('all in preflop, run three times on two boards', () => {
   checkSteps(rec, R);
   const runs = R.steps.filter((s) => s.dealt === 'run');
   assert.equal(runs.length, 3);
-  assert.deepEqual(runs[0].cuts, [5, 5, 0, 0, 0, 0], 'run 1 deals both of its boards');
-  assert.deepEqual(runs[1].cuts, [5, 5, 5, 5, 0, 0]);
+  assert.deepEqual(runs[0].cuts, [3, 3, 0, 0, 0, 0], 'run 1 starts with the flop on both of its boards');
+  assert.deepEqual(runs[1].cuts, [5, 5, 3, 3, 0, 0], 'run 2 starts once run 1 is out');
+  // every run goes street by street: flop, turn, river
+  const at = R.steps.indexOf(runs[0]);
+  assert.deepEqual(R.steps.slice(at, at + 3).map((x) => x.cuts.slice(0, 2)), [[3, 3], [4, 4], [5, 5]]);
+  assert.deepEqual(R.steps.slice(at, at + 9).map((x) => x.street), ['flop', 'turn', 'river', 'flop', 'turn', 'river', 'flop', 'turn', 'river']);
 });
 
 test('a bomb pot starts on the flop; a hand checked down deals every street', () => {

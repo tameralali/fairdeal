@@ -171,6 +171,7 @@ export async function replayDialog(n, { order = [], onDetails = null } = {}) {
         <button type="button" class="btn small" data-rp="prev" ${i ? '' : 'disabled'}>Back</button>
         <button type="button" class="btn small primary" data-rp="play">${timer ? 'Pause' : i === last ? 'Play again' : 'Play'}</button>
         <button type="button" class="btn small" data-rp="next" ${i < last ? '' : 'disabled'}>Next</button>
+        <button type="button" class="btn small" data-rp="street" ${i < last ? '' : 'disabled'} title="Jump to the next cards dealt">Next street</button>
         <button type="button" class="btn small" data-rp="last" ${i < last ? '' : 'disabled'} aria-label="Last step">End</button>
         <input type="range" min="0" max="${last}" value="${i}" data-rp-range aria-label="Step">
       </div>
@@ -194,7 +195,9 @@ export async function replayDialog(n, { order = [], onDetails = null } = {}) {
         return;
       }
       stop();
-      go(k === 'first' ? 0 : k === 'prev' ? i - 1 : k === 'next' ? i + 1 : R.steps.length - 1);
+      // the next street: the next step that deals cards, or the result
+      const street = () => { let j = i + 1; while (j < R.steps.length - 1 && !R.steps[j].dealt) j++; return j; };
+      go(k === 'first' ? 0 : k === 'prev' ? i - 1 : k === 'next' ? i + 1 : k === 'street' ? street() : R.steps.length - 1);
     }
     const h = e.target.closest('[data-hand-go]');
     if (h && h.dataset.handGo) load(Number(h.dataset.handGo));

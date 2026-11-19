@@ -2,6 +2,7 @@ import { api, ensureIdentity } from './api.js';
 import { esc, $, $$, toast, clock } from './ui.js';
 import { cardHTML, backHTML, slotHTML, prefs, applyPrefs, suitText, shortHandName } from './cards.js';
 import { equity } from '/shared/equity.js';
+import { playSound, unlockSound } from './sounds.js';
 import { sealSVG } from './seal.js';
 import { FairClient } from './fair-client.js';
 import { bestHand } from '/shared/evaluator.js';
@@ -26,6 +27,8 @@ async function main() {
   app.fair = new FairClient(app.tableId, (ev, p) => emit(ev, p, { quiet: true }), onVerified);
   const drawerPref = localStorage.getItem('fd:drawer');
   if (drawerPref === 'closed' || (drawerPref === null && window.innerWidth < 900)) els.drawer.classList.add('collapsed');
+  // browsers only allow sound after a tap or key press on the page
+  for (const ev of ['pointerdown', 'keydown', 'touchstart']) document.addEventListener(ev, unlockSound, { capture: true, passive: true });
   connect();
   new ResizeObserver(resize).observe(els.stage);
   resize();
@@ -61,7 +64,7 @@ function connect() {
   });
   socket.on('toast', (t) => toast(t.text));
   socket.on('request', (r) => {
-    chime('request');
+    if (prefs.sound) playSound('request');
     toast(`${r.name} ${r.type === 'seat' ? 'asked for a seat' : 'asked to add chips'} (${r.amount})`);
   });
   socket.on('hands:revealed', ({ through }) => app.fair.onRevealed(through, fetchRecord));
@@ -100,22 +103,49 @@ function setConn(ok) {
 
 function onState(s) {
   const first = !app.state;
+  const prev = app.state;
+  // cards already on the table when the page opens are not dealt again
+  app.quietDeal = first;
   app.state = s;
   app.offset = s.serverNow - Date.now();
   app.dec = s.table.decimals;
   app.fair.onState(s);
   const L = s.hand?.legal;
   const turnKey = L ? `${s.hand.number}|${s.hand.street}|${L.currentBet}|${L.toCall}` : null;
-  if (turnKey && turnKey !== app.turnKey) chime('turn');
+  if (turnKey && turnKey !== app.turnKey && prefs.sound) playSound('turn');
   app.turnKey = turnKey;
   const h = s.hand;
   if (h?.rit?.canChoose && h.rit.myChoice === null && prefs.autoRun !== 'ask' && app.autoRan !== h.number) {
     app.autoRan = h.number;
-    emit('rit', { runs: prefs.autoRun === 'once' ? 1 : h.rit.max }, { quiet: true });
+    emit('rit', { runs: prefs.autoRun === 'once' ? 1 : 'any' }, { quiet: true });
   }
   if (first) app.fair.onRevealed(s.table.revealedThrough, fetchRecord);
   render();
+  tableSounds(prev, s);
   D.onState(s);
+}
+
+// Chips for bets and calls, a slide for a fold, a knock for a check, and the pot pushed to a winner,
+// worked out from what changed since the last update. Cards dealt make their sound as they land.
+function tableSounds(prev, s) {
+  if (!prefs.tableSounds) { app.dealt = []; return; }
+  const dealt = app.dealt || [];
+  app.dealt = [];
+  dealt.slice(0, 30).forEach((ms) => playSound('deal', ms / 1000));
+  const h = s.hand;
+  const was = prev && prev.hand;
+  if (!h || !was || was.number !== h.number) return;
+  const before = new Map(was.players.map((p) => [p.seat, p]));
+  let delay = 0;
+  for (const p of h.players) {
+    const b = before.get(p.seat);
+    if (!b || !p.lastAction) continue;
+    if (p.lastAction === b.lastAction && p.bet === b.bet && p.folded === b.folded) continue;
+    const kind = p.lastAction === 'Fold' ? 'fold' : p.lastAction === 'Check' ? 'check' : p.lastAction === 'Call' || p.lastAction === 'Bet' ? 'chips' : 'bigchips';
+    playSound(kind, delay);
+    delay += 0.09;
+  }
+  if (h.phase === 'done' && was.phase !== 'done' && h.results) playSound('win', 0.25);
 }
 
 function onVerified(n, res) {
@@ -132,18 +162,18 @@ function onVerified(n, res) {
 // Sizes in units of --u (a hundredth of the table's width, or a 64th when it stands upright): the
 // player boxes and how far a fanned hand reaches past the left edge of its box.
 const SIZES = {
-  land: { box: 21, me: 23, card: 5, myCard: 6.4, reach: 8, myReach: 9.8, perU: 1 },
-  port: { box: 20, me: 24, card: 5, myCard: 7.6, reach: 7.4, myReach: 10.6, perU: 100 / 64 },
+  land: { box: 21, me: 23, card: 5, myCard: 6.4, reach: 7.4, myReach: 9.1, perU: 1 },
+  port: { box: 20, me: 24, card: 5, myCard: 7.6, reach: 6.9, myReach: 9.9, perU: 100 / 64 },
 };
 const STEP = { 2: 0.5, 4: 0.34, 5: 0.29 };
 
 // How far a fanned hand of n cards sticks out to the left of its box, in units, the tilt of the
 // outside card included.
-const TILT = { 2: 3, 4: 7.5, 5: 8.4 };
+const TILT = { 2: 4.5, 4: 12, 5: 13 };
 function overhang(z, n, me) {
   const w = me ? z.myCard : z.card;
   const reach = me ? z.myReach : z.reach;
-  const tilt = w * 1.25 * 1.7 * Math.sin(((TILT[n] || 7) * Math.PI) / 180);
+  const tilt = w * 1.2 * 1.35 * Math.sin(((TILT[n] || 7) * Math.PI) / 180);
   return Math.max(0, w * (1 + (n - 1) * (STEP[n] || 0.4)) - reach + tilt);
 }
 
@@ -183,7 +213,7 @@ function spread(weights, a, b, band = 0) {
 function geometry(n, portrait, holeN) {
   const z = portrait ? SIZES.port : SIZES.land;
   const P = portrait
-    ? { cx: 50, cy: 48.5, px: 40, py: 42.5, mine: 1.55, boxh: 7.2, myBoxh: 7.6, pill: [8.5, 3.4], aim: 10, dot: 3, board: 8.5 }
+    ? { cx: 50, cy: 48.5, px: 40, py: 43, mine: 1.55, boxh: 7.2, myBoxh: 7.6, pill: [8.5, 3.4], aim: 10, dot: 3, board: 7.6 }
     : { cx: 50, cy: 48, px: 42, py: 40, mine: 1.3, boxh: 6.4, myBoxh: 6.8, pill: [10, 3.1], aim: 14, dot: 2.6 };
   const F = portrait ? FELT.port : FELT.land;
   // work in units: x in % of the width divided by ux, y in % of the height divided by uy
@@ -193,7 +223,7 @@ function geometry(n, portrait, holeN) {
   // much wider than it is tall, so seats along the top and bottom need more of the edge than seats at
   // the sides. The bottom seat takes a little more again.
   const weights = Array.from({ length: n }, (_, i) => (i === 0 ? P.mine : 1));
-  const tall = Math.max(P.boxh, z.card * 1.25 + 0.5);
+  const tall = Math.max(P.boxh, z.card * 1.2 + 0.5);
   // upright, the board is nearly as wide as the table: seats at the sides keep above or below it
   const band = portrait ? (P.board + P.boxh / 2) / tall : 0;
   const angles = spread(weights, P.px / ux / z.box, P.py / uy / tall, band);
@@ -215,7 +245,7 @@ function geometry(n, portrait, holeN) {
     const y = P.cy + P.py * sn;
     const S = { x: x / ux, y: y / uy };
     // the box with its cards: wider on the left, and the cards a little taller than the box
-    const card = (me ? z.myCard : z.card) * 1.25;
+    const card = (me ? z.myCard : z.card) * 1.2;
     const box = { l: S.x - bw / 2 - over, r: S.x + bw / 2, t: S.y - Math.max(me ? P.myBoxh : P.boxh, card + 1.2) / 2, b: S.y + Math.max(me ? P.myBoxh : P.boxh, card + 0.4) / 2 };
     // aim above or below the middle, so bets from the sides stay off the board
     const off = S.y < C.y - 0.5 ? -P.aim : S.y > C.y + 0.5 ? P.aim : 0;
@@ -368,10 +398,11 @@ function resultInfo(h) {
   return info;
 }
 
-function dealCls(key) {
-  if (app.seen.has(key)) return '';
+// True the first time a card shows up in this hand (and not when the page has just opened).
+function fresh(key) {
+  if (app.seen.has(key)) return false;
   app.seen.add(key);
-  return 'deal';
+  return !app.quietDeal;
 }
 
 // The run being dealt: the first whose boards are not all complete, or the last one.
@@ -417,6 +448,15 @@ function renderTable(s) {
   const nextGame = t.rotation ? t.rotation.current : t.settings.format[0].game;
   const holeN = GAME_TYPES[h ? h.gameType : nextGame]?.holeCount || 2;
   const geo = geometry(n, app.portrait, holeN);
+  // Dealing goes one card at a time: one to each player, starting left of the button, then the next
+  // round, each card coming from the middle of the table.
+  const order = h ? h.players.map((p) => p.seat).sort((a, b) => a - b) : [];
+  if (h) { const k = order.findIndex((st) => st > h.buttonSeat); if (k > 0) order.push(...order.splice(0, k)); }
+  const step = order.length ? Math.max(45, Math.min(110, 1800 / (order.length * holeN))) : 0;
+  const dealAt = (seat, i) => Math.round((i * order.length + Math.max(0, order.indexOf(seat))) * step);
+  const AW = els.area.clientWidth;
+  const AH = els.area.clientHeight;
+  app.dealt = [];
   const rot = s.me.seat ?? 0;
   const hp = new Map((h?.players || []).map((p) => [p.seat, p]));
   const R = resultInfo(h);
@@ -455,15 +495,27 @@ function renderTable(s) {
       const count = p.holeCount || (p.hole ? p.hole.length : 0);
       const faces = p.hole && (!p.folded || isMe || p.shown || p.hole.some(Boolean));
       let cards = '';
+      // a card seen face down before is turned over in place; a new card is dealt to the seat
+      const motion = (key, back, i) => {
+        if (!fresh(key)) return ['', ''];
+        if (app.seen.has(back) && back !== key) return ['flip', ''];
+        const ms = dealAt(seat, i);
+        app.dealt.push(ms);
+        return ['deal', `;--dd:${ms}ms`];
+      };
       if (faces) {
         const hc = R.handCards.get(seat);
-        cards = p.hole.map((c, i) => (c
-          ? cardHTML(c, `${hc ? (hc.has(c) ? 'win' : 'dim') : ''} ${dealCls(`h${seat}${i}${c}`)}`, `--i:${i}`)
-          : backHTML('', `--i:${i}`))).join('');
+        cards = p.hole.map((c, i) => {
+          if (!c) { const [m, st] = motion(`b${seat}${i}`, `b${seat}${i}`, i); return backHTML(m, `--i:${i}${st}`); }
+          const [m, st] = motion(`h${seat}${i}${c}`, `b${seat}${i}`, i);
+          return cardHTML(c, `${hc ? (hc.has(c) ? 'win' : 'dim') : ''} ${isMe ? '' : 'tint'} ${m}`, `--i:${i}${st}`);
+        }).join('');
       } else if (!p.folded) {
-        cards = Array.from({ length: count }, (_, i) => backHTML(dealCls(`b${seat}${i}`), `--i:${i}`)).join('');
+        cards = Array.from({ length: count }, (_, i) => { const [m, st] = motion(`b${seat}${i}`, `b${seat}${i}`, i); return backHTML(m, `--i:${i}${st}`); }).join('');
       }
-      if (cards) fan = `<div class="fan n${count}">${cards}</div>`;
+      const fx = ((50 - g.x) / 100) * AW;
+      const fy = ((47.5 - g.y) / 100) * AH;
+      if (cards) fan = `<div class="fan n${count}" style="--fx:${fx.toFixed(0)}px;--fy:${fy.toFixed(0)}px">${cards}</div>`;
       else if (p.folded) fan = FOLD_MARK;
       const ch = chances && chances.get(seat);
       if (ch !== undefined && ch !== null) {
@@ -479,7 +531,10 @@ function renderTable(s) {
 
     let tag = '';
     let tagCls = '';
+    // during the run-it vote each player's pick shows on their seat, for the whole table
+    const ritPick = h && h.phase === 'rit' && h.rit ? (h.rit.picks || []).find((x) => x.seat === seat) : null;
     if (won) { tag = '+' + fmt(won); tagCls = 'win'; }
+    else if (ritPick) { tag = ritPick.pick === null ? 'Picking' : ritPick.pick === 'any' ? 'Any number' : cap(TIMES[ritPick.pick]); tagCls = ritPick.pick === null ? 'out' : 'pick'; }
     else if (p && live && p.lastAction && !p.allIn && !(p.folded && !isMe)) { tag = p.lastAction; tagCls = p.lastAction.toLowerCase().replace(/[^a-z]/g, ''); }
     else if (info.leaving) { tag = 'Leaving'; tagCls = 'out'; }
     else if (!p && info.sittingOut) { tag = info.away ? 'Away' : 'Sitting out'; tagCls = 'out'; }
@@ -535,6 +590,9 @@ function centerHTML(s, R) {
   const runs = Math.max(1, Math.round(boards.length / bpr));
   // A double board with one run is stacked, board 1 above board 2, so the cards stay big.
   const stacked = bpr > 1 && runs === 1;
+  // a board dealt with the hands (a bomb pot's flop) waits until the hands are out
+  const boardStart = app.dealt && app.dealt.length ? Math.max(...app.dealt) + 350 : 0;
+  let turned = 0;
   let grid = '';
   if (bpr > 1 && !stacked) grid += `${runs > 1 ? '<span></span>' : ''}${Array.from({ length: bpr }, (_, i) => `<span class="bhead">Board ${i + 1}</span>`).join('')}`;
   for (let r = 0; r < runs; r++) {
@@ -548,8 +606,13 @@ function centerHTML(s, R) {
       for (let j = 0; j < 5; j++) {
         const c = b[j];
         if (!c) { slots += slotHTML(); continue; }
-        const cls = [dealCls(`r${i}${j}${c}`), r > 0 && j < (h.sharedCount ?? 0) ? 'shared' : '', used ? (used.has(c) ? 'win' : 'dim') : ''].join(' ');
-        slots += cardHTML(c, cls);
+        // new cards are turned over one after another; a later run's copy of the shared cards just shows
+        const shared = r > 0 && j < (h.sharedCount ?? 0);
+        const isNew = fresh(`r${i}${j}${c}`) && !shared;
+        let style = '';
+        if (isNew) { const ms = boardStart + turned * 240; turned++; app.dealt.push(ms); style = `--dd:${ms}ms`; }
+        const cls = [isNew ? 'flip' : '', shared ? 'shared' : '', used ? (used.has(c) ? 'win' : 'dim') : ''].join(' ');
+        slots += cardHTML(c, cls, style);
       }
       grid += `<div class="board" aria-label="${esc(boardName(i, bpr, boards.length) || 'Board')}">${slots}</div>`;
     }
@@ -567,9 +630,7 @@ function centerHTML(s, R) {
       ? `<div class="pot">${out > 0 ? `<span class="total"><i>total</i> ${fmt(h.potTotal)}</span>` : ''}<b>${fmt(h.pot)}</b></div>`
       : `<div class="pot"><b><i>total</i> ${fmt(h.potTotal)}</b></div>`;
     if (h.phase === 'rit') {
-      const voted = h.rit ? h.rit.chosenSeats.length : 0;
-      const of = h.rit ? h.rit.eligibleSeats.length : 0;
-      below += `<div class="rit-note">All in. Voting on how many times to run it: ${voted} of ${of} voted, <span data-ritclock></span></div>`;
+      below += `<div class="rit-note">All in: picking how many times to run it, <span data-ritclock></span></div>`;
     } else if (h.rit && h.rit.result > 1) below += `<div class="rit-note">Running it ${TIMES[h.rit.result]}</div>`;
   }
   const bombWhy = h.bombReason === 'manual' ? 'called by the host' : h.bombReason === 'every' ? 'scheduled' : h.bombReason === 'percent' ? 'random' : '';
@@ -700,19 +761,21 @@ function renderActions(s) {
     return;
   }
   app.actionKey = null;
-  if (h && h.rit && h.rit.canChoose && h.rit.myChoice === null) {
-    els.actions.innerHTML = `<div class="rit-box" role="group" aria-label="Vote on how many times to run it"><p>Run it how many times?<small>Any vote for once wins, otherwise the lowest vote. <span data-ritclock></span></small></p>
-      ${Array.from({ length: h.rit.max }, (_, i) => `<button class="act ${i === 0 ? 'call' : 'raise'}" data-run="${i + 1}"><span>${TIMES[i + 1][0].toUpperCase() + TIMES[i + 1].slice(1)}</span></button>`).join('')}</div>`;
+  // The vote stays open while it lasts, so a pick can be changed to meet the others'.
+  if (h && h.rit && h.rit.canChoose) {
+    const mine = h.rit.myChoice;
+    const others = (h.rit.picks || []).filter((x) => x.seat !== s.me.seat)
+      .map((x) => `${esc(s.seats[x.seat]?.name || `Seat ${x.seat + 1}`)} <b>${x.pick === null ? 'is picking' : pickWord(x.pick)}</b>`).join(', ');
+    const where = mine === null ? 'Pick one.' : mine === 'any' ? 'You go with the others.' : `You picked ${TIMES[mine]}${others ? '; change it to meet the others if you like' : ''}.`;
+    els.actions.innerHTML = `<div class="rit-box" role="group" aria-label="Pick how many times to run it"><p>Run it how many times?<small>It runs more than once only if everyone picks the same number. Picking once settles it, and so does time running out before you agree. <span data-ritclock></span></small>${others ? `<small class="rit-picks">${others}. ${esc(where)}</small>` : ''}</p>
+      ${Array.from({ length: h.rit.max }, (_, i) => `<button class="act ${i === 0 ? 'call' : 'raise'}${mine === i + 1 ? ' on' : ''}" data-run="${i + 1}" aria-pressed="${mine === i + 1}"><span>${cap(TIMES[i + 1])}</span></button>`).join('')}</div>`;
     tick();
     return;
   }
   let status = '';
   if (h && h.phase !== 'done') {
     if (h.phase === 'rit') {
-      const left = h.rit ? h.rit.eligibleSeats.length - h.rit.chosenSeats.length : 0;
-      status = h.rit && h.rit.myChoice
-        ? `You voted ${TIMES[h.rit.myChoice]}. Waiting for ${left} more vote${left === 1 ? '' : 's'}, <span data-ritclock></span>`
-        : 'The players in the hand are voting on how many times to run it';
+      status = 'The players in the hand are picking how many times to run it: everyone has to pick the same number, or it runs once. <span data-ritclock></span>';
     } else if (h.actorSeat !== null && h.actorSeat !== undefined) {
       const a = s.seats[h.actorSeat];
       if (a && a.userId !== s.me.userId) status = `Waiting for ${esc(a.name)}`;
@@ -720,6 +783,12 @@ function renderActions(s) {
   }
   els.actions.innerHTML = status ? `<div class="status-line">${status}</div>` : '';
   if (status) tick();
+}
+
+const cap = (t) => t[0].toUpperCase() + t.slice(1);
+// a pick in the run-it vote, as shown on a seat
+function pickWord(x) {
+  return x === 'any' ? 'goes with the others' : TIMES[x];
 }
 
 function raiseLabel(L, to) {
@@ -812,28 +881,6 @@ function appendLog(entries) {
 }
 
 // ---------- sound ----------
-let audio;
-function chime(kind) {
-  if (!prefs.sound) return;
-  try {
-    audio ||= new (window.AudioContext || window.webkitAudioContext)();
-    const notes = kind === 'turn' ? [660, 990] : [523, 659];
-    notes.forEach((f, i) => {
-      const o = audio.createOscillator();
-      const g = audio.createGain();
-      const t0 = audio.currentTime + i * 0.11;
-      o.type = 'triangle';
-      o.frequency.value = f;
-      g.gain.setValueAtTime(0.0001, t0);
-      g.gain.exponentialRampToValueAtTime(0.12, t0 + 0.015);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.2);
-      o.connect(g).connect(audio.destination);
-      o.start(t0);
-      o.stop(t0 + 0.22);
-    });
-  } catch { /* audio unavailable */ }
-}
-
 // ---------- events ----------
 function bindEvents() {
   document.addEventListener('click', async (e) => {

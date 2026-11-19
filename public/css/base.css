@@ -1,7 +1,7 @@
 @font-face { font-family: 'Lato'; font-weight: 400; font-display: swap; src: url('/fonts/lato-latin-400-normal.woff2') format('woff2'); }
 @font-face { font-family: 'Lato'; font-weight: 700; font-display: swap; src: url('/fonts/lato-latin-700-normal.woff2') format('woff2'); }
 @font-face { font-family: 'Lato'; font-weight: 900; font-display: swap; src: url('/fonts/lato-latin-900-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Playfair Display'; font-weight: 900; font-display: swap; src: url('/fonts/playfair-display-latin-900-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Abril Fatface'; font-weight: 400; font-display: swap; src: url('/fonts/abril-fatface-latin-400-normal.woff2') format('woff2'); }
 
 /* Charcoal room, a green felt, white cards. Colour carries meaning: violet is the interface
    (buttons, links, the dealer button, chat), pale yellow-green is money on the felt, red is
@@ -32,7 +32,8 @@
   --card: #ffffff;
   --ui: 'Lato', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --num: 'Lato', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --serif: 'Playfair Display', Georgia, 'Times New Roman', serif;
+  /* the card faces and the name of the club */
+  --serif: 'Abril Fatface', 'Bodoni 72', Didot, Georgia, 'Times New Roman', serif;
   --mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
   --r-sm: 6px;
   --r-md: 9px;
@@ -277,8 +278,8 @@ dialog[open] { display: flex; flex-direction: column; }
 .seal { display: inline-block; vertical-align: middle; flex: none; }
 
 /* ---------- wordmark ---------- */
-.wordmark { display: inline-flex; align-items: center; gap: .5rem; font: 900 21px/1 var(--serif); letter-spacing: .005em; color: var(--text); text-decoration: none; }
-.wordmark b { color: inherit; font-weight: 900; }
+.wordmark { display: inline-flex; align-items: center; gap: .5rem; font: 400 22px/1 var(--serif); letter-spacing: .01em; color: var(--text); text-decoration: none; }
+.wordmark b { color: inherit; font-weight: 400; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }

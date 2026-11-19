@@ -27,9 +27,10 @@ export function buildReplay(rec, fmt = (a) => String(a)) {
   let collected = 0;
   let street = 'preflop';
   let shown = 0; // cards showing on each board of the first run
-  let runsOut = 1; // runs on the table (later runs are dealt in full, one after another)
+  // cards showing on each board; a later run's boards stay off the table until that run is dealt
+  const cut = boards.map(() => 0);
   const steps = [];
-  const cuts = (all) => boards.map((b, i) => (all ? b.length : Math.floor(i / bpr) === 0 ? Math.min(shown, b.length) : Math.floor(i / bpr) < runsOut ? b.length : 0));
+  const cuts = (all) => boards.map((b, i) => (all ? b.length : Math.min(cut[i], b.length)));
   const snap = (text, extra = {}) => steps.push({
     text, street, cuts: cuts(extra.final), pot: collected + ps.reduce((s, p) => s + p.bet, 0), actor: null, final: false,
     players: ps.map((p) => ({ ...p })), ...extra,
@@ -41,12 +42,13 @@ export function buildReplay(rec, fmt = (a) => String(a)) {
       if (!p.folded && !p.allIn) p.tag = '';
     }
   };
+  const newCards = (b, name) => boards[b].slice(name === 'flop' ? 0 : STREET_CARDS[name] - 1, STREET_CARDS[name]);
   const deal = (name) => {
     collect();
     street = name;
     shown = Math.max(shown, STREET_CARDS[name]);
-    const cards = boards.slice(0, bpr).map((b) => b.slice(name === 'flop' ? 0 : STREET_CARDS[name] - 1, STREET_CARDS[name]));
-    snap(`${name[0].toUpperCase()}${name.slice(1)}${bpr > 1 ? '' : `: ${cards[0].join(' ')}`}`, { dealt: name });
+    for (let b = 0; b < bpr; b++) cut[b] = shown;
+    snap(`${name[0].toUpperCase()}${name.slice(1)}${bpr > 1 ? '' : `: ${newCards(0, name).join(' ')}`}`, { dealt: name });
   };
 
   // blinds or bomb pot antes
@@ -95,12 +97,20 @@ export function buildReplay(rec, fmt = (a) => String(a)) {
     } else {
       for (const s of STREETS) if (STREET_CARDS[s] > shown && STREET_CARDS[s] <= shared) deal(s);
       collect();
+      // each run is dealt street by street, one run after another; the first street of a run marks it
       for (let r = 0; r < runs; r++) {
-        if (r === 0) shown = boards[0]?.length || shown;
-        else runsOut = r + 1;
-        street = 'river';
-        snap(`Run ${r + 1} of ${runs}`, { dealt: 'run', run: r });
+        const own = Array.from({ length: bpr }, (_, k) => r * bpr + k);
+        for (const b of own) cut[b] = Math.max(cut[b], shared);
+        let first = true;
+        for (const st of STREETS) {
+          if (STREET_CARDS[st] <= shared || STREET_CARDS[st] > (boards[own[0]]?.length || 0)) continue;
+          for (const b of own) cut[b] = STREET_CARDS[st];
+          street = st;
+          snap(`Run ${r + 1} of ${runs}, ${st}${bpr > 1 ? '' : `: ${newCards(own[0], st).join(' ')}`}`, { dealt: first ? 'run' : st, run: r });
+          first = false;
+        }
       }
+      shown = boards[0]?.length || shown;
     }
   }
 
@@ -116,7 +126,6 @@ export function buildReplay(rec, fmt = (a) => String(a)) {
   }
   street = 'done';
   shown = Math.max(shown, boards[0]?.length || 0);
-  runsOut = runs;
   steps.push({
     text: resultText(rec, fmt), street, cuts: cuts(true), pot: (res.pots || []).reduce((s, p) => s + p.amount, 0), actor: null, final: true,
     players: ps.map((p) => ({ ...p })), winners: [...won.keys()].map((id) => byId.get(id)?.seat).filter((x) => x !== undefined),

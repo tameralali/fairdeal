@@ -549,10 +549,11 @@ export function lookDialog() {
         <div><span class="lbl">Suit colors</span>${seg('colors', [['four', 'Four colors'], ['two', 'Two colors']], prefs.colors)}</div></div>
       <p class="hint">${prefs.colors === 'two' ? 'Hearts and diamonds red, spades and clubs black.' : 'Spades black, hearts red, diamonds blue, clubs green, so a flush draw is easy to spot.'}</p>
       <div><span class="lbl">Card backs</span><div class="swatches">${BACKS.map((b) => `<button type="button" class="swatch ${prefs.back === b.id ? 'on' : ''}" data-back="${b.id}" title="${esc(b.name)}" style="background:var(--back)" data-backswatch="${b.id}"></button>`).join('')}</div></div>
-      <div><span class="lbl">When everyone is all in</span>${seg('autoRun', [['ask', 'Ask me to vote'], ['once', 'Always vote once'], ['max', 'Always vote the most']], prefs.autoRun)}</div>
+      <div><span class="lbl">Running it more than once</span>${seg('autoRun', [['ask', 'Ask me'], ['once', 'Always once'], ['any', 'Go with the others']], prefs.autoRun)}<p class="hint">It runs more than once only if everyone in the all-in picks the same number. Going with the others agrees to whatever number they pick.</p></div>
       <div><span class="lbl">Stats on each seat (VPIP / PFR / AF, then hands)</span>${seg('hud', [['game', 'This game'], ['all', 'All games'], ['off', 'Off']], prefs.hud || 'game')}<p class="hint">Numbers are for the game type being played. Pick a seat’s numbers for every stat.</p></div>
       <label class="check"><input type="checkbox" data-pref="handStrength" ${prefs.handStrength ? 'checked' : ''}> Show what my hand makes</label>
       <label class="check"><input type="checkbox" data-pref="sound" ${prefs.sound ? 'checked' : ''}> Sound when it is my turn</label>
+      <label class="check"><input type="checkbox" data-pref="tableSounds" ${prefs.tableSounds ? 'checked' : ''}> Table sounds<small>Chips for bets and calls, folds, checks, cards being dealt and the pot going to the winner.</small></label>
       <label class="check"><input type="checkbox" data-pref="verifyNotes" ${prefs.verifyNotes ? 'checked' : ''}> Note in the log when my browser has checked a hand</label>
       <p class="hint">These settings are saved in this browser and only change what you see.</p>
     </div>`;

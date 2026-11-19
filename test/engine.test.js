@@ -181,36 +181,65 @@ function allInPreflop(n, opts = {}) {
   return h;
 }
 
-test('run it vote: only votes that came in count, and the lowest one is used', () => {
+test('run it vote: everyone on the same number runs it that many times', () => {
   const h = allInPreflop(3);
   assert.equal(h.phase, 'rit');
-  h.setRitChoice('p0', 4);
+  h.setRitChoice('p0', 3);
   h.setRitChoice('p1', 3);
   assert.equal(h.phase, 'rit', 'still waiting for the third player');
-  h.resolveRit(); // the 15 second timer ran out; p2 never voted
+  assert.deepEqual(h.publicState('p2').rit.picks.map((x) => x.pick), [3, 3, null], 'every pick is open to the table');
+  h.setRitChoice('p2', 3);
+  assert.equal(h.phase, 'runout', 'agreed: no need to wait for the time to run out');
   assert.equal(h.runCount, 3);
   while (h.phase !== 'done') h.advance();
   assert.equal(h.boards.length, 3);
   assert.equal(total(h), 3000);
 });
 
-test('run it vote: one vote for once decides it straight away', () => {
+test('run it vote: picks can change to meet the others, and no agreement runs it once', () => {
+  const h = allInPreflop(2);
+  h.setRitChoice('p0', 2);
+  h.setRitChoice('p1', 3);
+  assert.equal(h.phase, 'rit', 'different picks: still open');
+  h.setRitChoice('p1', 2);
+  assert.equal(h.runCount, 2, 'p1 came down to two');
+  const h2 = allInPreflop(2);
+  h2.setRitChoice('p0', 2);
+  h2.setRitChoice('p1', 4);
+  h2.resolveRit(); // the time ran out without agreement
+  assert.equal(h2.runCount, 1);
+  assert.ok(h2.drainEvents().some((e) => /No agreement, so it runs once/.test(e.text)));
+});
+
+test('run it vote: a pick of once decides it straight away', () => {
   const h = allInPreflop(3);
   h.setRitChoice('p0', 4);
   h.setRitChoice('p2', 1);
-  assert.equal(h.phase, 'runout', 'no need to wait for the last vote');
+  assert.equal(h.phase, 'runout', 'no need to wait for the last pick');
   assert.equal(h.runCount, 1);
   assert.equal(h.rit.result, 1);
   assert.throws(() => h.setRitChoice('p1', 4), /no vote/);
 });
 
-test('run it vote: nobody voting means once, and a vote cannot be changed', () => {
-  const h = allInPreflop(2);
-  h.resolveRit();
-  assert.equal(h.runCount, 1);
-  const h2 = allInPreflop(3);
-  h2.setRitChoice('p0', 3);
-  assert.throws(() => h2.setRitChoice('p0', 2), /already voted/);
+test('run it vote: going with the others agrees with any number, and nobody picking means once', () => {
+  const h = allInPreflop(3);
+  h.setRitChoice('p0', 'any');
+  h.setRitChoice('p1', 3);
+  h.setRitChoice('p2', 'any');
+  assert.equal(h.runCount, 3);
+  const h2 = allInPreflop(2);
+  h2.setRitChoice('p0', 'any');
+  h2.setRitChoice('p1', 'any');
+  assert.equal(h2.runCount, 4, 'everyone fine with any number: the most allowed');
+  const h3 = allInPreflop(2);
+  h3.resolveRit();
+  assert.equal(h3.runCount, 1);
+  // the players still here decide between them
+  const h4 = allInPreflop(3);
+  h4.setRitChoice('p0', 2);
+  h4.setRitChoice('p1', 2);
+  assert.equal(h4.ritAgreement(['p0', 'p1']), 2, 'p2 left: the two who are here agree');
+  assert.equal(h4.ritAgreement(), null, 'with p2 counted, not yet');
 });
 
 test('run it vote happens before anyone turns their cards over', () => {
@@ -258,6 +287,8 @@ test('double board run twice: four boards, shared flops, every card rebuilt from
   assert.equal(h.phase, 'rit');
   h.setRitChoice('p0', 2);
   h.setRitChoice('p1', 3);
+  assert.equal(h.phase, 'rit', 'twice against three times: not agreed yet');
+  h.setRitChoice('p1', 2);
   assert.equal(h.runCount, 2);
   while (h.phase !== 'done') h.advance();
   assert.equal(h.boards.length, 4);

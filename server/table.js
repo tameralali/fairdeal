@@ -8,10 +8,12 @@ import { cleanName } from './auth.js';
 import { StatsBook, statsRows, gamesIn, summarize, aggregate } from './stats.js';
 import { fmtMoney } from '../shared/money.js';
 
+// Pauses, in ms: before each street, between the streets of an all-in runout, before the showdown,
+// after a hand, and for the run-it vote.
 export const DELAYS = {
-  street: 700, runoutFirst: 1800, runout: 1300, showdown: 900,
-  afterUncontested: 2500, afterShowdown: 5000, perExtraRun: 1500, perExtraBoard: 1000,
-  rit: 15000, autoAct: 400,
+  street: 1400, runoutFirst: 2400, runout: 2200, showdown: 1400,
+  afterUncontested: 3000, afterShowdown: 5500, perExtraRun: 1500, perExtraBoard: 1000,
+  rit: 20000, autoAct: 400,
 };
 
 // The format is a list of steps played in order, then repeated from the top. Each step is one game
@@ -1061,22 +1063,27 @@ export class Table {
       this.turn = null;
     }
     if (hand.phase === 'rit') {
-      // Only votes that come in count. Players who left or lost their connection are not waited for:
-      // once everyone still here has voted, the vote ends early.
-      const waiting = hand.rit.eligible.filter((id) => {
-        if (hand.rit.choices.has(id)) return false;
+      // Players who left or lost their connection are not waited for: the others decide between
+      // them, and a pick made before someone dropped still counts. Time up without agreement: once.
+      const voters = () => hand.rit.eligible.filter((id) => {
+        if (hand.rit.choices.has(id)) return true;
         const p = this.players.get(id);
         return !!p && !p.leaveAfterHand && this.isConnected(id);
       });
-      if (!waiting.length) {
-        hand.resolveRit();
+      const here = voters();
+      const k = here.length ? hand.ritAgreement(here) : 1;
+      if (k !== null) {
+        hand.resolveRit(k);
         return this.afterHandChange();
       }
       if (!this.timers.rit) {
         this.ritDeadline = Date.now() + DELAYS.rit;
         this.timers.rit = setTimeout(this.safe(() => {
           this.timers.rit = null;
-          if (this.hand === hand && hand.phase === 'rit') { hand.resolveRit(); this.afterHandChange(); }
+          if (this.hand !== hand || hand.phase !== 'rit') return;
+          const now = voters();
+          hand.resolveRit((now.length ? hand.ritAgreement(now) : null) ?? 1);
+          this.afterHandChange();
         }), DELAYS.rit);
       }
     } else if (this.timers.rit) {

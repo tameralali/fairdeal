@@ -6,8 +6,9 @@ export const DEFAULT_PREFS = {
   colors: 'four',     // four: spades black, hearts red, diamonds blue, clubs green; two: red and black
   back: 'oxblood',    // oxblood | navy | forest | slate | brass
   felt: '',           // '' = use the table's felt color
-  sound: true,
-  autoRun: 'ask',     // ask | once | max
+  sound: true,         // a call when it is my turn
+  tableSounds: true,   // chips for bets, folds, checks, cards dealt, the pot won
+  autoRun: 'ask',     // ask | once | any (go with whatever number the others pick)
   handStrength: true,
   verifyNotes: true,
 };
@@ -36,6 +37,8 @@ function load() {
     const saved = JSON.parse(localStorage.getItem(PKEY) || '{}');
     // the old two-colour default is replaced by a choice that starts at four colours
     delete saved.fourColor;
+    // the run-it vote needs agreement now: always picking the most becomes going with the others
+    if (saved.autoRun === 'max') saved.autoRun = 'any';
     return { ...DEFAULT_PREFS, ...saved };
   } catch { return { ...DEFAULT_PREFS }; }
 }
@@ -65,8 +68,8 @@ export function rankLabel(card) {
 // The four suits, drawn once and reused by every card so they look the same on every device.
 const SUIT_SPRITE = `<svg id="suit-sprite" width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
 <symbol id="su-h" viewBox="0 0 100 100"><path d="M50 92C46 85 36 77 25 67C11 54 3 44 3 30C3 15 14 5 27.5 5C37.5 5 45.5 11 50 20C54.5 11 62.5 5 72.5 5C86 5 97 15 97 30C97 44 89 54 75 67C64 77 54 85 50 92Z"/></symbol>
-<symbol id="su-d" viewBox="0 0 100 100"><path d="M50 2C60 19 73 35 89 50C73 65 60 81 50 98C40 81 27 65 11 50C27 35 40 19 50 2Z"/></symbol>
-<symbol id="su-s" viewBox="0 0 100 100"><path d="M50 3C57 15 69 25 80 34C91 43 97 52 97 63C97 76 87 85 75 85C66.5 85 59 80.5 54.5 73.5C55.5 83 60 90.5 69 96L31 96C40 90.5 44.5 83 45.5 73.5C41 80.5 33.5 85 25 85C13 85 3 76 3 63C3 52 9 43 20 34C31 25 43 15 50 3Z"/></symbol>
+<symbol id="su-d" viewBox="0 0 100 100"><path d="M50 2C59.4 19 71.6 35 86.7 50C71.6 65 59.4 81 50 98C40.6 81 28.4 65 13.3 50C28.4 35 40.6 19 50 2Z"/></symbol>
+<symbol id="su-s" viewBox="0 0 100 100"><path d="M50 3C56.1 15 66.5 25 76.1 34C85.7 43 90.9 52 90.9 63C90.9 76 82.2 85 71.8 85C64.4 85 57.8 80.5 53.9 73.5C54.8 83 58.7 90.5 66.5 96L33.5 96C41.3 90.5 45.2 83 46.1 73.5C42.2 80.5 35.6 85 28.2 85C17.8 85 9.1 76 9.1 63C9.1 52 14.3 43 23.9 34C33.5 25 43.9 15 50 3Z"/></symbol>
 <symbol id="su-c" viewBox="0 0 100 100"><circle cx="50" cy="27" r="21"/><circle cx="26" cy="59" r="21"/><circle cx="74" cy="59" r="21"/><path d="M38 38H62L60 66H40Z"/><path d="M46.5 60C46.5 78 43 88 32 96H68C57 88 53.5 78 53.5 60Z"/></symbol>
 </defs></svg>`;
 if (typeof document !== 'undefined' && document.body && !document.getElementById('suit-sprite')) document.body.insertAdjacentHTML('afterbegin', SUIT_SPRITE);
