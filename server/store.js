@@ -40,10 +40,31 @@ export class Store {
     fs.appendFileSync(path.join(this.handsDir, tableId + '.jsonl'), JSON.stringify(record) + '\n');
   }
 
+  // A later change to a stored hand (cards shown after it ended) is appended as a patch line.
+  appendHandPatch(tableId, handNumber, patch) {
+    fs.appendFileSync(path.join(this.handsDir, tableId + '.jsonl'), JSON.stringify({ patchOf: handNumber, ...patch }) + '\n');
+  }
+
   readHands(tableId) {
     const f = path.join(this.handsDir, tableId + '.jsonl');
     if (!fs.existsSync(f)) return [];
-    return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const out = [];
+    const byNumber = new Map();
+    for (const line of fs.readFileSync(f, 'utf8').split('\n')) {
+      if (!line) continue;
+      const r = JSON.parse(line);
+      if (r.patchOf !== undefined) {
+        const rec = byNumber.get(r.patchOf);
+        for (const [userId, sh] of Object.entries(r.shows || {})) {
+          const p = rec?.players.find((x) => x.userId === userId);
+          if (p) { p.shown = sh.shown; p.showIdx = sh.showIdx; }
+        }
+        continue;
+      }
+      out.push(r);
+      byNumber.set(r.handNumber, r);
+    }
+    return out;
   }
 
   appendLog(tableId, entry) {

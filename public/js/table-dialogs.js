@@ -2,12 +2,12 @@
 // appearance, fairness explainer.
 import { api } from './api.js';
 import { esc, dialog, toast, confirmDialog, copyText } from './ui.js';
-import { cardHTML, prefs, savePrefs, FELTS, BACKS } from './cards.js';
+import { cardHTML, backHTML, prefs, savePrefs, FELTS, BACKS } from './cards.js';
 import { sealSVG } from './seal.js';
 import { webCryptoAdapter } from '/shared/fairness.js';
 import { GAME_TYPES } from '/shared/cards.js';
 import { app, emit, fmt, fmtC, parse, inp, gameShort, gameName } from './table-core.js';
-import { seg, bindSegs, formatEditorHTML, bindFormatEditor, readFormat, formatProblem, bombFieldsHTML, bindBombFields, readBomb, fitSeats, ritText, boardName } from './game-form.js';
+import { seg, bindSegs, formatEditorHTML, bindFormatEditor, readFormat, formatProblem, bombFieldsHTML, bindBombFields, readBomb, fitSeats, fitMinPlayers, ritText, boardName, RATHOLE, ratholeHint, FOLDED, foldedHint } from './game-form.js';
 import { statsDialog, playerSheet, replayDialog, afText } from './table-stats.js';
 import { canReplay } from '/shared/replay.js';
 import { fmtMoney } from '/shared/money.js';
@@ -39,8 +39,12 @@ export function seatDialog(seat) {
   let def = st.bigBlind * 100;
   if (st.minBuyIn) def = Math.max(def, st.minBuyIn);
   if (st.maxBuyIn) def = Math.min(def, st.maxBuyIn);
-  const range = st.minBuyIn || st.maxBuyIn ? `Buy-in ${st.minBuyIn ? fmt(st.minBuyIn) : 'any'} to ${st.maxBuyIn ? fmt(st.maxBuyIn) : 'any'}.` : '';
-  const avail = club ? availText(s) : '';
+  // the rathole rule: back with at least what you left with
+  const rh = s.me.rathole;
+  if (rh) def = Math.max(def, rh.amount);
+  const range = st.minBuyIn || st.maxBuyIn ? `Buy-in ${st.minBuyIn ? fmt(st.minBuyIn) : 'any'} to ${st.maxBuyIn ? fmt(rh ? Math.max(st.maxBuyIn, rh.amount) : st.maxBuyIn) : 'any'}.` : '';
+  const ratText = rh ? ` You left with ${fmt(rh.amount)}, so you come back with at least that ${rh.until ? `until ${new Date(rh.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'for the rest of this game'} (rathole rule).` : '';
+  const avail = (club ? availText(s) : '') + ratText;
   const auto = s.me.isHost || st.autoApprove;
   const dlg = dialog({
     title: `Sit in seat ${seat + 1}`, className: 'narrow',
@@ -181,8 +185,11 @@ export function hostDialog() {
           <label><span class="lbl">Minimum buy-in</span>${amountBox('minBuyIn', st.minBuyIn ? inp(st.minBuyIn) : '', 'Any')}</label>
           <label><span class="lbl">Maximum stack</span>${amountBox('maxBuyIn', st.maxBuyIn ? inp(st.maxBuyIn) : '', 'Any')}</label>
           <label><span class="lbl">Seats</span><select name="maxPlayers">${[2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => opt(n, n, st.maxPlayers)).join('')}</select></label>
+          ${t.handNumber === 0 ? `<label><span class="lbl">Players to start</span><select name="minPlayers"><option value="${st.minPlayers || 2}" selected>${st.minPlayers || 2}</option></select></label>` : ''}
+          <label><span class="lbl">Rathole time</span><select name="rathole">${(RATHOLE.some(([m]) => m === (st.ratholeMinutes || 0)) ? RATHOLE : [...RATHOLE, [st.ratholeMinutes, `${st.ratholeMinutes} minutes`]]).map(([m, l]) => opt(m, l, st.ratholeMinutes || 0)).join('')}</select></label>
         </div>
         <p class="hint" data-seat-hint></p>
+        <p class="hint">${t.handNumber === 0 ? 'The first hand waits until the players to start are in. ' : ''}${esc(ratholeHint)}</p>
         <label class="check"><input type="checkbox" name="autoApprove" ${st.autoApprove ? 'checked' : ''}> Approve seat and chip requests automatically<small>Leave off to approve every buy-in and rebuy yourself.</small></label>
       </div>
       <div data-panel="bomb" class="stack hidden">
@@ -206,9 +213,10 @@ export function hostDialog() {
         ${t.status === 'running' ? `<div class="row"><button type="button" class="btn small" data-now="extend" data-min="15">Add 15 min</button><button type="button" class="btn small" data-now="extend" data-min="30">Add 30 min</button><button type="button" class="btn small" data-now="extend" data-min="60">Add 1 hour</button>${ends ? '<button type="button" class="btn small ghost" data-now="cleartime">Remove the limit</button>' : ''}</div>` : ''}
       </div>
       <div data-panel="fair" class="stack hidden">
-        <label class="check"><input type="radio" name="revealPolicy" value="hand" ${st.revealPolicy === 'hand' ? 'checked' : ''}> Reveal each hand's seed right after the hand<small>Every player's browser checks every hand as it happens. Folded cards become visible in the hand history.</small></label>
-        <label class="check"><input type="radio" name="revealPolicy" value="session" ${st.revealPolicy === 'session' ? 'checked' : ''}> Reveal the seeds when the game ends<small>Folded cards stay private while you play. Every hand is checked when the game ends.</small></label>
-        <div class="row"><button type="button" class="btn small" data-now="reveal">Reveal seeds for finished hands now</button></div>
+        <span class="lbl">Folded cards</span>
+        ${FOLDED.map(([v, l]) => `<label class="check"><input type="radio" name="revealPolicy" value="${v}" ${(st.revealPolicy || 'hidden') === v ? 'checked' : ''}> ${esc(l)} in the hand history<small>${esc(foldedHint[v])}</small></label>`).join('')}
+        <p class="hint">A change applies from the next hand.</p>
+        ${st.revealPolicy === 'hidden' ? '' : '<div class="row"><button type="button" class="btn small" data-now="reveal">Reveal seeds for finished hands now</button></div>'}
       </div>
       <div data-panel="players" class="stack hidden"><div data-players></div></div>
       <div data-panel="table" class="stack hidden">
@@ -232,9 +240,12 @@ export function hostDialog() {
   const form = dlg.$('#hostform');
   bindSegs(dlg.el);
   bindBombFields(form);
-  const refit = () => fitSeats(val(form, 'maxPlayers'), readFormat(form), readBomb(form), dlg.$('[data-seat-hint]'));
+  const refit = () => {
+    fitSeats(val(form, 'maxPlayers'), readFormat(form), readBomb(form), dlg.$('[data-seat-hint]'));
+    if (val(form, 'minPlayers')) fitMinPlayers(val(form, 'minPlayers'), Number(val(form, 'maxPlayers').value));
+  };
   bindFormatEditor(form, refit);
-  form.addEventListener('change', (e) => { if (e.target.closest('[data-bomb]')) refit(); });
+  form.addEventListener('change', (e) => { if (e.target.closest('[data-bomb]') || e.target.name === 'maxPlayers') refit(); });
   dlg.el.addEventListener('click', async (e) => {
     const f = e.target.closest('[data-felt]');
     if (f) {
@@ -295,6 +306,8 @@ export function hostDialog() {
       minBuyIn: val(form, 'minBuyIn').value.trim() ? parse(val(form, 'minBuyIn').value) : 0,
       maxBuyIn: val(form, 'maxBuyIn').value.trim() ? parse(val(form, 'maxBuyIn').value) : 0,
       maxPlayers: num('maxPlayers'),
+      ...(val(form, 'minPlayers') ? { minPlayers: num('minPlayers') } : {}),
+      ratholeMinutes: num('rathole'),
       autoApprove: val(form, 'autoApprove').checked,
       bombPot: readBomb(form),
       rit: { enabled: val(form, 'ritEnabled').checked, maxRuns: num('ritMax') },
@@ -458,7 +471,7 @@ export function handDetailDialog(n) {
   });
 }
 
-const mini = (cards) => `<span class="mini-cards">${(cards || []).map((c) => cardHTML(c)).join('')}</span>`;
+const mini = (cards) => `<span class="mini-cards">${(cards || []).map((c) => (c ? cardHTML(c) : backHTML())).join('')}</span>`;
 
 async function showHand(dlg, n, back, backLabel = 'All hands') {
   dlg.$('h2').textContent = `Hand #${n}`;
@@ -468,7 +481,9 @@ async function showHand(dlg, n, back, backLabel = 'All hands') {
   const rec = r.record;
   const f = rec.fairness;
   const res = rec.revealed ? await app.fair.verify(rec) : null;
-  const seedHash = f.serverSeed ? await wc.sha256Hex(f.serverSeed) : null;
+  const sealed = f.version === 'aquarium-v2';
+  // the seal rebuilt after the hand: from the revealed seed, or from the opened and sealed cards
+  const seedHash = sealed ? (res && !res.pending ? res.rebuilt : null) : f.serverSeed ? await wc.sha256Hex(f.serverSeed) : null;
   const obs = app.fair.observed(n) || {};
   const F = (a) => fmtMoney(a, rec.decimals ?? app.dec);
   const lines = [];
@@ -494,15 +509,16 @@ async function showHand(dlg, n, back, backLabel = 'All hands') {
     <h3 class="section-title">Deck check</h3>
     <div class="seal-pair">
       <figure>${sealSVG(obs.commitment || f.commitment, 64)}<figcaption>Seal ${obs.commitment ? 'your browser saw before the deal' : 'published before the deal'}</figcaption></figure>
-      <figure>${seedHash ? sealSVG(seedHash, 64) : sealSVG('', 64)}<figcaption>${seedHash ? 'Seal rebuilt from the revealed seed' : 'Seed revealed when the game ends'}</figcaption></figure>
+      <figure>${seedHash ? sealSVG(seedHash, 64) : sealSVG('', 64)}<figcaption>${seedHash ? (sealed ? 'Seal rebuilt from the opened and sealed cards' : 'Seal rebuilt from the revealed seed') : 'Seed revealed when the game ends'}</figcaption></figure>
     </div>
+    ${sealed && res && !res.pending ? `<p class="hint">Folded cards stay sealed: ${res.hidden ? `${res.hidden} card${res.hidden === 1 ? ' was' : 's were'} never opened to you` : 'every card of this hand was opened to you'}. Your own cards were opened to you alone.</p>` : ''}
     ${res ? `<ul class="checks" style="margin-top:.8rem">${res.checks.map((c) => `<li class="${c.ok ? 'okc' : 'badc'}"><span class="i">${c.ok ? '&#10003;' : '&#10007;'}</span><span>${esc(c.label)}</span></li>`).join('')}</ul>` : ''}
     <details style="margin-top:.8rem"><summary class="muted" style="cursor:pointer">Raw data</summary>
-      <p class="hexline">Commitment (SHA-256 of the seed): ${esc(f.commitment)}</p>
-      <p class="hexline">Server seed: ${f.serverSeed ? esc(f.serverSeed) : 'not revealed yet'}</p>
+      <p class="hexline">Commitment${sealed ? ' (SHA-256 of every card’s seal and the key’s fingerprint)' : ' (SHA-256 of the seed)'}: ${esc(f.commitment)}</p>
+      ${sealed ? `<p class="hexline">Key: ${esc(f.key || 'not opened yet')}</p><p class="hexline">Opened cards: ${(f.openings || []).length + (f.myOpenings || []).length}, sealed: ${Object.keys(f.sealed || {}).length}</p>` : `<p class="hexline">Server seed: ${f.serverSeed ? esc(f.serverSeed) : 'not revealed yet'}</p>`}
       <p class="hexline">Player inputs: ${f.contributions.map((c) => `${esc(c.name)} ${esc(c.seed)}`).join(', ') || 'none'}</p>
       <p class="hexline">Entropy string: ${esc(f.entropy)}</p>
-      ${res ? `<p class="hexline">Deck order: ${res.deck.join(' ')}</p>` : ''}
+      ${res && !res.pending ? `<p class="hexline">Deck order: ${res.deck.map((c) => c || '??').join(' ')}</p>` : ''}
     </details>
     <details style="margin-top:.4rem"><summary class="muted" style="cursor:pointer">Hand log</summary><div class="hexline" style="font-family:var(--ui);font-size:14px">${(rec.log || []).map(esc).join('<br>')}</div></details>
     <div class="row" style="margin-top:1rem"><button class="btn small" data-json>Download this hand</button><a class="btn small ghost" href="/verify?table=${encodeURIComponent(rec.tableId)}&hand=${rec.handNumber}" target="_blank" rel="noopener">Open in the verifier</a></div>`);
@@ -593,12 +609,17 @@ export function fairDialog() {
           <p class="muted" style="margin:.3rem 0">${f.contributions} player input${f.contributions === 1 ? '' : 's'} received${s.me.seated ? (f.iContributed ? ', including yours' : ', yours is on its way') : ''}.</p>
           <p class="hexline" style="margin:0">${esc(f.commitment)}</p></div></div>
       <h3 class="section-title">How every deal can be checked</h3>
-      <ol class="fair-steps">
+      ${s.table.settings.revealPolicy === 'hidden' ? `<ol class="fair-steps">
+        <li>Before each hand the server shuffles a deck from a secret seed and seals every card on its own with a secret salt. The seal above is the SHA-256 fingerprint of all 52 card seals and a secret key. Changing any card later would change the seal.</li>
+        <li>Each seated player's browser adds its own random input after seeing the seal. The input moves every card to a new place in the deck, so the server cannot steer cards to anyone.</li>
+        <li>After the hand the server opens the key and the cards that were seen: the boards, cards players showed, and the cards nobody was dealt. Your own cards are opened to you alone. Folded cards stay sealed for good.</li>
+        <li>Your browser rebuilds the seal from the opened cards and the sealed ones, works out where each card went, and checks the boards, the shown cards, your input and your own cards.</li>
+      </ol>` : `<ol class="fair-steps">
         <li>Before each hand the server shuffles with a secret seed and publishes its SHA-256 fingerprint, drawn above as the seal. Changing the seed later would change the seal.</li>
         <li>Each seated player's browser adds its own random input after seeing the seal, so the server cannot pick a seed that favours anyone.</li>
         <li>The deck order is computed from the seed and every input with HMAC-SHA256 and a standard Fisher-Yates shuffle. Cards come off the top in order, extra runs included.</li>
         <li>The seed is revealed ${policy}. Your browser then rebuilds the deck and checks the seal, your input, your cards and every board.</li>
-      </ol>
+      </ol>`}
       <p style="margin-top:1rem">This browser has checked <b>${verified}</b> hand${verified === 1 ? '' : 's'} at this table${failed ? `, and <b class="bad">${failed}</b> failed` : ''}.</p>
       <p class="hint">What this does not cover: whoever runs the server can see cards in memory during a hand, as with any online poker site. The check proves the deck was fixed before the deal and never changed.</p>`,
     foot: `<button class="btn ghost" data-copy>Copy fingerprint</button><a class="btn" href="/verify" target="_blank" rel="noopener">Open the verifier</a><button class="btn primary" data-close>Done</button>`,

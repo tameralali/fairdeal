@@ -2,8 +2,8 @@
 import { randomInt } from 'node:crypto';
 import { Hand } from './engine/hand.js';
 import { GAME_TYPES } from '../shared/cards.js';
-import { isValidContribution, FAIRNESS_VERSION } from '../shared/fairness.js';
-import { newCommitment, settleCommitment, randomId } from './fair-node.js';
+import { isValidContribution, FAIRNESS_VERSION, FAIRNESS_V2 } from '../shared/fairness.js';
+import { newCommitment, settleCommitment, randomId, openV2 } from './fair-node.js';
 import { cleanName } from './auth.js';
 import { StatsBook, statsRows, gamesIn, summarize, aggregate } from './stats.js';
 import { fmtMoney } from '../shared/money.js';
@@ -25,13 +25,17 @@ export const DEFAULT_SETTINGS = {
   minBuyIn: 0,
   maxBuyIn: 0,
   maxPlayers: 9,
+  minPlayers: 2, // the first hand waits until this many are in; after that two are enough
+  ratholeMinutes: 0, // 0 off, -1 for the whole game: a player who leaves comes back with at least what they left with
   decisionSeconds: 30,
   timeBankSeconds: 60,
   autoApprove: false,
   bombPot: { mode: 'off', every: 10, percent: 10, anteBB: 2, game: 'current', doubleBoard: false },
   rit: { enabled: true, maxRuns: 4 },
   sessionMinutes: 0,
-  revealPolicy: 'hand',
+  // hidden: folded cards are never opened (cards sealed one by one); hand or session: the seed is
+  // revealed after each hand or when the game ends, which shows folded cards too
+  revealPolicy: 'hidden',
   feltColor: '#1d6b48',
   decimals: 0,
   spectatorChat: true,
@@ -146,13 +150,18 @@ export function sanitizeSettings(input = {}, current = DEFAULT_SETTINGS, ctx = {
   if (has('maxBuyIn')) s.maxBuyIn = intIn(input.maxBuyIn, 0, 1e13, 'Maximum buy-in');
   if (s.maxBuyIn && s.minBuyIn > s.maxBuyIn) fail('The minimum buy-in is above the maximum');
   if (has('maxPlayers')) s.maxPlayers = intIn(input.maxPlayers, 2, 10, 'Seats');
+  if (has('minPlayers')) s.minPlayers = intIn(input.minPlayers, 2, 10, 'Players needed to start');
+  if (has('ratholeMinutes')) {
+    const r = Number(input.ratholeMinutes);
+    s.ratholeMinutes = r === -1 ? -1 : intIn(r, 0, 24 * 60, 'Rathole time (minutes)');
+  }
   if (has('decisionSeconds')) s.decisionSeconds = intIn(input.decisionSeconds, 5, 600, 'Decision time');
   if (has('timeBankSeconds')) s.timeBankSeconds = intIn(input.timeBankSeconds, 0, 3600, 'Time bank');
   for (const k of ['autoApprove', 'spectatorChat', 'autoStart']) if (has(k)) s[k] = !!input[k];
   if (has('bombPot')) {
     const b = input.bombPot;
     s.bombPot = {
-      mode: ['off', 'every', 'percent'].includes(b.mode) ? b.mode : s.bombPot.mode,
+      mode: ['off', 'every', 'percent', 'both'].includes(b.mode) ? b.mode : s.bombPot.mode,
       every: b.every !== undefined ? intIn(b.every, 2, 1000, 'Bomb pot frequency (hands)') : s.bombPot.every,
       percent: b.percent !== undefined ? numIn(b.percent, 1, 100, 'Bomb pot chance (%)') : s.bombPot.percent,
       anteBB: b.anteBB !== undefined ? numIn(b.anteBB, 0.5, 100, 'Bomb pot size (big blinds)') : s.bombPot.anteBB,
@@ -168,12 +177,13 @@ export function sanitizeSettings(input = {}, current = DEFAULT_SETTINGS, ctx = {
     };
   }
   if (has('sessionMinutes')) s.sessionMinutes = intIn(input.sessionMinutes, 0, 24 * 60, 'Time limit (minutes)');
-  if (has('revealPolicy')) s.revealPolicy = input.revealPolicy === 'session' ? 'session' : 'hand';
+  if (has('revealPolicy')) s.revealPolicy = ['hidden', 'hand', 'session'].includes(input.revealPolicy) ? input.revealPolicy : 'hidden';
   if (has('feltColor')) {
     if (!/^#[0-9a-fA-F]{6}$/.test(input.feltColor)) fail('Felt color must be a hex color like #1d6b48');
     s.feltColor = input.feltColor.toLowerCase();
   }
   if (has('decimals')) s.decimals = Number(input.decimals) === 2 ? 2 : 0;
+  s.minPlayers = Math.max(2, Math.min(s.minPlayers || 2, s.maxPlayers));
   const { cap, why } = seatCap(s);
   if (s.maxPlayers > cap && !has('maxPlayers') && (ctx.highestSeat ?? -1) < cap) s.maxPlayers = cap;
   if (s.maxPlayers > cap) {
@@ -207,6 +217,7 @@ export class Table {
     this.endedAt = data.endedAt || null;
     // amounts at a table are whole numbers of its unit: 2 means cents (dollars and cents), 0 means chips
     this.unit = data.unit ?? null;
+    this.leftWith = data.leftWith || {}; // userId -> { amount, at }: what a player stood up with, for the rathole rule
     this.players = new Map();
     this.seats = Array(10).fill(null);
     for (const p of data.players || []) {
@@ -228,8 +239,11 @@ export class Table {
     this.bombNext = false;
     this.endAfterHand = false;
     this.broadcastQueued = false;
-    this.fair = { pending: newCommitment(this.handNumber + 1) };
+    this.fair = { pending: newCommitment(this.handNumber + 1, this.fairVersion()) };
   }
+
+  // Tables that keep folded cards hidden seal every card on its own (version 2).
+  fairVersion() { return this.settings.revealPolicy === 'hidden' ? FAIRNESS_V2 : FAIRNESS_VERSION; }
 
   get store() { return this.manager.store; }
   get clubs() { return this.manager.clubs; }
@@ -314,7 +328,7 @@ export class Table {
       settings: this.settings, status: this.status, paused: this.paused, handNumber: this.handNumber,
       buttonSeat: this.buttonSeat, revealedThrough: this.revealedThrough, session: this.session,
       rotation: this.rotation, handsSinceBomb: this.handsSinceBomb, ledger: this.ledger,
-      requests: this.requests, endedAt: this.endedAt, logSeq: this.logSeq, unit: this.unit,
+      requests: this.requests, endedAt: this.endedAt, logSeq: this.logSeq, unit: this.unit, leftWith: this.leftWith,
       players: [...this.players.values()].map((p) => ({
         userId: p.userId, name: p.name, seat: p.seat, stack: p.stack, sittingOut: p.sittingOut,
         timeBank: p.timeBank, joinedAt: p.joinedAt,
@@ -344,11 +358,26 @@ export class Table {
   }
 
   // ---------- seats and chips ----------
-  checkBuyIn(amount, current = 0) {
+  checkBuyIn(amount, current = 0, rathole = null) {
     const s = this.settings;
     if (!Number.isInteger(amount) || amount <= 0) fail('Enter a positive amount');
+    if (rathole && current === 0 && amount < rathole.amount) {
+      fail(`You left this table with ${this.fmt(rathole.amount)}. Under the rathole rule you come back with at least that much${rathole.until ? ` until ${new Date(rathole.until).toISOString().slice(11, 16)} UTC` : ' for the rest of this game'}.`);
+    }
     if (s.minBuyIn && current === 0 && amount < s.minBuyIn) fail(`Minimum buy-in is ${this.fmt(s.minBuyIn)}`);
-    if (s.maxBuyIn && current + amount > s.maxBuyIn) fail(`Maximum stack is ${this.fmt(s.maxBuyIn)}${current ? ` (you have ${this.fmt(current)})` : ''}`);
+    // a player brought back by the rathole rule may come back above the usual maximum
+    const max = s.maxBuyIn && rathole ? Math.max(s.maxBuyIn, rathole.amount) : s.maxBuyIn;
+    if (max && current + amount > max) fail(`Maximum stack is ${this.fmt(max)}${current ? ` (you have ${this.fmt(current)})` : ''}`);
+  }
+
+  // What a returning player must bring under the rathole rule, or null.
+  ratholeFor(userId) {
+    const minutes = this.settings.ratholeMinutes || 0;
+    const r = this.leftWith[userId];
+    if (!minutes || !r || !(r.amount > 0)) return null;
+    const until = minutes > 0 ? r.at + minutes * 60000 : null;
+    if (until && Date.now() >= until) return null;
+    return { amount: r.amount, until };
   }
 
   requestSeat(user, { seat, buyIn, name }) {
@@ -360,11 +389,11 @@ export class Table {
     const nick = cleanName(name || user.name);
     for (const p of this.players.values()) if (p.name.toLowerCase() === nick.toLowerCase()) fail('Someone at the table already uses that name');
     buyIn = Number(buyIn);
-    this.checkBuyIn(buyIn);
+    this.checkBuyIn(buyIn, 0, this.ratholeFor(user.id));
     if (this.clubId) {
       if (!this.clubs.role(this.clubId, user.id)) fail('Only club members can sit at this table');
       const avail = this.clubs.available(this.clubId, user.id);
-      if (buyIn > avail) fail(`You have ${this.fmt(Math.max(0, avail))} club chips available`);
+      if (buyIn > avail) fail(`You have ${this.fmt(Math.max(0, avail))} available in your balance, credit included`);
     }
     this.requests = this.requests.filter((r) => r.userId !== user.id || r.type !== 'seat');
     if (this.isHost(user.id) || this.settings.autoApprove) {
@@ -416,7 +445,7 @@ export class Table {
     }
     if (this.clubId) {
       const avail = this.clubs.available(this.clubId, user.id) - p.pendingChips;
-      if (amount > avail) fail(`You have ${this.fmt(Math.max(0, avail))} club chips available`);
+      if (amount > avail) fail(`You have ${this.fmt(Math.max(0, avail))} available in your balance, credit included`);
     }
     if (this.isHost(user.id) || s.autoApprove) {
       this.queueChips(p, amount, null);
@@ -470,6 +499,11 @@ export class Table {
 
   removePlayer(p, reason) {
     const amount = p.stack;
+    // the rathole rule remembers what they left with (a game that ends has no one coming back)
+    if (reason !== 'game ended') {
+      if (amount > 0) this.leftWith[p.userId] = { amount, at: Date.now() };
+      else delete this.leftWith[p.userId];
+    }
     this.seats[p.seat] = null;
     this.players.delete(p.userId);
     this.ledgerAdd(p, 'cashout', amount, reason);
@@ -676,6 +710,10 @@ export class Table {
       const last = this.getRecords().at(-1);
       if (last) this.reveal(last.handNumber);
     }
+    if ((this.fair.pending.version || FAIRNESS_VERSION) !== this.fairVersion()) {
+      // the next hand is sealed the new way; browsers add their input to the new seal
+      this.fair.pending = newCommitment(this.fair.pending.handNumber, this.fairVersion());
+    }
     if (changes.length) this.log(`The host updated the game (applies from the next hand): ${changes.join('; ')}`, 'game');
     this.snapshot();
     this.broadcast();
@@ -752,15 +790,34 @@ export class Table {
   }
 
   publicRecord(rec, viewerId) {
-    const revealed = rec.handNumber <= this.revealedThrough;
     const out = structuredClone(rec);
+    const shownBy = {};
+    for (const p of rec.players) shownBy[p.seat] = p.shown ? rec.dealt.holes[p.seat].map((_, i) => i) : p.showIdx || [];
+    // only the cards a player showed, and all of your own
+    const masked = () => {
+      const visible = {};
+      for (const p of rec.players) {
+        const all = rec.dealt.holes[p.seat];
+        if (p.userId === viewerId || p.shown) visible[p.seat] = all;
+        else if (shownBy[p.seat].length) visible[p.seat] = all.map((c, i) => (shownBy[p.seat].includes(i) ? c : null));
+      }
+      return visible;
+    };
+    if (rec.fairness.version === FAIRNESS_V2) {
+      const me = rec.players.find((p) => p.userId === viewerId);
+      const f = rec.fairness;
+      const open = openV2(f.serverSeed, f.key, f.entropy, rec.dealt, shownBy, me ? me.seat : null);
+      out.revealed = true;
+      out.fairness = { version: f.version, commitment: f.commitment, key: f.key, entropy: f.entropy, contributions: f.contributions, ...open };
+      out.dealt.holes = masked();
+      return out;
+    }
+    const revealed = rec.handNumber <= this.revealedThrough;
     out.revealed = revealed;
     if (!revealed) {
       out.fairness.serverSeed = null;
       out.fairness.deck = null;
-      const visible = {};
-      for (const p of rec.players) if (p.shown || p.userId === viewerId) visible[p.seat] = rec.dealt.holes[p.seat];
-      out.dealt.holes = visible;
+      out.dealt.holes = masked();
     }
     return out;
   }
@@ -775,7 +832,7 @@ export class Table {
       for (const p of r.players) nets[p.userId] = p.net;
       return {
         handNumber: r.handNumber, at: r.startedAt, gameType: r.gameType, isBomb: r.isBomb, runCount: r.runCount, doubleBoard: !!r.doubleBoard,
-        pot, winners: [...new Set((r.results?.payouts || []).map((w) => w.name))], revealed: r.handNumber <= this.revealedThrough,
+        pot, winners: [...new Set((r.results?.payouts || []).map((w) => w.name))], revealed: r.fairness.version === FAIRNESS_V2 || r.handNumber <= this.revealedThrough,
         myNet: me ? me.net : null, nets, commitment: r.fairness.commitment, replay: Array.isArray(r.actions),
       };
     });
@@ -913,7 +970,7 @@ export class Table {
       if (p.sitOutNext) { p.sittingOut = true; p.sitOutNext = false; }
     }
     const eligible = this.eligiblePlayers();
-    if (eligible.length < 2) return false;
+    if (eligible.length < this.playersNeeded()) return false;
     try {
       this.buttonSeat = this.pickButton(eligible);
       const step = this.pickStep();
@@ -924,11 +981,13 @@ export class Table {
       const s = this.settings;
       const bp = s.bombPot;
       const bomb = { mode: bp.mode, reason: null };
-      if (bp.mode === 'percent') { bomb.percent = bp.percent; bomb.roll = settled.bombRoll; }
-      if (bp.mode === 'every') bomb.every = bp.every;
+      const everyOn = bp.mode === 'every' || bp.mode === 'both';
+      const chanceOn = bp.mode === 'percent' || bp.mode === 'both';
+      if (chanceOn) { bomb.percent = bp.percent; bomb.roll = settled.bombRoll; }
+      if (everyOn) bomb.every = bp.every;
       if (this.bombNext) bomb.reason = 'manual';
-      else if (bp.mode === 'every' && this.handsSinceBomb + 1 >= bp.every) bomb.reason = 'every';
-      else if (bp.mode === 'percent' && settled.bombRoll < bp.percent) bomb.reason = 'percent';
+      else if (everyOn && this.handsSinceBomb + 1 >= bp.every) bomb.reason = 'every';
+      else if (chanceOn && settled.bombRoll < bp.percent) bomb.reason = 'percent';
       let bombAnte = 0;
       if (bomb.reason) {
         bombAnte = Math.max(1, Math.round(bp.anteBB * s.bigBlind));
@@ -956,10 +1015,11 @@ export class Table {
       this.handMeta = {
         startedAt: Date.now(), commitment: pend.commitment, serverSeed: pend.serverSeed, entropy: settled.entropy,
         contributions: settled.contributions, deck: settled.deck, bomb, logLines: [],
+        version: pend.version || FAIRNESS_VERSION, key: pend.v2 ? pend.v2.key : undefined,
       };
       this.hand = hand;
       this.lastHand = null;
-      this.fair.pending = newCommitment(number + 1);
+      this.fair.pending = newCommitment(number + 1, this.fairVersion());
       hand.start();
       if (this.session.clockAtFirstHand) {
         this.session.clockAtFirstHand = false;
@@ -1102,13 +1162,19 @@ export class Table {
     this.afterHandChange();
   }
 
-  showCards(user) {
+  // cards: indexes of the hole cards to show (all of them when left out).
+  showCards(user, cards = null) {
     const hand = this.hand || this.lastHand;
     if (!hand || hand.phase !== 'done') fail('You can show your cards once the hand is over');
-    if (hand.showCards(user.id)) {
+    if (hand.showCards(user.id, cards)) {
       for (const ev of hand.drainEvents()) this.log(ev.text, ev.kind);
+      const hp = hand.byId(user.id);
       const rec = this.getRecords().find((r) => r.handNumber === hand.number);
-      if (rec) { const pr = rec.players.find((x) => x.userId === user.id); if (pr) pr.shown = true; }
+      if (rec) {
+        const pr = rec.players.find((x) => x.userId === user.id);
+        if (pr) { pr.shown = hp.shown; pr.showIdx = hp.showIdx.slice(); }
+        this.store.appendHandPatch(this.id, rec.handNumber, { shows: { [user.id]: { shown: hp.shown, showIdx: hp.showIdx.slice() } } });
+      }
       this.broadcast();
     }
   }
@@ -1129,7 +1195,8 @@ export class Table {
     this.manager.stats.added();
     this.hand = null;
     this.lastHand = hand;
-    if (this.settings.revealPolicy === 'hand') this.reveal(hand.number);
+    // sealed hands open their seen cards straight away; the folded ones stay sealed
+    if (this.settings.revealPolicy !== 'session' || rec.fairness.version === FAIRNESS_V2) this.reveal(hand.number);
     for (const p of [...this.players.values()]) {
       if (p.leaveAfterHand) { this.removePlayer(p, p.kicked ? 'kicked' : 'stood up'); continue; }
       if (p.pendingChips > 0) {
@@ -1173,12 +1240,13 @@ export class Table {
       decimals: this.decimals,
       players: d.players.map((p) => ({
         seat: p.seat, userId: p.id, name: p.name, startStack: p.startStack, endStack: p.endStack,
-        net: p.endStack - p.startStack, shown: p.shown, folded: p.folded,
+        net: p.endStack - p.startStack, shown: p.shown, showIdx: p.showIdx, folded: p.folded,
       })),
       fairness: {
-        version: FAIRNESS_VERSION,
+        version: meta.version || FAIRNESS_VERSION,
         commitment: meta.commitment,
-        serverSeed: meta.serverSeed,
+        serverSeed: meta.serverSeed, // never sent for sealed (version 2) hands
+        key: meta.key || undefined,
         entropy: meta.entropy,
         contributions: meta.contributions.map((c) => ({ seat: c.seat, name: c.name, userId: c.userId, seed: c.seed })),
         deck: meta.deck,
@@ -1248,12 +1316,17 @@ export class Table {
   }
 
   // ---------- views ----------
+  // The first hand waits for the table's minimum; after that two players keep the game going.
+  playersNeeded() { return this.handNumber === 0 ? Math.max(2, this.settings.minPlayers || 2) : 2; }
+
   waitingReason() {
     if (this.status === 'ended') return 'This game has ended';
     if (this.status === 'waiting') return 'Waiting for the host to start the game';
     if (this.hand && this.hand.phase !== 'done') return null;
     if (this.paused) return 'The game is paused';
-    if (this.eligiblePlayers().length < 2 && !this.timers.next) return 'Waiting for players';
+    const need = this.playersNeeded();
+    const ready = this.eligiblePlayers().length;
+    if (ready < need && !this.timers.next) return need > 2 ? `Waiting for ${need} players to start (${ready} ready)` : 'Waiting for players';
     return null;
   }
 
@@ -1285,6 +1358,7 @@ export class Table {
       handState.ritDeadline = this.ritDeadline;
       handState.bombReason = this.handMeta && this.handMeta.bomb ? this.handMeta.bomb.reason : null;
       handState.canShow = !!(hand.phase === 'done' && hand.byId(userId) && !hand.byId(userId).shown);
+      handState.sealed = (this.handMeta?.version || FAIRNESS_VERSION) === FAIRNESS_V2;
     }
     const seats = [];
     for (let i = 0; i < this.settings.maxPlayers; i++) {
@@ -1316,6 +1390,7 @@ export class Table {
         userId, isHost, seat: me ? me.seat : null, seated: !!me,
         sittingOut: me ? me.sittingOut : false, sitOutNext: me ? me.sitOutNext : false, leaving: me ? me.leaveAfterHand : false,
         pendingChips: me ? me.pendingChips : 0, requests: this.requests.filter((r) => r.userId === userId), clubAvailable,
+        rathole: me ? null : this.ratholeFor(userId),
       },
       seats,
       hand: handState,
@@ -1323,6 +1398,17 @@ export class Table {
       requests: isHost ? this.requests : null,
     };
   }
+}
+
+export function bombText(bp) {
+  if (bp.mode === 'both') return `every ${bp.every} hands and ${bp.percent}% of other hands`;
+  return bp.mode === 'every' ? `every ${bp.every} hands` : `${bp.percent}% of hands`;
+}
+
+export function ratholeText(m) {
+  if (!m) return 'rathole rule off';
+  const t = m === -1 ? 'for the rest of the game' : m % 60 === 0 ? `for ${m / 60} hour${m === 60 ? '' : 's'}` : `for ${m} minutes`;
+  return `players who stand up come back with at least what they left with, ${t}`;
 }
 
 function describeChanges(a, b, fmt) {
@@ -1334,13 +1420,17 @@ function describeChanges(a, b, fmt) {
   if (a.maxPlayers !== b.maxPlayers) out.push(`${b.maxPlayers} seats`);
   if (a.decisionSeconds !== b.decisionSeconds) out.push(`decision time ${b.decisionSeconds}s`);
   if (a.timeBankSeconds !== b.timeBankSeconds) out.push(`time bank ${b.timeBankSeconds}s`);
+  if (a.minPlayers !== b.minPlayers) out.push(`the first hand waits for ${b.minPlayers} players`);
+  if (a.ratholeMinutes !== b.ratholeMinutes) out.push(ratholeText(b.ratholeMinutes));
   if (JSON.stringify(a.bombPot) !== JSON.stringify(b.bombPot)) {
     const bp = b.bombPot;
-    out.push(bp.mode === 'off' ? 'bomb pots off' : `bomb pots ${bp.mode === 'every' ? `every ${bp.every} hands` : `${bp.percent}% of hands`}, ${bp.anteBB} BB each${bp.game !== 'current' ? `, played as ${name(bp.game)}` : ''}${bp.doubleBoard ? ', double board' : ''}`);
+    out.push(bp.mode === 'off' ? 'bomb pots off' : `bomb pots ${bombText(bp)}, ${bp.anteBB} BB each${bp.game !== 'current' ? `, played as ${name(bp.game)}` : ''}${bp.doubleBoard ? ', double board' : ''}`);
   }
   if (JSON.stringify(a.rit) !== JSON.stringify(b.rit)) out.push(b.rit.enabled ? `run it up to ${TIMES[b.rit.maxRuns]}` : 'run it more than once: off');
   if (a.sessionMinutes !== b.sessionMinutes) out.push(b.sessionMinutes ? `time limit ${b.sessionMinutes} minutes` : 'no time limit');
-  if (a.revealPolicy !== b.revealPolicy) out.push(b.revealPolicy === 'hand' ? 'shuffle seeds revealed after every hand' : 'shuffle seeds revealed when the game ends');
+  if (a.revealPolicy !== b.revealPolicy) {
+    out.push({ hidden: 'folded cards stay hidden for good (cards sealed one by one)', hand: 'shuffle seeds revealed after every hand', session: 'shuffle seeds revealed when the game ends' }[b.revealPolicy]);
+  }
   if (a.autoApprove !== b.autoApprove) out.push(b.autoApprove ? 'seat requests approved automatically' : 'host approves seat requests');
   if (a.feltColor !== b.feltColor) out.push('felt color');
   if (a.spectatorChat !== b.spectatorChat) out.push(b.spectatorChat ? 'spectator chat on' : 'spectator chat off');

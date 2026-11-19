@@ -6,13 +6,19 @@ Private online poker for a home game. It plays like PokerNow (share a link, appr
 
 **One club, in dollars and cents.** The site is a single club, The Aquarium, and every account is in it. All amounts are dollars and cents, down to $0.01 (blinds of $0.10/$0.25 work). The home page is the club: your balance, the games running now, every member's balance, credit limit and net from play, the ledger of every movement, and all-time stats. Admins add to or take from balances, set credit limits and settle up from there (on a phone, tap a member).
 
-**Start a game.** Admins open games from a pop-out that sets the format, stakes and seats, the clock, bomb pots, running it, and seating. It remembers the last game, so next week is one click.
+**Start a game.** Admins open games from a pop-out that sets the format, stakes and seats, players needed to start, the clock, bomb pots, running it, the rathole time, what happens to folded cards, and seating. It remembers the last game.
+
+**Presets.** Any setup can be saved as a named preset, shared by every admin. Presets show under Start a game on the home page and at the top of the pop-out: one click fills in everything, and a preset can be updated or deleted from there.
+
+**Players to start.** The first hand waits until a set number of players are in (2 to the table size). After that, play goes on with two or more.
+
+**Rathole time.** A player who stands up and sits back down at the same table within the set time (30 minutes to 4 hours, or the rest of the game) has to bring at least the stack they left with, even above the maximum. The seat form fills that amount in and says until when it applies.
 
 **Format.** No Limit Hold'em, Pot Limit Omaha (4 cards) and PLO5, played as a list of steps that repeats: each step is one game for a number of orbits (1 to 50) or a number of hands (1 to 500), on one board or two. For example 2 orbits of PLO, then 10 hands of hold'em on a double board, then back to PLO. An orbit ends when the button has gone around the table once. Quick picks cover the usual mixes. Up to 10 seats; the seat limit drops when the deck can't deal everyone (9 with PLO5, 8 with PLO5 on two boards).
 
 **Double board.** Two boards are dealt, board 1 then board 2 on each street, and every pot is split between them. It can be set per format step and for bomb pots, and it works with running it more than once (two boards per run).
 
-**Bomb pots.** Every N hands, a random percentage of hands, or called by the host for the next hand. The ante is set in big blinds, a bomb pot can be played as a different game from the one running, and it can be dealt on two boards. Everyone antes, there is no preflop betting, and the flop comes straight away. Random bomb pots are decided from the hand's sealed seed, so players can check they were not picked by hand.
+**Bomb pots.** Every N hands, a random percentage of hands, both (at least every N hands, and the chance can bring one sooner), or called by the host for the next hand. The ante is set in big blinds, a bomb pot can be played as a different game from the one running, and it can be dealt on two boards. Everyone antes, there is no preflop betting, and the flop comes straight away. Random bomb pots are decided from the hand's sealed seed, so players can check they were not picked by hand.
 
 **Run it once to four times.** When everyone is all in before the river (preflop, on the flop or on the turn), the players in the hand get 15 seconds to vote, before any cards are turned over. Any vote for once wins straight away; otherwise the lowest vote is used. Only votes that come in count, so a player who doesn't vote (or has disconnected) is left out, and no votes at all means once. The host sets the most runs allowed (2, 3 or 4). Every pot, side pots included, is split across the runs. Extra runs come off the same sealed deck, so in very full PLO5 pots the deck can limit how many runs are possible. A river all-in has nothing left to deal, so there is no vote.
 
@@ -29,6 +35,8 @@ Private online poker for a home game. It plays like PokerNow (share a link, appr
 **Club ledger.** Members hold a balance across games. Admins add or take money with a note, set a credit limit per member (how far below zero they may buy in), record settlements, and choose whether members can see everyone's balance and send money to each other. Tables seat members straight from their balance and pay back into it when they stand up, so games run without an admin present. Every movement is a ledger entry with the balance after it, downloadable as CSV.
 
 **Look and feel.** Felt color (the host sets the default, each player can override it), four-color deck, large-index or classic card faces, five card backs, a turn sound, and a readout of what your hand makes. These are saved per browser.
+
+**Folded cards.** Three choices per game: hidden for good (the default), shown in the hand history after each hand, or shown when the game ends. With hidden for good, nobody ever sees another player's folded cards, and after a hand each player can show any of their cards, one at a time or all of them. The deal is still checked; see version 2 below.
 
 **Hand history.** Every hand with its cards, results and actions, plus the full log and ledger as downloads.
 
@@ -50,6 +58,15 @@ What this proves: the deck was fixed before the deal, nothing was changed after 
 What it does not prove: that whoever runs the server cannot read cards from memory during a hand. That is true of PokerNow and any game dealt by a server. Closing that gap needs a "mental poker" protocol where no single party knows the deck, which is much slower and more complex.
 
 Reveal timing is a trade-off. "After every hand" lets everyone check each hand immediately, but folded cards become visible in the hand history. "When the game ends" keeps folded cards private during play and checks everything at the end. The host can also reveal on demand.
+
+**Version 2: folded cards hidden for good.** Revealing a seed shows every card, so games where folded cards stay hidden seal each card on its own instead:
+
+1. Before the hand the server shuffles a base deck from its secret seed and seals every position i with SHA-256 of the position, the card and a secret 128-bit salt. The published seal is SHA-256 of all 52 card seals and the fingerprint of a secret key.
+2. Players add their random inputs as before. HMAC-SHA256(key, all inputs) drives a Fisher-Yates shuffle of the 52 positions, so the server could not know where any card would end up when it sealed the deck.
+3. After the hand the server reveals the key and opens (position, card, salt) for every card that was seen or never dealt: the boards, cards players showed, and the rest of the deck. Folded cards are published only as their seals. Each player's own cards are opened to that player alone.
+4. Every browser rebuilds the published seal from the opened cards and the sealed ones, recomputes where each card went, and checks the boards, every shown card, its own cards and its own input. A card that was moved, swapped or renamed breaks the seal.
+
+What version 2 gives up: nobody can check another player's folded cards, so a deck with a repeated card among folded hands could not be caught. The cards that were seen are all checked.
 
 ## Run it on your computer
 
@@ -121,7 +138,7 @@ The data folder can be handed from one running server to another, for example to
 npm test
 ```
 
-55 tests: hand rankings including the Omaha two-card rule; betting rules (heads-up order, incomplete all-in raises, pot-limit maximums, side pots, uncalled bets); the run-it vote (lowest vote, once wins straight away, missing votes, cards face down while voting); double board pot splits and double board run several times; 6,000 random hands across all three games, on one board or two, checking that chips are conserved and every card can be rebuilt from the seed; full games against a running server with bot players covering approvals, rebuys, the format steps, double board bomb pots, multi-run all-ins, time limits and browser-side verification of every hand; the club flow with credit limits, buy-ins, cash-outs and settlements; the move to one club in dollars and cents; every stat on scripted hands and on 60 bot-played hands (hands, percentages in range, results matching the ledger); the replayer on scripted and bot-played hands (money adds up at every step and ends on the real stacks); format steps by orbits and by hands; invite-only access (refused sign-ups, the owner link, email-bound single-use invites, roles, password resets, turning access off, a failed email); and moving the data to a new server.
+60 tests: hand rankings including the Omaha two-card rule; betting rules (heads-up order, incomplete all-in raises, pot-limit maximums, side pots, uncalled bets); the run-it vote (lowest vote, once wins straight away, missing votes, cards face down while voting); double board pot splits and double board run several times; 6,000 random hands across all three games, on one board or two, checking that chips are conserved and every card can be rebuilt from the seed; full games against a running server with bot players covering approvals, rebuys, the format steps, double board bomb pots, multi-run all-ins, time limits and browser-side verification of every hand; the club flow with credit limits, buy-ins, cash-outs and settlements; the move to one club in dollars and cents; every stat on scripted hands and on 60 bot-played hands (hands, percentages in range, results matching the ledger); the replayer on scripted and bot-played hands (money adds up at every step and ends on the real stacks); format steps by orbits and by hands; sealed hands (every player checks every hand, no copy of a record holds another player's folded cards, a partial show opens only that card, tampering fails); players to start; bomb pots on a schedule and by chance together; the rathole rule; presets; invite-only access (refused sign-ups, the owner link, email-bound single-use invites, roles, password resets, turning access off, a failed email); and moving the data to a new server.
 
 ## Layout
 

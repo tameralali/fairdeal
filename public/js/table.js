@@ -60,7 +60,7 @@ function connect() {
   socket.on('toast', (t) => toast(t.text));
   socket.on('request', (r) => {
     chime('request');
-    toast(`${r.name} ${r.type === 'seat' ? 'asked for a seat' : 'asked to add chips'} (${fmt(r.amount)})`);
+    toast(`${r.name} ${r.type === 'seat' ? 'asked for a seat' : 'asked to add chips'} (${r.amount})`);
   });
   socket.on('hands:revealed', ({ through }) => app.fair.onRevealed(through, fetchRecord));
 }
@@ -177,11 +177,15 @@ function renderTop(s) {
     } else rot = r.handsLeft > 0 ? `${cur} for ${more(r.handsLeft)}, then ${next}` : `${next} from the next hand`;
   }
   let bomb = '';
+  const bm = st.bombPot.mode;
   if (t.bombNext) bomb = '<span class="pill brass">Bomb pot next hand</span>';
-  else if (st.bombPot.mode === 'every') {
-    const left = Math.max(1, st.bombPot.every - t.handsSinceBomb);
-    bomb = `<span class="pill soft">Bomb pot ${left === 1 ? 'next hand' : `in ${left} hands`}</span>`;
-  } else if (st.bombPot.mode === 'percent') bomb = `<span class="pill soft">Bomb pots ${st.bombPot.percent}%</span>`;
+  else {
+    if (bm === 'every' || bm === 'both') {
+      const left = Math.max(1, st.bombPot.every - t.handsSinceBomb);
+      bomb += `<span class="pill soft">Bomb pot ${left === 1 ? 'next hand' : `in ${left} hands`}</span>`;
+    }
+    if (bm === 'percent' || bm === 'both') bomb += `<span class="pill soft" title="Each hand has this chance of being a bomb pot">${bm === 'both' ? `or ${st.bombPot.percent}% sooner` : `Bomb pots ${st.bombPot.percent}%`}</span>`;
+  }
   let status = '';
   if (t.status === 'ended') status = '<span class="pill warn">Game over</span>';
   else if (t.status === 'waiting') status = '<span class="pill soft">Not started</span>';
@@ -275,9 +279,9 @@ function renderTable(s) {
     const cls = ['seat', side, isMe && 'me', actor && 'actor', p && p.folded && 'folded', !p && (info.sittingOut || info.stack === 0) && 'out', won && 'winner'].filter(Boolean).join(' ');
     let hole = '';
     if (p) {
-      if (p.hole && (!p.folded || isMe || p.shown)) {
+      if (p.hole && (!p.folded || isMe || p.shown || p.hole.some(Boolean))) {
         const hc = R.handCards.get(seat);
-        hole = `<div class="hole faces n${p.hole.length}">${p.hole.map((c, i) => cardHTML(c, `${hc ? (hc.has(c) ? 'win' : 'dim') : ''} ${dealCls(`h${seat}${i}${c}`)}`)).join('')}</div>`;
+        hole = `<div class="hole faces n${p.hole.length}">${p.hole.map((c, i) => (c ? cardHTML(c, `${hc ? (hc.has(c) ? 'win' : 'dim') : ''} ${dealCls(`h${seat}${i}${c}`)}`) : backHTML())).join('')}</div>`;
       } else if (!p.folded) {
         hole = `<div class="hole n${p.holeCount}">${Array.from({ length: p.holeCount }, (_, i) => backHTML(dealCls(`b${seat}${i}`))).join('')}</div>`;
       }
@@ -440,7 +444,11 @@ function renderBottom(s) {
       : '<button class="btn" data-my="sitout">Sit out next hand</button>';
     if (s.table.status !== 'ended') my += '<button class="btn" data-my="chips">Add chips</button>';
     if (!s.me.leaving) my += '<button class="btn ghost" data-my="stand">Stand up</button>';
-    if (s.hand && s.hand.canShow) my += '<button class="btn" data-my="show">Show my cards</button>';
+    if (s.hand && s.hand.canShow) {
+      const mine = s.hand.players.find((p) => p.id === s.me.userId);
+      const left = (mine?.hole || []).map((c, i) => [c, i]).filter(([, i]) => !(mine.showIdx || []).includes(i));
+      my += `<span class="show-pick" role="group" aria-label="Show your cards"><span class="sp-lbl">Show</span>${left.map(([c, i]) => `<button type="button" class="sp-card" data-show="${i}" title="Show this card">${cardHTML(c)}</button>`).join('')}<button type="button" class="btn small" data-show="all">${left.length === (mine?.hole || []).length ? 'All' : 'The rest'}</button></span>`;
+    }
     if (s.me.requests.some((r) => r.type === 'chips')) my += '<span class="status-line">Chip request sent to the host</span>';
   } else if (s.me.requests.length) {
     my += '<span class="status-line">Waiting for the host to approve your seat</span><button class="btn ghost small" data-my="cancel">Cancel request</button>';
@@ -633,7 +641,7 @@ function bindEvents() {
       else if (k === 'back') emit('sitout', { value: false });
       else if (k === 'chips') D.chipsDialog();
       else if (k === 'stand') D.standDialog();
-      else if (k === 'show') emit('show');
+      else if (k === 'show') emit('show', {});
       else if (k === 'cancel') emit('seat:cancel');
       return;
     }
@@ -667,6 +675,11 @@ function bindEvents() {
     if (a && els.actions.contains(a)) return act(a.dataset.act);
     const pr = e.target.closest('[data-to]');
     if (pr && els.actions.contains(pr)) return setRaise(Number(pr.dataset.to));
+    const sh = e.target.closest('[data-show]');
+    if (sh && els.mybar.contains(sh)) {
+      sh.disabled = true;
+      return emit('show', sh.dataset.show === 'all' ? {} : { cards: [Number(sh.dataset.show)] });
+    }
     const run = e.target.closest('[data-run]');
     if (run) {
       $$('[data-run]').forEach((b) => { b.disabled = true; });

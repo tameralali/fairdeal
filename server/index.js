@@ -7,7 +7,7 @@ import { Server } from 'socket.io';
 import { Store } from './store.js';
 import { Auth } from './auth.js';
 import { Clubs } from './clubs.js';
-import { TableManager } from './table.js';
+import { TableManager, sanitizeSettings, DEFAULT_SETTINGS } from './table.js';
 import { exportKeyFromEnv, keyMatches, readDataDir, importIfNeeded } from './migrate.js';
 import { mailerFromEnv, inviteEmail, resetEmail } from './mail.js';
 
@@ -156,6 +156,48 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     return { ...m, link, email: target.email || null, expiresAt: r.invite.expiresAt };
   }));
 
+  // ----- game presets (admins): saved Start a game settings, shared by the club's admins -----
+  const presets = () => (store.data.presets ||= {});
+  const presetName = (v) => {
+    const n = String(v ?? '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 40);
+    if (!n) throw new Error('Give the preset a name');
+    return n;
+  };
+  const presetBody = (body) => {
+    const base = { ...structuredClone(DEFAULT_SETTINGS), autoApprove: true, autoStart: true };
+    const settings = sanitizeSettings(body.settings || {}, base); // the same checks as starting a game
+    return { name: presetName(body.name), tableName: String(body.tableName ?? '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 40), settings };
+  };
+  const listPresets = () => Object.values(presets()).sort((a, b) => a.name.localeCompare(b.name));
+  const adminOnly = (user) => { if (!clubs.isManager(clubs.mainId(), user.id)) { const e = new Error('Only admins can save game presets'); e.status = 403; throw e; } };
+  app.get('/api/presets', api((req, user) => { adminOnly(user); return { presets: listPresets() }; }));
+  app.post('/api/presets', api((req, user) => {
+    adminOnly(user);
+    const b = presetBody(req.body || {});
+    if (Object.values(presets()).some((x) => x.name.toLowerCase() === b.name.toLowerCase())) throw new Error('A preset with that name exists already. Pick it and save over it, or choose another name.');
+    if (Object.keys(presets()).length >= 40) throw new Error('That is a lot of presets. Delete one first.');
+    const id = Math.random().toString(36).slice(2, 10);
+    presets()[id] = { id, ...b, createdBy: user.id, createdAt: Date.now(), updatedAt: Date.now() };
+    store.save();
+    return { preset: presets()[id], presets: listPresets() };
+  }));
+  app.put('/api/presets/:id', api((req, user) => {
+    adminOnly(user);
+    const cur = presets()[req.params.id];
+    if (!cur) throw new Error('That preset was deleted');
+    const b = presetBody({ name: cur.name, ...(req.body || {}) });
+    if (Object.values(presets()).some((x) => x.id !== cur.id && x.name.toLowerCase() === b.name.toLowerCase())) throw new Error('Another preset has that name');
+    Object.assign(cur, b, { updatedAt: Date.now(), updatedBy: user.id });
+    store.save();
+    return { preset: cur, presets: listPresets() };
+  }));
+  app.delete('/api/presets/:id', api((req, user) => {
+    adminOnly(user);
+    delete presets()[req.params.id];
+    store.save();
+    return { presets: listPresets() };
+  }));
+
   // ----- tables -----
   app.post('/api/tables', api((req, user) => ({ id: tables.create(user, req.body || {}).id })));
   app.get('/api/tables/:id', api((req, user) => viewTable(req, user).summary(user.id)));
@@ -244,7 +286,7 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     on('rit', (p) => T().chooseRuns(u, p.runs));
     on('sitout', (p) => T().setSitOut(u, !!p.value));
     on('standup', () => T().standUp(u));
-    on('show', () => T().showCards(u));
+    on('show', (p) => T().showCards(u, Array.isArray(p.cards) ? p.cards : null));
     on('fair:contribute', (p) => T().contribute(u, p));
     on('chat', (p) => T().chat(u, p.text));
     on('hands:list', () => ({ hands: T().handList(u.id) }));

@@ -524,3 +524,11 @@ dialog.replay-dlg { width: min(1000px, calc(100vw - 16px)); }
 @media (min-width: 1900px) and (max-width: 2299px) and (min-height: 1000px) {
   .topbar, .bottom, .drawer { zoom: 1.12; }
 }
+
+/* ---------- showing cards after a hand ---------- */
+.show-pick { display: inline-flex; align-items: center; gap: 5px; padding: 3px 4px 3px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.show-pick .sp-lbl { color: var(--muted); font-weight: 600; font-size: 14px; margin-right: 2px; }
+.sp-card { appearance: none; border: 0; padding: 0; background: none; cursor: pointer; border-radius: 4px; }
+.sp-card .card { --w: 30px; display: block; }
+.sp-card:hover .card, .sp-card:focus-visible .card { box-shadow: 0 0 0 2px var(--brass); }
+.sp-card[disabled] { opacity: .4; }

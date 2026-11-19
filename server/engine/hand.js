@@ -77,7 +77,7 @@ export class Hand {
       .map((p) => ({
         id: p.id, seat: p.seat, name: p.name, stack: p.stack, startStack: p.stack,
         hole: [], folded: false, allIn: false, bet: 0, committed: 0,
-        hasActed: false, actedAtLevel: 0, lastAction: null, shown: false,
+        hasActed: false, actedAtLevel: 0, lastAction: null, shown: false, showIdx: [],
       }));
     this.n = this.players.length;
     if (this.n < 2) throw new Error('need at least two players');
@@ -405,10 +405,16 @@ export class Hand {
     this.pending = 'next-street';
   }
 
+  // Shows every card of a player's hand (at showdown).
+  showAll(p) {
+    p.shown = true;
+    p.showIdx = p.hole.map((_, i) => i);
+  }
+
   revealLive() {
     for (const p of this.live) {
       if (!p.shown) {
-        p.shown = true;
+        this.showAll(p);
         this.log(`${p.name} shows [${prettyList(p.hole)}]`, 'show');
       }
     }
@@ -525,7 +531,7 @@ export class Hand {
     for (let k = 0; k < this.n; k++) {
       const p = this.players[(start + k) % this.n];
       if (p.folded || p.shown) continue;
-      p.shown = true;
+      this.showAll(p);
       const h = bestHand(p.hole, boards[0], this.omaha);
       this.log(`${p.name} shows [${prettyList(p.hole)}]${h && boards.length === 1 ? ` (${h.name})` : ''}`, 'show');
     }
@@ -588,13 +594,26 @@ export class Hand {
     this.log(`-- ending hand #${this.number} --`, 'hand-end');
   }
 
-  showCards(id) {
+  // After the hand a player may show any of their cards: idxs lists which (all of them when left out).
+  showCards(id, idxs = null) {
     const p = this.byId(id);
     if (!p || this.phase !== 'done' || p.shown) return false;
-    p.shown = true;
-    this.log(`${p.name} shows [${prettyList(p.hole)}]`, 'show');
+    const want = (Array.isArray(idxs) ? idxs : p.hole.map((_, i) => i))
+      .map(Number).filter((i) => Number.isInteger(i) && i >= 0 && i < p.hole.length && !p.showIdx.includes(i));
+    if (!want.length) return false;
+    p.showIdx = [...p.showIdx, ...new Set(want)].sort((a, b) => a - b);
+    if (p.showIdx.length === p.hole.length) p.shown = true;
+    const cards = [...new Set(want)].sort((a, b) => a - b).map((i) => p.hole[i]);
+    this.log(`${p.name} shows ${cards.length === 1 ? pretty(cards[0]) : `[${prettyList(cards)}]`}`, 'show');
     this.version++;
     return true;
+  }
+
+  // What others may see of a player's cards: all of them, the ones shown, or none.
+  visibleHole(p, viewerId) {
+    if (p.id === viewerId || p.shown) return p.hole.slice();
+    if (p.showIdx.length) return p.hole.map((c, i) => (p.showIdx.includes(i) ? c : null));
+    return null;
   }
 
   // ---------- views ----------
@@ -622,9 +641,9 @@ export class Hand {
       currentBet: this.currentBet,
       players: this.players.map((p) => ({
         seat: p.seat, id: p.id, stack: p.stack, bet: p.bet, committed: p.committed,
-        folded: p.folded, allIn: p.allIn, lastAction: p.lastAction, shown: p.shown,
+        folded: p.folded, allIn: p.allIn, lastAction: p.lastAction, shown: p.shown, showIdx: p.showIdx.slice(),
         holeCount: p.hole.length,
-        hole: p.id === viewerId || p.shown ? p.hole.slice() : null,
+        hole: this.visibleHole(p, viewerId),
       })),
       actorSeat: actor ? actor.seat : null,
       legal: actor && actor.id === viewerId ? this.legalActions(viewerId) : null,
@@ -651,7 +670,7 @@ export class Hand {
       bigBlind: this.bb,
       players: this.players.map((p) => ({
         seat: p.seat, id: p.id, name: p.name, startStack: p.startStack, endStack: p.stack,
-        hole: p.hole.slice(), shown: p.shown, folded: p.folded,
+        hole: p.hole.slice(), shown: p.shown, showIdx: p.showIdx.slice(), folded: p.folded,
       })),
       dealt: {
         dealOrder: this.dealOrder.slice(),

@@ -96,7 +96,19 @@ function board(tables, empty = 'No tables yet.') {
   }).join('');
 }
 
-const openStart = () => startGameDialog({ user: me.user });
+const openStart = (presetId = null) => startGameDialog({ user: me.user, presetId });
+
+// Saved presets under Start a game: one click opens the game form filled in from it.
+async function loadQuickStart() {
+  const box = main.querySelector('[data-quick]');
+  if (!box) return;
+  let list = [];
+  try { list = (await api.get('/api/presets')).presets; } catch { return; }
+  if (!list.length) return;
+  box.innerHTML = `<span class="qs-lbl">From a preset</span>${list.slice(0, 6).map((p) => `<button type="button" class="fmt-chip" data-qs="${esc(p.id)}">${esc(p.name)}</button>`).join('')}`;
+  box.classList.remove('hidden');
+  box.addEventListener('click', (e) => { const b = e.target.closest('[data-qs]'); if (b) openStart(b.dataset.qs); });
+}
 
 // ---------- home ----------
 async function home() {
@@ -197,7 +209,7 @@ async function clubHome(id) {
         <div><small>Credit limit</small><b>${F(c.me.creditLimit)}</b></div>
         <div><small>Available to play</small><b>${F(Math.max(0, c.me.available))}</b></div>
       </div>
-      ${c.isManager ? '<button class="btn primary big" data-start>Start a game</button>' : ''}
+      ${c.isManager ? '<div class="cb-start"><button class="btn primary big" data-start>Start a game</button><div class="quick-start hidden" data-quick></div></div>' : ''}
     </section>
     ${c.announcement ? `<div class="announce">${esc(c.announcement)}</div>` : ''}
     ${c.isManager && c.pending && c.pending.length ? `<section class="panel waitlist"><h2>Waiting to join</h2>
@@ -272,6 +284,7 @@ async function clubHome(id) {
   };
 
   main.querySelector('[data-start]')?.addEventListener('click', () => openStart());
+  if (c.isManager) loadQuickStart();
   main.querySelector('[data-filter]')?.addEventListener('change', (e) => { ui.member = e.target.value; ui.ledgerLimit = 15; clubHome(id); });
   main.querySelector('[data-csv]').addEventListener('click', () => api.download(`/api/clubs/${id}/transactions.csv`, `club-ledger-${c.name.replace(/[^\w-]+/g, '-')}.csv`).catch((x) => toast(x.message, 'error')));
 

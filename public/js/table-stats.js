@@ -230,12 +230,12 @@ function feltHTML(rec, R, step) {
     const by = 50 + 23 * Math.sin(a);
     const upper = Math.sin(a) < -0.3;
     const cards = p.cards
-      ? p.cards.map((c) => cardHTML(c, step.final && p.folded ? 'dim' : '')).join('')
+      ? p.cards.map((c) => (c ? cardHTML(c, step.final && p.folded ? 'dim' : '') : backHTML())).join('')
       : Array.from({ length: rec.dealt.holeCount || 2 }, () => backHTML()).join('');
     const cls = ['rp-seat', upper ? 'up' : 'down', step.actor === p.seat ? 'actor' : '', p.folded ? 'folded' : '', step.final && p.won ? 'winner' : ''].filter(Boolean).join(' ');
     const tagCls = p.won && step.final ? 'win' : p.tag === 'All-in' ? 'allin' : (p.tag || '').toLowerCase();
     seats += `<div class="${cls}" style="left:${x.toFixed(1)}%;top:${y.toFixed(1)}%">
-      ${p.folded && !step.final && !p.cards ? '' : `<div class="rp-cards n${(p.cards || []).length || rec.dealt.holeCount || 2}">${cards}</div>`}
+      ${p.folded && !(p.cards || []).some(Boolean) ? '' : `<div class="rp-cards n${(p.cards || []).length || rec.dealt.holeCount || 2}">${cards}</div>`}
       <div class="rp-plate"><b>${esc(p.name)}${p.seat === rec.buttonSeat ? ' <span class="rp-btn" title="Dealer">D</span>' : ''}</b><span class="num">${fmt(p.stack)}</span>${p.tag ? `<em class="${esc(tagCls)}">${esc(p.tag)}</em>` : ''}</div>
     </div>`;
     if (p.bet > 0) seats += `<div class="rp-bet" style="left:${bx.toFixed(1)}%;top:${by.toFixed(1)}%"><span class="chip"></span>${fmt(p.bet)}</div>`;

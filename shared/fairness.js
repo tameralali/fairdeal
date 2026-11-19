@@ -19,10 +19,27 @@
 //
 // This module has no platform dependencies: crypto is passed in, so the exact same code runs on the
 // server (node:crypto) and in the browser verifier (WebCrypto).
+//
+// Version 2 ("aquarium-v2", tables where folded cards stay hidden) seals every card on its own, so a
+// hand can be checked without showing the cards that were folded:
+// 1. Before the hand the server shuffles a base deck from its secret seed alone, and seals each base
+//    position i with leaf_i = SHA-256("aquarium-v2|leaf|i|card|salt_i"), salt_i a secret 128-bit value.
+//    It also picks a secret key and publishes
+//    commitment = SHA-256("aquarium-v2|commit|leaf_0,...,leaf_51|SHA-256(key)").
+// 2. Players add their random inputs, as in version 1.
+// 3. The positions are shuffled with HMAC-SHA256(key, entropy + "|" + counter) (Fisher-Yates over
+//    0..51, same draw rule as the deck), and the card dealt at deck position j is base[position[j]].
+//    The server could not know the players' inputs when it sealed the deck, so it cannot steer cards.
+// 4. After the hand the server reveals the key and opens (index, card, salt) for every card that was
+//    seen or never dealt: the boards, cards players showed, and the rest of the deck. For folded cards
+//    it publishes only the leaf. Each player's own cards are opened to that player alone.
+// 5. Anyone rebuilds the commitment from the openings and leaves, recomputes the positions and checks
+//    that every opened card sits where the record says it was dealt. A folded card is never opened.
 
 import { CANONICAL_DECK } from './cards.js';
 
 export const FAIRNESS_VERSION = 'aquarium-v1';
+export const FAIRNESS_V2 = 'aquarium-v2';
 const SEED_RE = /^[0-9a-f]{16,64}$/;
 
 export function isValidContribution(seed) {
@@ -49,8 +66,8 @@ export function uniformInt(next, n) {
   }
 }
 
-export function shuffleWith(next) {
-  const deck = CANONICAL_DECK.slice();
+export function shuffleWith(next, items = CANONICAL_DECK) {
+  const deck = items.slice();
   for (let i = deck.length - 1; i > 0; i--) {
     const j = uniformInt(next, i + 1);
     const t = deck[i]; deck[i] = deck[j]; deck[j] = t;
@@ -62,18 +79,21 @@ export function blockMessage(entropy, counter) {
   return `${entropy}|${counter}`;
 }
 
-// Synchronous derivation (server). hmacSync(key, message) -> Uint8Array(32)
-export function deriveDeckSync(hmacSync, serverSeed, entropy) {
+function syncStream(hmacSync, key, message) {
   let counter = 0;
   let block = null;
   let off = 32;
-  const next = () => {
-    if (off >= 32) { block = hmacSync(serverSeed, blockMessage(entropy, counter++)); off = 0; }
+  return () => {
+    if (off >= 32) { block = hmacSync(key, message(counter++)); off = 0; }
     const v = uint32At(block, off);
     off += 4;
     return v;
   };
-  return shuffleWith(next);
+}
+
+// Synchronous derivation (server). hmacSync(key, message) -> Uint8Array(32)
+export function deriveDeckSync(hmacSync, serverSeed, entropy) {
+  return shuffleWith(syncStream(hmacSync, serverSeed, (c) => blockMessage(entropy, c)));
 }
 
 function streamFromBlocks(blocks) {
@@ -88,18 +108,59 @@ function streamFromBlocks(blocks) {
   };
 }
 
-// Asynchronous derivation (browser WebCrypto). Produces the identical deck.
-export async function deriveDeckAsync(hmacAsync, serverSeed, entropy) {
+async function shuffleAsync(hmacAsync, key, message, items) {
   let n = 12;
   for (;;) {
-    const blocks = await Promise.all(Array.from({ length: n }, (_, i) => hmacAsync(serverSeed, blockMessage(entropy, i))));
+    const blocks = await Promise.all(Array.from({ length: n }, (_, i) => hmacAsync(key, message(i))));
     try {
-      return shuffleWith(streamFromBlocks(blocks));
+      return shuffleWith(streamFromBlocks(blocks), items);
     } catch (e) {
       if (e instanceof NeedMoreBlocks) { n *= 2; continue; }
       throw e;
     }
   }
+}
+
+// Asynchronous derivation (browser WebCrypto). Produces the identical deck.
+export function deriveDeckAsync(hmacAsync, serverSeed, entropy) {
+  return shuffleAsync(hmacAsync, serverSeed, (c) => blockMessage(entropy, c), CANONICAL_DECK);
+}
+
+// ---------- version 2: every card sealed on its own ----------
+const INDICES = Array.from({ length: 52 }, (_, i) => i);
+const hex = (bytes, n = bytes.length) => [...bytes.slice(0, n)].map((b) => b.toString(16).padStart(2, '0')).join('');
+export const leafMessage = (i, card, salt) => `${FAIRNESS_V2}|leaf|${i}|${card}|${salt}`;
+export const commitMessage = (leaves, keyHash) => `${FAIRNESS_V2}|commit|${leaves.join(',')}|${keyHash}`;
+
+// Server side, before the hand: the sealed base deck. sha256Hex(string) -> hex.
+export function sealDeckV2(hmacSync, sha256Hex, serverSeed) {
+  const base = shuffleWith(syncStream(hmacSync, serverSeed, (c) => `${FAIRNESS_V2}|base|${c}`));
+  const salts = INDICES.map((i) => hex(hmacSync(serverSeed, `${FAIRNESS_V2}|salt|${i}`), 16));
+  const leaves = INDICES.map((i) => sha256Hex(leafMessage(i, base[i], salts[i])));
+  const key = hex(hmacSync(serverSeed, `${FAIRNESS_V2}|key`));
+  const keyHash = sha256Hex(key);
+  return { base, salts, leaves, key, keyHash, commitment: sha256Hex(commitMessage(leaves, keyHash)) };
+}
+
+// Where each deck position's card comes from in the base deck, once the players' inputs are in.
+export function positionsSync(hmacSync, key, entropy) {
+  return shuffleWith(syncStream(hmacSync, key, (c) => blockMessage(entropy, c)), INDICES);
+}
+export function positionsAsync(hmacAsync, key, entropy) {
+  return shuffleAsync(hmacAsync, key, (c) => blockMessage(entropy, c), INDICES);
+}
+
+// Deck positions of each seat's hole cards, of the boards, and of the cards nobody was dealt.
+export function dealPositions(dealt) {
+  const n = dealt.dealOrder.length;
+  const seats = {};
+  dealt.dealOrder.forEach((seat, k) => { seats[seat] = Array.from({ length: dealt.holeCount }, (_, r) => r * n + k); });
+  const holes = n * dealt.holeCount;
+  const boardCount = Array.isArray(dealt.placements) ? dealt.placements.length : 0;
+  const board = Array.from({ length: boardCount }, (_, k) => holes + k);
+  const undealt = [];
+  for (let j = holes + boardCount; j < 52; j++) undealt.push(j);
+  return { seats, board, undealt };
 }
 
 // Random bomb pot decision (only used when the table's bomb pot mode is "percent").
@@ -169,9 +230,17 @@ export function webCryptoAdapter(subtle = globalThis.crypto.subtle) {
   };
 }
 
+function bombCheck(record, add, roll) {
+  const b = record.bomb;
+  if (!b || !(b.mode === 'percent' || b.mode === 'both') || b.reason === 'manual') return;
+  const fair = b.reason === 'every' ? true : (roll < b.percent) === !!record.isBomb;
+  add(`Bomb pot roll ${roll.toFixed(4)} vs ${b.percent}% threshold`, roll === b.roll && fair);
+}
+
 // Full verification of a revealed hand record.
 // observed (optional, from the player's own browser): { commitment, mySeed, mySeat, myHole, boards }
 export async function verifyHandRecord(record, crypto, observed = {}) {
+  if ((record.fairness || {}).version === FAIRNESS_V2) return verifyV2(record, crypto, observed);
   const checks = [];
   const add = (label, ok, detail = '') => checks.push({ label, ok: !!ok, detail });
   const f = record.fairness || {};
@@ -211,11 +280,63 @@ export async function verifyHandRecord(record, crypto, observed = {}) {
     });
     add('The boards you were shown match the recomputed deal', ok);
   }
-  if (record.bomb && record.bomb.mode === 'percent' && record.bomb.reason !== 'manual') {
-    const block = await crypto.hmac(f.serverSeed, bombMessage(entropy));
-    const roll = rollFromBlock(block);
-    const shouldBomb = roll < record.bomb.percent;
-    add(`Bomb pot roll ${roll.toFixed(4)} vs ${record.bomb.percent}% threshold`, roll === record.bomb.roll && shouldBomb === !!record.isBomb);
+  if (record.bomb && (record.bomb.mode === 'percent' || record.bomb.mode === 'both') && record.bomb.reason !== 'manual') {
+    bombCheck(record, add, rollFromBlock(await crypto.hmac(f.serverSeed, bombMessage(entropy))));
   }
-  return { ok: checks.every((c) => c.ok), checks, deck, deal, entropy };
+  return { ok: checks.every((c) => c.ok), checks, deck, deal, entropy, rebuilt: hash };
+}
+
+// Version 2: only seen and undealt cards are opened; folded cards stay sealed.
+async function verifyV2(record, crypto, observed) {
+  const checks = [];
+  const add = (label, ok, detail = '') => checks.push({ label, ok: !!ok, detail });
+  const f = record.fairness || {};
+  if (!f.key) {
+    return { ok: false, pending: true, checks: [{ label: 'The cards have not been opened yet', ok: false, detail: 'They are opened when the hand ends.' }] };
+  }
+  const opened = new Map();
+  for (const o of [...(f.openings || []), ...(f.myOpenings || [])]) opened.set(o.i, o);
+  const leaves = [];
+  let leavesOk = true;
+  for (let i = 0; i < 52; i++) {
+    const o = opened.get(i);
+    if (o) leaves.push(await crypto.sha256Hex(leafMessage(i, o.c, o.s)));
+    else if (f.sealed && typeof f.sealed[i] === 'string') leaves.push(f.sealed[i]);
+    else { leavesOk = false; leaves.push(''); }
+  }
+  const keyHash = await crypto.sha256Hex(f.key);
+  const rebuilt = await crypto.sha256Hex(commitMessage(leaves, keyHash));
+  add('Every card’s seal is accounted for', leavesOk);
+  add('The opened cards and sealed cards rebuild the commitment published before the deal', leavesOk && rebuilt === f.commitment, rebuilt);
+  if (observed.commitment) add('Commitment matches the one your browser saw before the deal', observed.commitment === f.commitment);
+  const seeds = (f.contributions || []).map((c) => c.seed);
+  const entropy = buildEntropy(record.tableId, record.handNumber, seeds, FAIRNESS_V2);
+  add('Entropy string rebuilt from the player contributions', entropy === f.entropy);
+  if (observed.mySeed) add('Your browser’s contribution was included', seeds.includes(observed.mySeed));
+  const pos = await positionsAsync(crypto.hmac, f.key, entropy);
+  const deck = pos.map((i) => (opened.has(i) ? opened.get(i).c : null));
+  const cards = [...opened.values()].map((o) => o.c);
+  add('No card was opened twice', new Set(cards).size === cards.length && cards.every((c) => CANONICAL_DECK.includes(c)));
+  const deal = reconstructDeal(deck, record.dealt);
+  const at = dealPositions(record.dealt);
+  add('Every card nobody was dealt was opened', at.undealt.every((j) => deck[j] !== null));
+  let boardsOk = record.dealt.boards.length === deal.boards.length;
+  record.dealt.boards.forEach((b, i) => { if (!sameCards(b, deal.boards[i])) boardsOk = false; });
+  add(record.dealt.boards.length > 1 ? `All ${record.dealt.boards.length} boards came off the sealed deck in order` : 'The board came off the sealed deck in order', boardsOk);
+  let shownOk = true;
+  for (const [seat, list] of Object.entries(record.dealt.holes || {})) {
+    (list || []).forEach((c, k) => { if (c && deal.holes[seat]?.[k] !== c) shownOk = false; });
+  }
+  add('Every card that was shown came off the sealed deck where it was dealt', shownOk);
+  if (observed.myHole && observed.mySeat !== undefined && observed.mySeat !== null) {
+    add('Your own hole cards came off the sealed deck where they were dealt', sameCards(observed.myHole, deal.holes[observed.mySeat]));
+  }
+  if (Array.isArray(observed.boards) && observed.boards.length) {
+    let ok = true;
+    observed.boards.forEach((b, i) => { if (!sameCards(b, (deal.boards[i] || []).slice(0, b.length))) ok = false; });
+    add('The boards you were shown match the opened cards', ok);
+  }
+  bombCheck(record, add, rollFromBlock(await crypto.hmac(f.key, bombMessage(entropy))));
+  const hidden = deck.filter((c) => c === null).length;
+  return { ok: checks.every((c) => c.ok), checks, deck, deal, entropy, rebuilt, hidden };
 }

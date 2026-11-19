@@ -113,6 +113,10 @@ class Bot {
     if (me && me.hole) {
       this.observed[h.number] = { mySeat: me.seat, myHole: me.hole, boards: h.boards };
     }
+    if (this.showOne && h.phase === 'done' && h.canShow && me && me.folded && !this.shownIn) {
+      this.shownIn = h.number;
+      this.socket.emit('show', { cards: [1] }, () => {});
+    }
     if (this.passive) return;
     if (h.legal && !this.busy) {
       this.busy = true;
@@ -316,6 +320,127 @@ test('seeds stay hidden until the game ends when the reveal policy is per sessio
   const v = await verifyAll(id, bots, a.token);
   assert.ok(v.verified > 0);
   bots.forEach((x) => x.close());
+});
+
+test('folded cards stay hidden for good: every hand checks out, nobody sees another player\'s folded cards', { timeout: 150000 }, async () => {
+  const auths = [await admin('Host', { fund: 1000000 }), await member('Bea', null, { fund: 1000000 }), await member('Cy', null, { fund: 1000000 })];
+  const { id } = await call('POST', '/api/tables', {
+    settings: {
+      format: [{ game: 'plo4', unit: 'hands', count: 3 }, { game: 'nlh', unit: 'hands', count: 3, doubleBoard: true }],
+      revealPolicy: 'hidden', autoApprove: true, decisionSeconds: 5, timeBankSeconds: 0, minPlayers: 3,
+      bombPot: { mode: 'both', every: 4, percent: 30, anteBB: 1 }, rit: { enabled: true, maxRuns: 3 },
+    },
+  }, auths[0].token);
+  const bots = auths.map((a, i) => new Bot(a.user.name, a, 40 + i));
+  bots[1].showOne = true;
+  for (const b of bots) await b.connect(id);
+  await bots[0].emit('host:start', {});
+  await bots[0].emit('seat:request', { seat: 0, buyIn: 1000 });
+  await bots[1].emit('seat:request', { seat: 1, buyIn: 1000 });
+  await wait(400);
+  assert.equal(bots[0].state.table.handNumber, 0, 'the first hand waits for three players');
+  assert.match(bots[0].state.table.waiting, /3 players/);
+  await bots[2].emit('seat:request', { seat: 2, buyIn: 1000 });
+  await until(() => (bots[0].state?.table.handNumber || 0) >= 24, 120000, '24 sealed hands');
+  await bots[0].emit('host:pause', { value: true });
+  await until(() => !bots[0].state.hand || bots[0].state.hand.phase === 'done', 10000, 'hand to end');
+  await wait(300);
+  const t = srv.tables.get(id);
+  const recs = t.getRecords();
+  assert.ok(recs.every((r) => r.fairness.version === 'aquarium-v2'));
+  // every player's browser checks every hand, its own cards included, as soon as the hand ends
+  const v = await verifyAll(id, bots, auths[0].token);
+  assert.equal(v.verified, recs.length * 3);
+  // no copy of a record holds another player's folded cards, unless they showed them
+  let hiddenSeen = 0;
+  for (const r of recs) {
+    for (const b of bots) {
+      const { record } = await call('GET', `/api/tables/${id}/hands/${r.handNumber}`, null, b.token);
+      const text = JSON.stringify(record);
+      assert.ok(!text.includes(r.fairness.serverSeed), 'the seed never leaves the server');
+      for (const p of r.players) {
+        if (p.userId === b.userId || p.shown) continue;
+        const shown = p.showIdx || [];
+        r.dealt.holes[p.seat].forEach((c, k) => {
+          if (shown.includes(k)) return;
+          hiddenSeen++;
+          assert.equal(record.dealt.holes[p.seat]?.[k] ?? null, null);
+          // a folded card may still appear on a board? never: the deck has one of each card
+          assert.ok(!text.includes(`"c":"${c}"`), `hand ${r.handNumber}: ${b.name} cannot see ${p.name}'s ${c}`);
+        });
+      }
+    }
+  }
+  assert.ok(hiddenSeen > 20, 'there were folded cards to hide');
+  // Bea showed one card of a hand she folded: everyone sees that card and only that one
+  const shownRec = recs.find((r) => r.handNumber === bots[1].shownIn);
+  assert.ok(shownRec, 'Bea folded a hand and showed a card');
+  const bea = shownRec.players.find((p) => p.userId === bots[1].userId);
+  assert.deepEqual(bea.showIdx, [1]);
+  const seen = (await call('GET', `/api/tables/${id}/hands/${shownRec.handNumber}`, null, bots[2].token)).record;
+  assert.deepEqual(seen.dealt.holes[bea.seat].map((c) => c !== null), shownRec.dealt.holes[bea.seat].map((_, k) => k === 1));
+  assert.equal(seen.dealt.holes[bea.seat][1], shownRec.dealt.holes[bea.seat][1]);
+  // the show is written down, so it is there after a restart too
+  const reread = srv.store.readHands(id).find((r) => r.handNumber === shownRec.handNumber);
+  assert.deepEqual(reread.players.find((p) => p.userId === bots[1].userId).showIdx, [1]);
+  // bomb pots every 4 hands at the latest, and random ones in between (checked from the opened key)
+  let since = 0;
+  for (const r of recs) { if (r.isBomb) since = 0; else { since++; assert.ok(since < 4, 'a bomb pot at least every 4 hands'); } }
+  assert.ok(recs.some((r) => r.isBomb && r.bomb.reason === 'percent'), 'random bomb pots happened too');
+  bots.forEach((b) => b.close());
+});
+
+test('the rathole rule: a player who stands up comes back with at least what they left with', { timeout: 60000 }, async () => {
+  const a = await admin('Rat', { fund: 500000 });
+  const b = await member('Hole', null, { fund: 500000 });
+  const { id } = await call('POST', '/api/tables', { settings: { autoApprove: true, autoStart: false, ratholeMinutes: 60, maxBuyIn: 2000 } }, a.token);
+  const bot = new Bot('Hole', b, 7);
+  bot.passive = true;
+  await bot.connect(id);
+  let r = await bot.emit('seat:request', { seat: 3, buyIn: 1000 });
+  assert.ok(r.ok && r.seated);
+  // their stack grew to 1800 before they left
+  srv.tables.get(id).players.get(b.user.id).stack = 1800;
+  await bot.emit('standup', {});
+  await until(() => !bot.state.me.seated, 5000, 'stood up');
+  assert.equal(bot.state.me.rathole.amount, 1800);
+  r = await bot.emit('seat:request', { seat: 3, buyIn: 1000 });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /rathole/);
+  r = await bot.emit('seat:request', { seat: 5, buyIn: 1800 });
+  assert.ok(r.ok && r.seated, 'back with what they left with');
+  // a bigger stack than the usual maximum is allowed when the rule asks for it
+  srv.tables.get(id).players.get(b.user.id).stack = 2600;
+  await bot.emit('standup', {});
+  await until(() => !bot.state.me.seated, 5000, 'stood up again');
+  r = await bot.emit('seat:request', { seat: 5, buyIn: 2600 });
+  assert.ok(r.ok && r.seated, JSON.stringify(r));
+  // after the time runs out the normal buy-in applies again
+  srv.tables.get(id).players.get(b.user.id).stack = 1500;
+  await bot.emit('standup', {});
+  await until(() => !bot.state.me.seated, 5000, 'stood up a third time');
+  srv.tables.get(id).leftWith[b.user.id].at -= 61 * 60000;
+  r = await bot.emit('seat:request', { seat: 5, buyIn: 500 });
+  assert.ok(r.ok && r.seated);
+  bot.close();
+});
+
+test('game presets: admins save, update and delete them; members cannot', async () => {
+  const a = await admin('Preset');
+  const m = await member('Plain');
+  const settings = { format: [{ game: 'plo4', unit: 'orbits', count: 2 }], smallBlind: 25, bigBlind: 50, minPlayers: 4, ratholeMinutes: 120, revealPolicy: 'hidden', bombPot: { mode: 'both', every: 8, percent: 5, anteBB: 2 } };
+  const r = await call('POST', '/api/presets', { name: 'Thursday PLO', tableName: 'Thursday game', settings }, a.token);
+  assert.equal(r.preset.settings.minPlayers, 4);
+  assert.equal(r.preset.settings.bombPot.mode, 'both');
+  await assert.rejects(call('POST', '/api/presets', { name: 'thursday plo', settings }, a.token), /exists already/);
+  await assert.rejects(call('POST', '/api/presets', { name: 'Broken', settings: { format: [{ game: 'plo5', unit: 'orbits', count: 1, doubleBoard: true }], maxPlayers: 10 } }, a.token), /at most 8 seats/);
+  await assert.rejects(call('GET', '/api/presets', null, m.token), /Only admins/);
+  const up = await call('PUT', `/api/presets/${r.preset.id}`, { name: 'Thursday PLO', tableName: 'Thursday game', settings: { ...settings, bigBlind: 100 } }, a.token);
+  assert.equal(up.preset.settings.bigBlind, 100);
+  assert.equal((await call('GET', '/api/presets', null, siteOwner.token)).presets.length, 1, 'every admin sees the club presets');
+  const t = await call('POST', '/api/tables', { name: up.preset.tableName, settings: up.preset.settings }, a.token);
+  assert.equal(srv.tables.get(t.id).settings.minPlayers, 4);
+  assert.deepEqual((await call('DELETE', `/api/presets/${r.preset.id}`, null, a.token)).presets, []);
 });
 
 test('the club: one club, chips, credit limits, buy-ins draw from balance, cash-outs return', { timeout: 150000 }, async () => {

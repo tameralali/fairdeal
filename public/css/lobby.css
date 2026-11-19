@@ -158,3 +158,12 @@
   .invites td:last-child .btn { display: block; width: 100%; margin: 3px 0; }
   .invites td small { display: block; }
 }
+
+/* Start a game, with presets under it */
+.cb-start { display: flex; flex-direction: column; align-items: flex-end; gap: .5rem; }
+.quick-start { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: .35rem; max-width: 26rem; }
+.quick-start .qs-lbl { color: var(--muted); font-size: 13px; margin-right: .2rem; }
+@media (max-width: 860px) {
+  .cb-start { align-items: stretch; }
+  .quick-start { justify-content: flex-start; max-width: none; }
+}

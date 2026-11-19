@@ -164,6 +164,22 @@ input[type=number] { font-family: var(--num); font-size: 17px; font-variant-nume
 .sg-where .hint, .sg-sec > .hint { margin-bottom: 0; }
 dialog.start-game { width: min(980px, calc(100vw - 24px)); }
 .fmt-foot .hint.bad { color: var(--danger); }
+/* bomb pot rules: on a schedule, by chance, or both */
+.bomb-rules { display: grid; gap: .5rem; }
+.bomb-rule { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; }
+.bomb-rule input[type=number] { width: 5.5rem; flex: none; text-align: right; }
+.bomb-rule input[type=number]:disabled { opacity: .45; }
+.bomb-rule span { color: var(--muted); }
+.check.inline-check { display: inline-flex; align-items: center; gap: .5rem; grid-template-columns: none; }
+.check.inline-check input { margin: 0; }
+.dim { opacity: .5; }
+/* presets at the top of Start a game */
+.preset-bar .preset-head { display: flex; gap: .4rem 1rem; align-items: baseline; flex-wrap: wrap; margin-bottom: .6rem; }
+.preset-bar .preset-head h3 { margin: 0; }
+.preset-bar .preset-head .hint { margin: 0; }
+.preset-list { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .6rem; }
+.fmt-chip.on { color: var(--brass-ink); background: var(--brass); border-color: var(--brass); }
+.preset-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
 /* dollar amounts: a $ inside the box */
 .money { position: relative; display: block; }
 .money::before { content: '$'; position: absolute; left: .7em; top: 50%; transform: translateY(-52%); color: var(--muted); font: 500 17px/1 var(--num); pointer-events: none; }

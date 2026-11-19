@@ -1,7 +1,7 @@
 // Standalone verifier. Uses only /shared/fairness.js and the browser's WebCrypto.
 import { verifyHandRecord, webCryptoAdapter } from '/shared/fairness.js';
 import { GAME_TYPES } from '/shared/cards.js';
-import { cardHTML, prefs, applyPrefs } from './cards.js';
+import { cardHTML, backHTML, prefs, applyPrefs } from './cards.js';
 import { sealSVG } from './seal.js';
 import { esc, $, toast } from './ui.js';
 import { boardName } from './game-form.js';
@@ -47,7 +47,8 @@ async function check(records) {
   for (const rec of records) {
     const obs = observedFor(rec);
     const res = await verifyHandRecord(rec, wc, obs);
-    const seedHash = rec.fairness.serverSeed ? await wc.sha256Hex(rec.fairness.serverSeed) : null;
+    // the seal rebuilt after the hand: from the revealed seed, or (sealed hands) from the opened cards
+    const seedHash = res.rebuilt || (rec.fairness.serverSeed ? await wc.sha256Hex(rec.fairness.serverSeed) : null);
     results.push({ rec, res, seedHash, obs });
   }
   if (results.length === 1) { out.innerHTML = detail(results[0]); return; }
@@ -62,6 +63,8 @@ async function check(records) {
 
 function detail({ rec, res, seedHash, obs }) {
   const f = rec.fairness;
+  const sealed = f.version === 'aquarium-v2';
+  const face = (c) => (c ? cardHTML(c) : backHTML());
   const usedCount = res.deal ? res.deal.cardsUsed : 0;
   const nameOf = (seat) => rec.players.find((p) => p.seat === Number(seat))?.name || `Seat ${Number(seat) + 1}`;
   return `<section class="panel">
@@ -76,20 +79,21 @@ function detail({ rec, res, seedHash, obs }) {
         <h3 class="section-title">Seals</h3>
         <div class="seal-pair">
           <figure>${sealSVG(obs.commitment || f.commitment, 72)}<figcaption>${obs.commitment ? 'Seen by your browser before the deal' : 'Published before the deal'}</figcaption></figure>
-          <figure>${seedHash ? sealSVG(seedHash, 72) : sealSVG('', 72)}<figcaption>${seedHash ? 'SHA-256 of the revealed seed' : 'Not revealed yet'}</figcaption></figure>
+          <figure>${seedHash ? sealSVG(seedHash, 72) : sealSVG('', 72)}<figcaption>${seedHash ? (sealed ? 'Rebuilt from the opened and sealed cards' : 'SHA-256 of the revealed seed') : 'Not revealed yet'}</figcaption></figure>
         </div>
+        ${sealed && !res.pending ? `<p class="hint">Folded cards stay sealed: ${res.hidden} card${res.hidden === 1 ? '' : 's'} of this hand ${res.hidden === 1 ? 'was' : 'were'} never opened here. Their seals are part of the rebuilt seal, so they could not have been changed either.</p>` : ''}
         <h3 class="section-title">Inputs</h3>
         <p class="hexline">Commitment: ${esc(f.commitment)}</p>
-        <p class="hexline">Server seed: ${esc(f.serverSeed || 'not revealed yet')}</p>
+        ${sealed ? `<p class="hexline">Key: ${esc(f.key || 'not opened yet')}</p>` : `<p class="hexline">Server seed: ${esc(f.serverSeed || 'not revealed yet')}</p>`}
         <p class="hexline">Player inputs: ${(f.contributions || []).map((c) => `${esc(c.name)}: ${esc(c.seed)}`).join('<br>') || 'none'}</p>
         <p class="hexline">Entropy string: ${esc(f.entropy)}</p>
       </div>
       <div>
         ${res.deal ? `<h3 class="section-title">Who got which card</h3>
-          <table class="data"><tbody>${Object.entries(res.deal.holes).map(([seat, cards]) => `<tr><td>${esc(nameOf(seat))}</td><td><span class="mini-cards">${cards.map((c) => cardHTML(c)).join('')}</span></td></tr>`).join('')}
+          <table class="data"><tbody>${Object.entries(res.deal.holes).map(([seat, cards]) => `<tr><td>${esc(nameOf(seat))}</td><td><span class="mini-cards">${cards.map(face).join('')}</span></td></tr>`).join('')}
           ${res.deal.boards.map((b, i) => `<tr><td>${esc(boardName(i, rec.dealt.boardsPerRun || 1, res.deal.boards.length) || 'Board')}</td><td><span class="mini-cards">${b.map((c) => cardHTML(c)).join('') || '<span class="faint">none</span>'}</span></td></tr>`).join('')}</tbody></table>
           <h3 class="section-title">Deck order after the shuffle</h3>
-          <div class="deck">${res.deck.map((c, i) => `<figure class="${i < usedCount ? 'used' : ''}">${cardHTML(c)}<figcaption>${i + 1}</figcaption></figure>`).join('')}</div>
+          <div class="deck">${res.deck.map((c, i) => `<figure class="${i < usedCount ? 'used' : ''}">${face(c)}<figcaption>${i + 1}</figcaption></figure>`).join('')}</div>
           <p class="hint">Outlined cards were dealt, in order from position 1: hole cards one at a time starting left of the button, then the board cards street by street (board 1 before board 2 on a double board), then any extra runs.</p>` : ''}
       </div>
     </div>
