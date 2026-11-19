@@ -238,7 +238,7 @@ function feltHTML(rec, R, step) {
       ${p.folded && !(p.cards || []).some(Boolean) ? '' : `<div class="rp-cards n${(p.cards || []).length || rec.dealt.holeCount || 2}">${cards}</div>`}
       <div class="rp-plate"><b>${esc(p.name)}${p.seat === rec.buttonSeat ? ' <span class="rp-btn" title="Dealer">D</span>' : ''}</b><span class="num">${fmt(p.stack)}</span>${p.tag ? `<em class="${esc(tagCls)}">${esc(p.tag)}</em>` : ''}</div>
     </div>`;
-    if (p.bet > 0) seats += `<div class="rp-bet" style="left:${bx.toFixed(1)}%;top:${by.toFixed(1)}%"><span class="chip"></span>${fmt(p.bet)}</div>`;
+    if (p.bet > 0) seats += `<div class="rp-bet" style="left:${bx.toFixed(1)}%;top:${by.toFixed(1)}%">${fmt(p.bet)}</div>`;
   });
   let boards = '';
   const shownRuns = new Set(step.cuts.map((c, b) => (c > 0 ? Math.floor(b / bpr) : -1)).filter((r) => r >= 0));
@@ -250,7 +250,7 @@ function feltHTML(rec, R, step) {
     const label = boardName(b, bpr, nb);
     boards += `<div class="rp-board">${label && (runs > 1 || bpr > 1) ? `<small>${esc(label)}</small>` : ''}<div>${cards}</div></div>`;
   }
-  return `<div class="rp-felt" style="--felt:${esc(prefs.felt || app.state?.table.settings.feltColor || '#1d6b48')}">
+  return `<div class="rp-felt" style="--felt:${esc(prefs.felt || app.state?.table.settings.feltColor || '#507a4e')}">
     <div class="rp-oval"></div>
     <div class="rp-center"><div class="rp-boards b${bpr} k${Math.min(4, shownRuns.size || 1)}">${boards}</div><div class="rp-pot num">Pot ${fmt(step.pot)}</div></div>
     ${seats}

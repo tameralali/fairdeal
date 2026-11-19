@@ -546,7 +546,8 @@ export function lookDialog() {
           <input type="color" data-feltpick value="${esc(prefs.felt || s.table.settings.feltColor)}" title="Custom felt color" style="width:46px;height:38px;padding:2px">
         </div></div>
       <div class="row"><div><span class="lbl">Card faces</span>${seg('deck', [['big', 'Large index'], ['classic', 'Classic']], prefs.deck)}</div>
-        <label class="check" style="align-self:flex-end"><input type="checkbox" data-pref="fourColor" ${prefs.fourColor ? 'checked' : ''}> Four-color deck</label></div>
+        <div><span class="lbl">Suit colors</span>${seg('colors', [['four', 'Four colors'], ['two', 'Two colors']], prefs.colors)}</div></div>
+      <p class="hint">${prefs.colors === 'two' ? 'Hearts and diamonds red, spades and clubs black.' : 'Spades black, hearts red, diamonds blue, clubs green, so a flush draw is easy to spot.'}</p>
       <div><span class="lbl">Card backs</span><div class="swatches">${BACKS.map((b) => `<button type="button" class="swatch ${prefs.back === b.id ? 'on' : ''}" data-back="${b.id}" title="${esc(b.name)}" style="background:var(--back)" data-backswatch="${b.id}"></button>`).join('')}</div></div>
       <div><span class="lbl">When everyone is all in</span>${seg('autoRun', [['ask', 'Ask me to vote'], ['once', 'Always vote once'], ['max', 'Always vote the most']], prefs.autoRun)}</div>
       <div><span class="lbl">Stats on each seat (VPIP / PFR / AF, then hands)</span>${seg('hud', [['game', 'This game'], ['all', 'All games'], ['off', 'Off']], prefs.hud || 'game')}<p class="hint">Numbers are for the game type being played. Pick a seat’s numbers for every stat.</p></div>

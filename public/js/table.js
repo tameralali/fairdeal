@@ -1,6 +1,7 @@
 import { api, ensureIdentity } from './api.js';
 import { esc, $, $$, toast, clock } from './ui.js';
-import { cardHTML, backHTML, slotHTML, prefs, applyPrefs, suitText } from './cards.js';
+import { cardHTML, backHTML, slotHTML, prefs, applyPrefs, suitText, shortHandName } from './cards.js';
+import { equity } from '/shared/equity.js';
 import { sealSVG } from './seal.js';
 import { FairClient } from './fair-client.js';
 import { bestHand } from '/shared/evaluator.js';
@@ -56,6 +57,7 @@ function connect() {
     app.logs.push(...entries);
     if (app.logs.length > 900) app.logs.splice(0, app.logs.length - 900);
     appendLog(entries);
+    bubbles(entries);
   });
   socket.on('toast', (t) => toast(t.text));
   socket.on('request', (r) => {
@@ -63,6 +65,26 @@ function connect() {
     toast(`${r.name} ${r.type === 'seat' ? 'asked for a seat' : 'asked to add chips'} (${r.amount})`);
   });
   socket.on('hands:revealed', ({ through }) => app.fair.onRevealed(through, fetchRecord));
+}
+
+// What a seated player says shows for a few seconds in a bubble by their seat.
+const BUBBLE_MS = 6000;
+function bubbles(entries) {
+  let any = false;
+  for (const e of entries) {
+    if (e.kind !== 'chat' || e.spectator || !e.userId) continue;
+    app.bubbles.set(e.userId, { text: e.text, until: Date.now() + BUBBLE_MS, fresh: true });
+    any = true;
+  }
+  if (!any) return;
+  if (app.state) renderTable(app.state);
+  clearTimeout(app.bubbleTimer);
+  app.bubbleTimer = setTimeout(function expire() {
+    const t = Date.now();
+    for (const [k, b] of app.bubbles) if (b.until <= t) app.bubbles.delete(k);
+    if (app.state) renderTable(app.state);
+    if (app.bubbles.size) app.bubbleTimer = setTimeout(expire, Math.max(200, Math.min(...[...app.bubbles.values()].map((b) => b.until)) - t));
+  }, BUBBLE_MS + 50);
 }
 
 export async function fetchRecord(n) {
@@ -107,23 +129,120 @@ function onVerified(n, res) {
 }
 
 // ---------- layout ----------
-function geometry(n, portrait) {
+// Sizes in units of --u (a hundredth of the table's width, or a 64th when it stands upright): the
+// player boxes and how far a fanned hand reaches past the left edge of its box.
+const SIZES = {
+  land: { box: 21, me: 23, card: 5, myCard: 6.4, reach: 8, myReach: 9.8, perU: 1 },
+  port: { box: 20, me: 24, card: 5, myCard: 7.6, reach: 7.4, myReach: 10.6, perU: 100 / 64 },
+};
+const STEP = { 2: 0.5, 4: 0.34, 5: 0.29 };
+
+// How far a fanned hand of n cards sticks out to the left of its box, in units, the tilt of the
+// outside card included.
+const TILT = { 2: 3, 4: 7.5, 5: 8.4 };
+function overhang(z, n, me) {
+  const w = me ? z.myCard : z.card;
+  const reach = me ? z.myReach : z.reach;
+  const tilt = w * 1.25 * 1.7 * Math.sin(((TILT[n] || 7) * Math.PI) / 180);
+  return Math.max(0, w * (1 + (n - 1) * (STEP[n] || 0.4)) - reach + tilt);
+}
+
+// Where everything sits, in percent of the table area. Position 0 is the bottom middle (my seat when
+// I play) and the rest go round clockwise. The bottom seat gets a little more room for its bigger cards.
+// Bets sit on the line from a seat to the middle, just clear of that seat's box and cards and inside the
+// felt; the dealer button sits beside the bet.
+const ASPECT = { land: 1.72, port: 0.74, portMax: 0.8 };
+const FELT = { land: { cx: 50, cy: 48, rx: 35, ry: 32 }, port: { cx: 50, cy: 49, rx: 37, ry: 39 } };
+// Angles for seats with these weights around an ellipse with radii a and b, the first one at the
+// bottom, going clockwise, each taking a share of the edge in proportion to its weight. The edge
+// within band of the middle, up or down, hardly counts, so the seats pass over it.
+function spread(weights, a, b, band = 0) {
+  const N = 720;
+  const cum = new Float64Array(N + 1);
+  let px = a, py = 0;
+  for (let k = 1; k <= N; k++) {
+    const th = (k / N) * 2 * Math.PI;
+    const x = a * Math.cos(th), y = b * Math.sin(th);
+    cum[k] = cum[k - 1] + Math.hypot(x - px, y - py) * (Math.abs(y + py) / 2 < band ? 0.06 : 1);
+    px = x; py = y;
+  }
+  const total = cum[N];
+  const unit = total / weights.reduce((s, w) => s + w, 0);
+  const angleAt = (len) => {
+    len = ((len % total) + total) % total;
+    let lo = 0, hi = N;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (cum[mid] < len) lo = mid; else hi = mid; }
+    const f = (len - cum[lo]) / (cum[hi] - cum[lo] || 1);
+    return ((lo + f) / N) * 2 * Math.PI;
+  };
+  const bottom = cum[N / 4];
+  let at = bottom - (weights[0] * unit) / 2;
+  return weights.map((w) => { const mid = at + (w * unit) / 2; at += w * unit; return angleAt(mid); });
+}
+
+function geometry(n, portrait, holeN) {
+  const z = portrait ? SIZES.port : SIZES.land;
   const P = portrait
-    ? { cy: 47.5, px: 39, py: 41.5, bx: 21, by: 29, k: 0.12 }
-    : { cy: 47, px: 43.5, py: 39, bx: 29.5, by: 23.5, k: 0.3 };
-  return Array.from({ length: n }, (_, i) => {
-    const t = ((90 + (i * 360) / n) * Math.PI) / 180;
+    ? { cx: 50, cy: 48.5, px: 40, py: 42.5, mine: 1.55, boxh: 7.2, myBoxh: 7.6, pill: [8.5, 3.4], aim: 10, dot: 3, board: 8.5 }
+    : { cx: 50, cy: 48, px: 42, py: 40, mine: 1.3, boxh: 6.4, myBoxh: 6.8, pill: [10, 3.1], aim: 14, dot: 2.6 };
+  const F = portrait ? FELT.port : FELT.land;
+  // work in units: x in % of the width divided by ux, y in % of the height divided by uy
+  const ux = z.perU;
+  const uy = z.perU * (portrait ? app.aspect || ASPECT.port : ASPECT.land);
+  // Seats are spaced evenly along the edge of the table measured in box sizes, not by angle: a box is
+  // much wider than it is tall, so seats along the top and bottom need more of the edge than seats at
+  // the sides. The bottom seat takes a little more again.
+  const weights = Array.from({ length: n }, (_, i) => (i === 0 ? P.mine : 1));
+  const tall = Math.max(P.boxh, z.card * 1.25 + 0.5);
+  // upright, the board is nearly as wide as the table: seats at the sides keep above or below it
+  const band = portrait ? (P.board + P.boxh / 2) / tall : 0;
+  const angles = spread(weights, P.px / ux / z.box, P.py / uy / tall, band);
+  const C = { x: F.cx / ux, y: F.cy / uy };
+  // how far from the top or bottom a box has to be for a chat bubble to fit beyond it
+  const room = (4.6 + P.boxh / 2) * uy + 0.5;
+  const R = { x: (F.rx / ux) * 0.84, y: (F.ry / uy) * 0.84 };
+  return weights.map((wt, i) => {
+    const t = angles[i];
     const c = Math.cos(t);
-    const s = Math.sin(t);
-    // seats at the top and bottom hold their cards toward the middle, so their chips sit further in
-    const f = 1 - P.k * s * s;
-    const x = 50 + P.px * c;
+    const sn = Math.sin(t);
+    const me = i === 0;
+    const bw = me ? z.me : z.box;
+    const over = overhang(z, holeN, me);
+    // keep the box, and the cards fanned to its left, on the table area
+    const half = (bw / 2) * ux;
+    // (the dealer button sits on the right edge of the box)
+    const x = Math.max(half + over * ux + 0.6, Math.min(100 - half - P.dot * ux * 0.6, P.cx + P.px * c));
+    const y = P.cy + P.py * sn;
+    const S = { x: x / ux, y: y / uy };
+    // the box with its cards: wider on the left, and the cards a little taller than the box
+    const card = (me ? z.myCard : z.card) * 1.25;
+    const box = { l: S.x - bw / 2 - over, r: S.x + bw / 2, t: S.y - Math.max(me ? P.myBoxh : P.boxh, card + 1.2) / 2, b: S.y + Math.max(me ? P.myBoxh : P.boxh, card + 0.4) / 2 };
+    // aim above or below the middle, so bets from the sides stay off the board
+    const off = S.y < C.y - 0.5 ? -P.aim : S.y > C.y + 0.5 ? P.aim : 0;
+    let d = { x: C.x - S.x, y: C.y + off - S.y };
+    const len = Math.hypot(d.x, d.y) || 1;
+    d = { x: d.x / len, y: d.y / len };
+    const exit = Math.min(
+      d.x > 1e-6 ? (box.r - S.x) / d.x : d.x < -1e-6 ? (box.l - S.x) / d.x : Infinity,
+      d.y > 1e-6 ? (box.b - S.y) / d.y : d.y < -1e-6 ? (box.t - S.y) / d.y : Infinity,
+    );
+    const along = Math.abs(d.x) * (P.pill[0] / 2) + Math.abs(d.y) * (P.pill[1] / 2);
+    let dist = exit + along + 0.6;
+    // and far enough in to be on the felt: where the ray enters the inner ellipse
+    const ox = (S.x - C.x) / R.x, oy = (S.y - C.y) / R.y, vx = d.x / R.x, vy = d.y / R.y;
+    const qa = vx * vx + vy * vy, qb = 2 * (ox * vx + oy * vy), qc = ox * ox + oy * oy - 1;
+    const disc = qb * qb - 4 * qa * qc;
+    if (qc > 0 && disc > 0) dist = Math.max(dist, (-qb - Math.sqrt(disc)) / (2 * qa));
+    dist = Math.min(dist, len * 0.8);
+    const B = { x: S.x + d.x * dist, y: S.y + d.y * dist };
     return {
-      x, y: P.cy + P.py * s,
-      bx: 50 + P.bx * c, by: P.cy + P.by * s * f,
-      upper: s < -0.25,
-      // which side of the plate faces the middle: the dealer button goes there, clear of the cards
-      inner: x < 45 ? 'r' : 'l',
+      x, y,
+      // close to the left edge a hand's label lines up with the cards instead of centring under them
+      edge: S.x - bw / 2 - over < 7,
+      bx: B.x * ux, by: B.y * uy,
+      upper: sn < -0.25,
+      // a chat bubble goes on the outside of the box when there is room for it there
+      bubbleIn: sn < -0.25 ? y < room : y > 100 - room,
     };
   });
 }
@@ -133,15 +252,25 @@ function resize() {
   const h = els.stage.clientHeight;
   if (!w || !h) return;
   const portrait = w / h < 0.95;
-  const aspect = portrait ? 0.74 : 1.72;
+  let aspect = ASPECT.land;
+  if (portrait) {
+    // Upright, the table takes the height there is with the action buttons showing, worked out from
+    // the window so that nothing moves when my turn comes and the buttons appear.
+    const room = Math.max(240, window.innerHeight - (els.top.offsetHeight || 46) - 176);
+    aspect = Math.max(0.56, Math.min(ASPECT.portMax, (w * 0.985) / (room * 0.97)));
+  }
   // a little room above and below for the action tags and what my hand makes
-  let W = Math.min(w * 0.985, h * 0.955 * aspect);
-  let H = W / aspect;
+  const W = Math.min(w * 0.985, h * 0.955 * aspect);
+  const H = W / aspect;
   els.area.style.width = W + 'px';
   els.area.style.height = H + 'px';
   els.area.classList.toggle('portrait', portrait);
   els.area.style.setProperty('--u', (portrait ? W / 64 : W / 100) + 'px');
-  if (app.portrait !== portrait) { app.portrait = portrait; render(); }
+  if (app.portrait !== portrait || Math.abs((app.aspect || 0) - aspect) > 0.005) {
+    app.portrait = portrait;
+    app.aspect = aspect;
+    render();
+  }
 }
 
 // ---------- render ----------
@@ -245,17 +374,57 @@ function dealCls(key) {
   return 'deal';
 }
 
+// The run being dealt: the first whose boards are not all complete, or the last one.
+function currentRun(h) {
+  const boards = h.boards || [h.board];
+  const bpr = h.boardsPerRun || 1;
+  const runs = Math.max(1, Math.round(boards.length / bpr));
+  let r = 0;
+  while (r < runs - 1 && boards.slice(r * bpr, r * bpr + bpr).every((b) => b.length >= 5)) r++;
+  return { r, boards: boards.slice(r * bpr, r * bpr + bpr), others: boards.filter((_, i) => i < r * bpr || i >= r * bpr + bpr) };
+}
+
+// Everyone left is all in with their cards face up and cards still to come: each one's chance of
+// winning this run, worked out here from the cards on the table (folded cards count as unknown).
+function allInChances(h) {
+  if (!h || h.phase === 'done' || (h.actorSeat !== null && h.actorSeat !== undefined)) return null;
+  const live = h.players.filter((p) => !p.folded);
+  if (live.length < 2 || !live.every((p) => p.hole && p.hole.length && p.hole.every(Boolean))) return null;
+  const cur = currentRun(h);
+  if (cur.boards.every((b) => b.length >= 5)) return null;
+  const seen = [...cur.others.flat(), ...h.players.filter((p) => p.folded && p.hole).flatMap((p) => p.hole.filter(Boolean))];
+  try { return equity(live.map((p) => ({ seat: p.seat, hole: p.hole })), cur.boards, GAME_TYPES[h.gameType].omaha, seen); }
+  catch { return null; }
+}
+
+// What a hand makes on the run being dealt, one name per board: "Two pair (5,4) / Flush".
+function madeHand(h, hole) {
+  if (!hole || !hole.length || !hole.every(Boolean)) return '';
+  const { boards } = currentRun(h);
+  if (!boards[0] || boards[0].length < 3) return '';
+  const made = boards.map((b) => bestHand(hole, b, GAME_TYPES[h.gameType].omaha)).filter(Boolean);
+  if (made.length < 2) return made.length ? shortHandName(made[0].score) : '';
+  return made.map((r) => shortHandName(r.score, true)).join(' / ');
+}
+
+const FOLD_MARK = '<span class="foldmark" aria-label="Folded"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg><span>Fold</span></span>';
+
 function renderTable(s) {
   const t = s.table;
   const n = t.settings.maxPlayers;
   const h = s.hand;
   if (h && app.seenHand !== h.number) { app.seenHand = h.number; app.seen = new Set(); }
-  const geo = geometry(n, app.portrait);
+  const nextGame = t.rotation ? t.rotation.current : t.settings.format[0].game;
+  const holeN = GAME_TYPES[h ? h.gameType : nextGame]?.holeCount || 2;
+  const geo = geometry(n, app.portrait, holeN);
   const rot = s.me.seat ?? 0;
   const hp = new Map((h?.players || []).map((p) => [p.seat, p]));
   const R = resultInfo(h);
+  const chances = allInChances(h);
+  const best = chances ? Math.max(...chances.values()) : 0;
   const myReq = s.me.requests.find((r) => r.type === 'seat');
   const pendingSeats = new Set((s.requests || []).filter((r) => r.type === 'seat').map((r) => r.seat));
+  const nowMs = Date.now();
   let seats = '';
   let chips = '';
   for (let seat = 0; seat < n; seat++) {
@@ -266,31 +435,52 @@ function renderTable(s) {
     if (!info) {
       const mine = myReq && myReq.seat === seat;
       const canSit = !s.me.seated && !myReq && t.status !== 'ended';
-      let inner = canSit ? `<button class="sit" data-sit="${seat}">Sit here</button>` : `Seat ${seat + 1}`;
-      if (mine) inner = 'Waiting for the host';
-      else if (pendingSeats.has(seat)) inner = 'Requested';
-      seats += `<div class="seat empty ${side} ${mine ? 'reserved' : ''}" style="${pos}"><div class="plate">${inner}</div></div>`;
+      let inner = canSit ? `<button class="sit" data-sit="${seat}">Sit here</button>` : '';
+      if (mine) inner = '<span>Waiting for the host</span>';
+      else if (pendingSeats.has(seat)) inner = '<span>Requested</span>';
+      seats += `<div class="seat empty ${side} ${mine ? 'reserved' : ''} ${inner ? '' : 'quiet'}" style="${pos}"><div class="plate" ${inner ? '' : `title="Seat ${seat + 1} is free"`}>${inner}</div></div>`;
       continue;
     }
     const p = hp.get(seat);
     const isMe = info.userId === s.me.userId;
     const actor = h && h.phase === 'betting' && h.actorSeat === seat;
     const won = R.won.get(seat);
-    const cls = ['seat', side, isMe && 'me', actor && 'actor', p && p.folded && 'folded', !p && (info.sittingOut || info.stack === 0) && 'out', won && 'winner'].filter(Boolean).join(' ');
-    let hole = '';
+    const live = h && h.phase !== 'done';
+    const cls = ['seat', side, g.edge && 'edge', isMe && 'me', actor && 'actor', p && p.folded && 'folded', !p && (info.sittingOut || info.stack === 0) && 'out', won && 'winner'].filter(Boolean).join(' ');
+
+    // the cards, fanned to the left of the box
+    let fan = '';
+    let extra = '';
     if (p) {
-      if (p.hole && (!p.folded || isMe || p.shown || p.hole.some(Boolean))) {
+      const count = p.holeCount || (p.hole ? p.hole.length : 0);
+      const faces = p.hole && (!p.folded || isMe || p.shown || p.hole.some(Boolean));
+      let cards = '';
+      if (faces) {
         const hc = R.handCards.get(seat);
-        hole = `<div class="hole faces n${p.hole.length}">${p.hole.map((c, i) => (c ? cardHTML(c, `${hc ? (hc.has(c) ? 'win' : 'dim') : ''} ${dealCls(`h${seat}${i}${c}`)}`) : backHTML())).join('')}</div>`;
+        cards = p.hole.map((c, i) => (c
+          ? cardHTML(c, `${hc ? (hc.has(c) ? 'win' : 'dim') : ''} ${dealCls(`h${seat}${i}${c}`)}`, `--i:${i}`)
+          : backHTML('', `--i:${i}`))).join('');
       } else if (!p.folded) {
-        hole = `<div class="hole n${p.holeCount}">${Array.from({ length: p.holeCount }, (_, i) => backHTML(dealCls(`b${seat}${i}`))).join('')}</div>`;
+        cards = Array.from({ length: count }, (_, i) => backHTML(dealCls(`b${seat}${i}`), `--i:${i}`)).join('');
+      }
+      if (cards) fan = `<div class="fan n${count}">${cards}</div>`;
+      else if (p.folded) fan = FOLD_MARK;
+      const ch = chances && chances.get(seat);
+      if (ch !== undefined && ch !== null) {
+        const shown = Math.round(ch);
+        extra += `<span class="eq ${ch >= best - 0.01 ? 'up' : 'down'} n${count}" title="Chance of winning this run, from the cards on the table">${shown === 0 && ch > 0 ? '<1' : shown === 100 && ch < 100 ? '>99' : shown}%</span>`;
+      }
+      const seeAll = p.hole && p.hole.length && p.hole.every(Boolean);
+      if (seeAll && (!p.folded || p.shown) && (isMe ? prefs.handStrength || !live : true) && (isMe || !live || chances || p.shown)) {
+        const name = madeHand(h, p.hole);
+        if (name) extra += `<span class="made n${count}">${esc(name)}</span>`;
       }
     }
+
     let tag = '';
     let tagCls = '';
     if (won) { tag = '+' + fmt(won); tagCls = 'win'; }
-    else if (p && p.allIn && !p.folded) { tag = 'All-in'; tagCls = 'allin'; }
-    else if (p && p.lastAction && h.phase !== 'done') { tag = p.lastAction; tagCls = p.lastAction.toLowerCase().replace(/[^a-z]/g, ''); }
+    else if (p && live && p.lastAction && !p.allIn && !(p.folded && !isMe)) { tag = p.lastAction; tagCls = p.lastAction.toLowerCase().replace(/[^a-z]/g, ''); }
     else if (info.leaving) { tag = 'Leaving'; tagCls = 'out'; }
     else if (!p && info.sittingOut) { tag = info.away ? 'Away' : 'Sitting out'; tagCls = 'out'; }
     else if (!p && info.stack === 0) { tag = 'Out of chips'; tagCls = 'out'; }
@@ -299,32 +489,41 @@ function renderTable(s) {
     if (actor && h.turn) {
       timer = `<div class="timer ${h.turn.usingBank ? 'bank' : ''}"><i data-deadline="${h.turn.deadline}" data-total="${h.turn.total || 30000}"></i></div>`;
     }
-    let strength = '';
-    if (isMe && prefs.handStrength && p && p.hole && !p.folded) {
-      const firstRun = (h.boards || [h.board]).slice(0, h.boardsPerRun || 1);
-      if (firstRun[0].length >= 3) {
-        const names = firstRun.map((b) => bestHand(p.hole, b, GAME_TYPES[h.gameType].omaha)?.name).filter(Boolean);
-        if (names.length) strength = `<div class="strength">${esc(names.join(' / '))}</div>`;
-      }
-    }
     const stack = p ? p.stack : info.stack;
-    const dealer = h && h.buttonSeat === seat ? `<span class="dbtn d${g.inner}" title="Dealer" aria-label="Dealer">D</span>` : '';
-    seats += `<div class="${cls}" style="${pos}" ${s.me.isHost && !isMe ? `data-player="${esc(info.userId)}" title="Host actions for ${esc(info.name)}"` : ''}>
-      ${hole}
+    const allIn = p && p.allIn && !p.folded && live;
+    const bub = app.bubbles.get(info.userId);
+    // the bubble pops in once; later redraws of the table leave it still
+    const bubble = bub && bub.until > nowMs ? `<div class="bubble ${g.bubbleIn ? 'in' : 'out'}${bub.fresh ? ' fresh' : ''}" role="status"><span>${esc(bub.text)}</span></div>` : '';
+    if (bub) bub.fresh = false;
+    seats += `<div class="${cls}${bubble ? ' talking' : ''}" style="${pos}" ${s.me.isHost && !isMe ? `data-player="${esc(info.userId)}" title="Host actions for ${esc(info.name)}"` : ''}>
       <div class="plate">
-        ${timer}${dealer}
-        <div class="nm">${info.connected ? '' : '<span class="dot" title="Disconnected"></span>'}<span>${esc(info.name)}</span>${info.isHost ? '<span class="host-mark" title="Host">&#9733;</span>' : ''}</div>
-        <div class="st">${fmt(stack)}${info.pendingChips ? ` <small class="muted">+${fmt(info.pendingChips)}</small>` : ''}</div>
-        ${S.hudHTML(s, info.userId)}
+        ${fan}${extra}
+        <div class="who">
+          <div class="nm">${info.connected ? '' : '<span class="dot" title="Disconnected"></span>'}<span>${esc(info.name)}</span>${info.isHost ? '<span class="host-mark" title="Host">&#9733;</span>' : ''}</div>
+          <div class="st">${allIn ? 'All In' : fmt(stack)}${info.pendingChips ? ` <small>+${fmt(info.pendingChips)}</small>` : ''}</div>
+          ${S.hudHTML(s, info.userId)}
+        </div>
+        ${timer}
+        ${h && h.buttonSeat === seat ? '<span class="dbtn" title="Dealer" aria-label="Dealer button">D</span>' : ''}
         ${tag ? `<div class="tag ${tagCls}">${esc(tag)}</div>` : ''}
       </div>
-      ${strength}
+      ${bubble}
     </div>`;
-    if (p && p.bet > 0) chips += `<div class="bet" style="left:${g.bx.toFixed(2)}%;top:${g.by.toFixed(2)}%"><span class="chip"></span>${fmt(p.bet)}</div>`;
+    if (p && p.bet > 0) chips += `<div class="bet" style="left:${g.bx.toFixed(2)}%;top:${g.by.toFixed(2)}%">${fmt(p.bet)}</div>`;
   }
   els.seats.innerHTML = seats;
   els.chips.innerHTML = chips;
   els.center.innerHTML = centerHTML(s, R);
+  fitMark();
+}
+
+// The Aquarium on the felt steps aside when boards or results reach down over it.
+function fitMark() {
+  const mark = els.felt.querySelector('.felt-mark');
+  if (!mark) return;
+  const c = els.center.firstElementChild ? els.center.getBoundingClientRect() : null;
+  const m = mark.getBoundingClientRect();
+  mark.classList.toggle('hide', !!c && c.bottom > m.top + 2 && c.top < m.bottom);
 }
 
 function centerHTML(s, R) {
@@ -334,8 +533,8 @@ function centerHTML(s, R) {
   const boards = h.boards || [h.board];
   const bpr = h.boardsPerRun || 1;
   const runs = Math.max(1, Math.round(boards.length / bpr));
-  // On a phone held upright, a double board with one run is stacked: board 1 above board 2.
-  const stacked = app.portrait && bpr > 1 && runs === 1;
+  // A double board with one run is stacked, board 1 above board 2, so the cards stay big.
+  const stacked = bpr > 1 && runs === 1;
   let grid = '';
   if (bpr > 1 && !stacked) grid += `${runs > 1 ? '<span></span>' : ''}${Array.from({ length: bpr }, (_, i) => `<span class="bhead">Board ${i + 1}</span>`).join('')}`;
   for (let r = 0; r < runs; r++) {
@@ -357,11 +556,16 @@ function centerHTML(s, R) {
   }
   const cols = stacked ? 'auto auto' : `${runs > 1 ? 'auto ' : ''}repeat(${bpr}, auto)`;
   let below = '';
+  let above = '';
   if (h.phase === 'done' && h.results) {
     below = `<div class="results">${resultLines(h).map((l) => `<div>${l}</div>`).join('')}</div><button type="button" class="replay-btn" data-replay="${h.number}">Replay hand #${h.number}</button>`;
     if (t.waiting && t.waiting !== 'Waiting for players') below += `<div class="waiting"><small>${esc(t.waiting)}</small></div>`;
   } else {
-    below = `<div class="pot"><span>Pot ${fmt(h.potTotal)}</span></div>`;
+    // the pot in the middle, and above it everything in, bets in front of the players included
+    const out = h.potTotal - (h.pot ?? h.potTotal);
+    above = h.pot > 0
+      ? `<div class="pot">${out > 0 ? `<span class="total"><i>total</i> ${fmt(h.potTotal)}</span>` : ''}<b>${fmt(h.pot)}</b></div>`
+      : `<div class="pot"><b><i>total</i> ${fmt(h.potTotal)}</b></div>`;
     if (h.phase === 'rit') {
       const voted = h.rit ? h.rit.chosenSeats.length : 0;
       const of = h.rit ? h.rit.eligibleSeats.length : 0;
@@ -369,8 +573,9 @@ function centerHTML(s, R) {
     } else if (h.rit && h.rit.result > 1) below += `<div class="rit-note">Running it ${TIMES[h.rit.result]}</div>`;
   }
   const bombWhy = h.bombReason === 'manual' ? 'called by the host' : h.bombReason === 'every' ? 'scheduled' : h.bombReason === 'percent' ? 'random' : '';
-  return `<div class="meta">${h.isBomb ? `<span class="bomb" title="${esc(bombWhy)}">Bomb pot</span>` : ''}<span>${esc(gameShort(h.gameType))} hand ${h.number}</span></div>
-    <div class="boards k${Math.min(runs, 4)} b${bpr}${stacked ? ' stacked' : ''}" style="grid-template-columns:${cols}">${grid}</div>${below}`;
+  const bomb = h.isBomb ? `<span class="bomb" title="${esc(bombWhy)}">Bomb pot</span>` : '';
+  return `${above}<div class="boards k${Math.min(runs, 4)} b${bpr}${stacked ? ' stacked' : ''}" style="grid-template-columns:${cols}">${grid}</div>${below}
+    <div class="meta">${bomb}<span>${esc(gameShort(h.gameType))} hand ${h.number}</span></div>`;
 }
 
 function resultLines(h) {

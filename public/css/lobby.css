@@ -17,7 +17,7 @@
   color: var(--text); font-weight: 600; min-width: 108px; background: var(--room-2);
 }
 .game-pick span small { font-weight: 400; color: var(--muted); font-size: 13px; }
-.game-pick input:checked + span { border-color: var(--brass); box-shadow: inset 0 0 0 1px var(--brass); background: #31281f; }
+.game-pick input:checked + span { border-color: var(--brass); box-shadow: inset 0 0 0 1px var(--brass); background: color-mix(in srgb, var(--panel) 84%, var(--brass) 16%); }
 .game-pick input:focus-visible + span { outline: 2px solid var(--brass); outline-offset: 2px; }
 /* games board: running tables listed like a card room's game board */
 .gboard { border-top: 1px solid var(--line); }
@@ -40,7 +40,7 @@
 .club-head .bal div { text-align: right; }
 .club-head .bal small { display: block; color: var(--muted); font-size: 13.5px; }
 .club-head .bal b { font: 700 28px/1.05 var(--num); font-variant-numeric: tabular-nums; }
-.announce { border-left: 3px solid var(--brass); padding: 6px 12px; color: var(--text); background: rgba(211, 170, 94, .06); margin-bottom: 18px; border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.announce { border-left: 3px solid var(--brass); padding: 6px 12px; color: var(--text); background: rgb(95 103 204 / .09); margin-bottom: 18px; border-radius: 0 var(--r-sm) var(--r-sm) 0; }
 .page-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line-soft); margin-bottom: 18px; overflow-x: auto; }
 .page-tabs a { padding: .7em .9em; color: var(--muted); text-decoration: none; font-weight: 600; border-bottom: 2px solid transparent; white-space: nowrap; }
 .page-tabs a.on { color: var(--text); border-bottom-color: var(--brass); }
@@ -74,9 +74,9 @@
 .sec-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
 .sec-head h2 { margin: 0; }
 .balances td.bal { font-size: 19px; font-weight: 600; }
-.balances tr.me td { background: rgba(211, 170, 94, .05); }
+.balances tr.me td { background: rgb(95 103 204 / .08); }
 .balances td b { font-weight: 600; }
-.role { font: 600 12.5px/1 var(--ui); color: var(--brass-hi); border: 1px solid rgba(211, 170, 94, .4); border-radius: 999px; padding: 2px 7px 3px; margin-left: 4px; }
+.role { font: 600 12.5px/1 var(--ui); color: var(--brass-hi); border: 1px solid rgb(166 171 242 / .45); border-radius: 999px; padding: 2px 7px 3px; margin-left: 4px; }
 .past { margin-top: 12px; }
 .past summary { cursor: pointer; color: var(--muted); padding: 6px 2px; }
 .gboard a.ended { opacity: .72; }
@@ -97,7 +97,7 @@
   padding: 11px 4px; background: none; border: 0; border-bottom: 1px solid var(--line-soft); color: var(--text); font: inherit; text-align: left; cursor: pointer;
 }
 .bal-item[disabled] { cursor: default; }
-.bal-item.me { background: rgba(211, 170, 94, .05); }
+.bal-item.me { background: rgb(95 103 204 / .08); }
 .bi-name { min-width: 0; }
 .bi-bal { font: 700 22px/1 var(--num); font-variant-numeric: tabular-nums; text-align: right; }
 .bi-sub { color: var(--muted); font-size: 13.5px; }
@@ -148,7 +148,7 @@
 .people tr.is-off td { opacity: .55; }
 .off { font: 600 12.5px/1 var(--ui); color: #f0b3ac; border: 1px solid #6b3a33; border-radius: 999px; padding: 2px 7px 3px; margin-left: 4px; }
 .st { font: 600 13.5px/1 var(--ui); padding: 3px 8px 4px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
-.st-pending { color: var(--brass-hi); border-color: rgba(211, 170, 94, .45); }
+.st-pending { color: var(--brass-hi); border-color: rgb(166 171 242 / .45); }
 .st-used { color: var(--ok); border-color: rgba(121, 196, 149, .4); }
 .person-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; }
 .person-facts small { display: block; color: var(--muted); font-size: 13px; }

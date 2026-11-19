@@ -18,6 +18,7 @@ export const DELAYS = {
 // for one orbit or a set number of hands, dealt on one board or two (double board).
 export const MAX_STEPS = 8;
 
+const OLD_DEFAULT_FELT = '#1d6b48';
 export const DEFAULT_SETTINGS = {
   format: [{ game: 'nlh', unit: 'orbits', count: 1, doubleBoard: false }],
   smallBlind: 5,
@@ -36,7 +37,7 @@ export const DEFAULT_SETTINGS = {
   // hidden: folded cards are never opened (cards sealed one by one); hand or session: the seed is
   // revealed after each hand or when the game ends, which shows folded cards too
   revealPolicy: 'hidden',
-  feltColor: '#1d6b48',
+  feltColor: '#507a4e',
   decimals: 0,
   spectatorChat: true,
   autoStart: false,
@@ -159,12 +160,20 @@ export function sanitizeSettings(input = {}, current = DEFAULT_SETTINGS, ctx = {
   if (has('timeBankSeconds')) s.timeBankSeconds = intIn(input.timeBankSeconds, 0, 3600, 'Time bank');
   for (const k of ['autoApprove', 'spectatorChat', 'autoStart']) if (has(k)) s[k] = !!input[k];
   if (has('bombPot')) {
-    const b = input.bombPot;
+    const b = input.bombPot || {};
+    const mode = ['off', 'every', 'percent', 'both'].includes(b.mode) ? b.mode : s.bombPot.mode;
+    // A number only has to be right while its rule is on. With the rule off, a blank or odd value
+    // keeps the one from before, so nobody has to fill in a bomb pot size for a game without bomb pots.
+    const pick = (v, on, check, old) => {
+      if (v === undefined || v === null) return old;
+      if (on) return check(v);
+      try { return check(v); } catch { return old; }
+    };
     s.bombPot = {
-      mode: ['off', 'every', 'percent', 'both'].includes(b.mode) ? b.mode : s.bombPot.mode,
-      every: b.every !== undefined ? intIn(b.every, 2, 1000, 'Bomb pot frequency (hands)') : s.bombPot.every,
-      percent: b.percent !== undefined ? numIn(b.percent, 1, 100, 'Bomb pot chance (%)') : s.bombPot.percent,
-      anteBB: b.anteBB !== undefined ? numIn(b.anteBB, 0.5, 100, 'Bomb pot size (big blinds)') : s.bombPot.anteBB,
+      mode,
+      every: pick(b.every, mode === 'every' || mode === 'both', (v) => intIn(v, 2, 1000, 'Bomb pot frequency (hands)'), s.bombPot.every),
+      percent: pick(b.percent, mode === 'percent' || mode === 'both', (v) => numIn(v, 1, 100, 'Bomb pot chance (%)'), s.bombPot.percent),
+      anteBB: pick(b.anteBB, mode !== 'off', (v) => numIn(v, 0.5, 100, 'Bomb pot size (big blinds)'), s.bombPot.anteBB),
       game: ['current', ...Object.keys(GAME_TYPES)].includes(b.game) ? b.game : s.bombPot.game,
       doubleBoard: b.doubleBoard !== undefined ? !!b.doubleBoard : s.bombPot.doubleBoard,
     };
@@ -179,7 +188,7 @@ export function sanitizeSettings(input = {}, current = DEFAULT_SETTINGS, ctx = {
   if (has('sessionMinutes')) s.sessionMinutes = intIn(input.sessionMinutes, 0, 24 * 60, 'Time limit (minutes)');
   if (has('revealPolicy')) s.revealPolicy = ['hidden', 'hand', 'session'].includes(input.revealPolicy) ? input.revealPolicy : 'hidden';
   if (has('feltColor')) {
-    if (!/^#[0-9a-fA-F]{6}$/.test(input.feltColor)) fail('Felt color must be a hex color like #1d6b48');
+    if (!/^#[0-9a-fA-F]{6}$/.test(input.feltColor)) fail('Felt color must be a hex color like #507a4e');
     s.feltColor = input.feltColor.toLowerCase();
   }
   if (has('decimals')) s.decimals = Number(input.decimals) === 2 ? 2 : 0;
@@ -1445,6 +1454,15 @@ export class TableManager {
     this.tables = new Map();
     clubs.chipsOnTables = () => this.chipsOnTablesByClub();
     this.stats = new StatsBook();
+    // Once: tables and presets on the felt that used to be the default get the new default felt.
+    const meta = (store.data.meta ||= {});
+    if (!meta.felt2) {
+      const move = (s) => { if (s && s.feltColor === OLD_DEFAULT_FELT) s.feltColor = DEFAULT_SETTINGS.feltColor; };
+      for (const snap of Object.values(store.data.tables || {})) move(snap.settings);
+      for (const p of Object.values(store.data.presets || {})) move(p.settings);
+      meta.felt2 = true;
+      store.save();
+    }
     for (const snap of Object.values(store.data.tables)) {
       try {
         const t = new Table(this, snap);

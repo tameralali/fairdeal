@@ -18,7 +18,7 @@ Private online poker for a home game. It plays like PokerNow (share a link, appr
 
 **Double board.** Two boards are dealt, board 1 then board 2 on each street, and every pot is split between them. It can be set per format step and for bomb pots, and it works with running it more than once (two boards per run).
 
-**Bomb pots.** Every N hands, a random percentage of hands, both (at least every N hands, and the chance can bring one sooner), or called by the host for the next hand. The ante is set in big blinds, a bomb pot can be played as a different game from the one running, and it can be dealt on two boards. Everyone antes, there is no preflop betting, and the flop comes straight away. Random bomb pots are decided from the hand's sealed seed, so players can check they were not picked by hand.
+**Bomb pots.** Every N hands, a random percentage of hands, both (at least every N hands, and the chance can bring one sooner), or called by the host for the next hand. The bomb pot size is set in big blinds, a bomb pot can be played as a different game from the one running, and it can be dealt on two boards. Everyone puts the size in, there is no preflop betting, and the flop comes straight away. Random bomb pots are decided from the hand's sealed seed, so players can check they were not picked by hand. The size is the only ante there is: other hands have none, and with bomb pots off the size, game and board fields are hidden and nothing about them has to be filled in.
 
 **Run it once to four times.** When everyone is all in before the river (preflop, on the flop or on the turn), the players in the hand get 15 seconds to vote, before any cards are turned over. Any vote for once wins straight away; otherwise the lowest vote is used. Only votes that come in count, so a player who doesn't vote (or has disconnected) is left out, and no votes at all means once. The host sets the most runs allowed (2, 3 or 4). Every pot, side pots included, is split across the runs. Extra runs come off the same sealed deck, so in very full PLO5 pots the deck can limit how many runs are possible. A river all-in has nothing left to deal, so there is no vote.
 
@@ -34,7 +34,9 @@ Private online poker for a home game. It plays like PokerNow (share a link, appr
 
 **Club ledger.** Members hold a balance across games. Admins add or take money with a note, set a credit limit per member (how far below zero they may buy in), record settlements, and choose whether members can see everyone's balance and send money to each other. Tables seat members straight from their balance and pay back into it when they stand up, so games run without an admin present. Every movement is a ledger entry with the balance after it, downloadable as CSV.
 
-**Look and feel.** Felt color (the host sets the default, each player can override it), four-color deck, large-index or classic card faces, five card backs, a turn sound, and a readout of what your hand makes. These are saved per browser.
+**The table.** A green felt with The Aquarium on it, in a charcoal room. Each player is a dark box with their name and stack, their cards fanned over its left end. Bets sit in front of each player on the felt, the pot is in the middle with the total including bets above it, and the dealer button rides on the dealer's box. Folded players show an X. When everyone left is all in with cards face up, each hand shows its chance of winning the run being dealt, worked out in the browser from the cards on the table (folded cards count as unknown, so nobody learns anything they could not already see). Shown hands and your own hand are labelled with what they make, chat appears in a bubble by the player's seat for a few seconds, and amounts show their cents. The layout fits seats to the screen, from a phone held upright to a big monitor.
+
+**Look and feel.** Four-color deck by default (spades black, hearts red, diamonds blue, clubs green) or two colors, large-index or classic card faces, felt color (the host sets the default, each player can override it), five card backs, a turn sound, and a readout of what your hand makes. These are saved per browser. Fonts are Lato and Playfair Display (SIL Open Font License, served from the app).
 
 **Folded cards.** Three choices per game: hidden for good (the default), shown in the hand history after each hand, or shown when the game ends. With hidden for good, nobody ever sees another player's folded cards, and after a hand each player can show any of their cards, one at a time or all of them. The deal is still checked; see version 2 below.
 
@@ -138,7 +140,7 @@ The data folder can be handed from one running server to another, for example to
 npm test
 ```
 
-60 tests: hand rankings including the Omaha two-card rule; betting rules (heads-up order, incomplete all-in raises, pot-limit maximums, side pots, uncalled bets); the run-it vote (lowest vote, once wins straight away, missing votes, cards face down while voting); double board pot splits and double board run several times; 6,000 random hands across all three games, on one board or two, checking that chips are conserved and every card can be rebuilt from the seed; full games against a running server with bot players covering approvals, rebuys, the format steps, double board bomb pots, multi-run all-ins, time limits and browser-side verification of every hand; the club flow with credit limits, buy-ins, cash-outs and settlements; the move to one club in dollars and cents; every stat on scripted hands and on 60 bot-played hands (hands, percentages in range, results matching the ledger); the replayer on scripted and bot-played hands (money adds up at every step and ends on the real stacks); format steps by orbits and by hands; sealed hands (every player checks every hand, no copy of a record holds another player's folded cards, a partial show opens only that card, tampering fails); players to start; bomb pots on a schedule and by chance together; the rathole rule; presets; invite-only access (refused sign-ups, the owner link, email-bound single-use invites, roles, password resets, turning access off, a failed email); and moving the data to a new server.
+65 tests: hand rankings including the Omaha two-card rule; betting rules (heads-up order, incomplete all-in raises, pot-limit maximums, side pots, uncalled bets); the run-it vote (lowest vote, once wins straight away, missing votes, cards face down while voting); double board pot splits and double board run several times; 6,000 random hands across all three games, on one board or two, checking that chips are conserved and every card can be rebuilt from the seed; full games against a running server with bot players covering approvals, rebuys, the format steps, double board bomb pots, multi-run all-ins, time limits and browser-side verification of every hand; the club flow with credit limits, buy-ins, cash-outs and settlements; the move to one club in dollars and cents; every stat on scripted hands and on 60 bot-played hands (hands, percentages in range, results matching the ledger); the replayer on scripted and bot-played hands (money adds up at every step and ends on the real stacks); format steps by orbits and by hands; sealed hands (every player checks every hand, no copy of a record holds another player's folded cards, a partial show opens only that card, tampering fails); players to start; bomb pots on a schedule and by chance together; the rathole rule; presets; all-in chances (exact on the flop and turn, folded cards left unknown, ties and two boards split) and hand labels; the bomb pot size only checked with bomb pots on; the old default felt moving to the new one; invite-only access (refused sign-ups, the owner link, email-bound single-use invites, roles, password resets, turning access off, a failed email); and moving the data to a new server.
 
 ## Layout
 
@@ -148,7 +150,7 @@ server/        Express + Socket.io server
   table.js     seats, host controls, timers, ledger, commit and reveal
   clubs.js     the club: balances, credits, settlements, transfers
   stats.js     player stats from hand records
-shared/        code used by both server and browser: cards, hand evaluator, fairness, money, replayer steps
+shared/        code used by both server and browser: cards, hand evaluator, fairness, money, replayer steps, all-in chances
 public/        the web app: home (club balances, ledger and stats), start a game, table, verifier
 scripts/       maintenance scripts
 test/          automated tests
@@ -156,4 +158,4 @@ test/          automated tests
 
 ## Not included yet
 
-Tournaments, straddles, antes and voice chat.
+Tournaments, straddles, antes outside bomb pots, and voice chat.

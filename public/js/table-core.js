@@ -16,6 +16,8 @@ export const app = {
   actionKey: null,
   seen: new Set(),
   seenHand: null,
+  bubbles: new Map(),
+  bubbleTimer: null,
   render: () => {},
 };
 
@@ -34,8 +36,8 @@ export function emit(event, payload = {}, { quiet = false } = {}) {
   });
 }
 
-// at the table whole dollars drop the cents: $25, $0.50, $12.75
-export const fmt = (a) => fmtMoney(a, app.dec);
+// at the table amounts keep their cents, as on a chip count: $25.00, $0.50, $1,216.90
+export const fmt = (a) => fmtMoney(a, app.dec, 'always');
 // in ledgers and lists the cents stay ($25.00) so amounts line up
 export const fmtC = (a) => fmtMoney(a, app.dec, 'always');
 export const parse = (v) => parseMoney(v, app.dec);

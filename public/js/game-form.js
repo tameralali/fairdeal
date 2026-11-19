@@ -195,7 +195,7 @@ export function bombFieldsHTML(bp) {
         <input name="bombPercent" type="number" inputmode="decimal" min="1" max="100" step="0.5" value="${bp.percent}" aria-label="Chance of a bomb pot each hand, in percent"><span>% each hand</span></div>
     </div>
     <div class="field-grid" data-bomb-more>
-      <label><span class="lbl">Ante (big blinds)</span><input name="bombAnte" type="number" min="0.5" max="100" step="0.5" value="${bp.anteBB}"></label>
+      <label><span class="lbl">Bomb pot size, in big blinds</span><input name="bombAnte" type="number" inputmode="decimal" min="0.5" max="100" step="0.5" value="${bp.anteBB}"></label>
       <label><span class="lbl">Play bomb pots as</span><select name="bombGame">${opt('current', 'Current game')}${Object.values(GAME_TYPES).map((g) => opt(g.id, g.short)).join('')}</select></label>
     </div>
     <label class="check" data-bomb-more><input type="checkbox" name="bombDouble" ${bp.doubleBoard ? 'checked' : ''}> Deal bomb pots on two boards<small>Double board: the pot is split between the two boards.</small></label>
@@ -219,12 +219,14 @@ export function bindBombFields(root) {
     const b = readBomb(root);
     root.querySelector('[name=bombEvery]').disabled = !(b.mode === 'every' || b.mode === 'both');
     root.querySelector('[name=bombPercent]').disabled = !(b.mode === 'percent' || b.mode === 'both');
-    root.querySelectorAll('[data-bomb-more]').forEach((el) => el.classList.toggle('dim', b.mode === 'off'));
+    // the size and the game only matter once there are bomb pots
+    root.querySelectorAll('[data-bomb-more]').forEach((el) => el.classList.toggle('hidden', b.mode === 'off'));
     const hint = root.querySelector('[data-bomb-hint]');
     if (hint) {
-      hint.textContent = b.mode === 'off' ? 'No bomb pots, unless the host calls one for the next hand.'
-        : b.mode === 'both' ? `A bomb pot at least every ${b.every} hands, and each other hand has a ${b.percent}% chance of being one.`
-          : b.mode === 'every' ? `A bomb pot every ${b.every} hands.` : `Each hand has a ${b.percent}% chance of being a bomb pot.`;
+      const size = b.anteBB > 0 ? ` Each player puts in ${b.anteBB} big blind${b.anteBB === 1 ? '' : 's'} before the flop; other hands have no ante.` : '';
+      hint.textContent = b.mode === 'off' ? 'No bomb pots, unless the host calls one for the next hand. There is no ante.'
+        : (b.mode === 'both' ? `A bomb pot at least every ${b.every} hands, and each other hand has a ${b.percent}% chance of being one.`
+          : b.mode === 'every' ? `A bomb pot every ${b.every} hands.` : `Each hand has a ${b.percent}% chance of being a bomb pot.`) + size;
     }
   };
   root.addEventListener('change', (e) => { if (e.target.closest('[data-bomb]')) show(); });
