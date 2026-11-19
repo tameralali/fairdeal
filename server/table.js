@@ -5,6 +5,8 @@ import { GAME_TYPES } from '../shared/cards.js';
 import { isValidContribution, FAIRNESS_VERSION } from '../shared/fairness.js';
 import { newCommitment, settleCommitment, randomId } from './fair-node.js';
 import { cleanName } from './auth.js';
+import { StatsBook, statsRows, gamesIn, summarize, aggregate } from './stats.js';
+import { fmtMoney } from '../shared/money.js';
 
 export const DELAYS = {
   street: 700, runoutFirst: 1800, runout: 1300, showdown: 900,
@@ -17,7 +19,7 @@ export const DELAYS = {
 export const MAX_STEPS = 8;
 
 export const DEFAULT_SETTINGS = {
-  format: [{ game: 'nlh', length: 'orbit', doubleBoard: false }],
+  format: [{ game: 'nlh', unit: 'orbits', count: 1, doubleBoard: false }],
   smallBlind: 5,
   bigBlind: 10,
   minBuyIn: 0,
@@ -56,30 +58,49 @@ export function capacityFor(game, doubleBoard = false) {
 
 export const formatGames = (format) => [...new Set(format.map((x) => x.game))];
 
+const MAX_COUNT = { orbits: 50, hands: 500 };
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
 export function stepText(step, short = false) {
   const g = GAME_TYPES[step.game];
-  const len = step.length === 'orbit' ? 'one orbit' : `${step.length} hand${step.length === 1 ? '' : 's'}`;
-  return `${short ? g.short : g.name}${step.doubleBoard ? ' double board' : ''}, ${len}`;
+  return `${short ? g.short : g.name}${step.doubleBoard ? ' double board' : ''}, ${plural(step.count, step.unit === 'hands' ? 'hand' : 'orbit')}`;
+}
+
+// A step lasts a number of orbits or a number of hands. Older steps said length: 'orbit' or a number of hands.
+function normalStep(x) {
+  if (!x || typeof x !== 'object') return null;
+  let unit = x.unit === 'hands' ? 'hands' : 'orbits';
+  let count = Math.floor(Number(x.count));
+  if (x.unit === undefined && x.length !== undefined) {
+    unit = x.length === 'orbit' ? 'orbits' : 'hands';
+    count = x.length === 'orbit' ? 1 : Math.floor(Number(x.length));
+  }
+  return { game: x.game, unit, count, doubleBoard: !!x.doubleBoard };
 }
 
 function cleanStep(x, i) {
-  if (!x || typeof x !== 'object') fail(`Step ${i + 1} of the format is not valid`);
-  if (!GAME_TYPES[x.game]) fail(`Pick a game for step ${i + 1} of the format`);
-  const length = x.length === 'orbit' ? 'orbit' : intIn(x.length, 1, 500, `Hands in step ${i + 1} of the format`);
-  return { game: x.game, length, doubleBoard: !!x.doubleBoard };
+  const st = normalStep(x);
+  if (!st) fail(`Step ${i + 1} of the format is not valid`);
+  if (!GAME_TYPES[st.game]) fail(`Pick a game for step ${i + 1} of the format`);
+  const max = MAX_COUNT[st.unit];
+  if (!Number.isInteger(st.count) || st.count < 1 || st.count > max) fail(`Step ${i + 1} of the format needs 1 to ${max} ${st.unit}`);
+  return st;
 }
 
 // Tables created before the format existed stored a list of games and one rotation rule.
 function legacyFormat(games, rotateEvery, rotateHands) {
   const list = [...new Set([].concat(games ?? []))].filter((g) => GAME_TYPES[g]);
   if (!list.length) fail('Pick at least one game');
-  const length = rotateEvery === 'hands' ? Math.max(1, Math.min(500, Math.floor(Number(rotateHands)) || 10)) : 'orbit';
-  return list.map((game) => ({ game, length, doubleBoard: false }));
+  const hands = rotateEvery === 'hands';
+  const count = hands ? Math.max(1, Math.min(500, Math.floor(Number(rotateHands)) || 10)) : 1;
+  return list.map((game) => ({ game, unit: hands ? 'hands' : 'orbits', count, doubleBoard: false }));
 }
 
 export function migrateSettings(saved) {
   const s = { ...structuredClone(DEFAULT_SETTINGS), ...structuredClone(saved || {}) };
   if (!Array.isArray(saved?.format) || !saved.format.length) s.format = legacyFormat(s.games || ['nlh'], s.rotateEvery, s.rotateHands);
+  else s.format = s.format.map(normalStep).filter((x) => x && GAME_TYPES[x.game] && x.count >= 1);
+  if (!s.format.length) s.format = structuredClone(DEFAULT_SETTINGS.format);
   s.bombPot = { ...DEFAULT_SETTINGS.bombPot, ...(s.bombPot || {}) };
   s.rit = { ...DEFAULT_SETTINGS.rit, ...(s.rit || {}) };
   delete s.games;
@@ -184,6 +205,8 @@ export class Table {
     this.ledger = data.ledger || [];
     this.requests = data.requests || [];
     this.endedAt = data.endedAt || null;
+    // amounts at a table are whole numbers of its unit: 2 means cents (dollars and cents), 0 means chips
+    this.unit = data.unit ?? null;
     this.players = new Map();
     this.seats = Array(10).fill(null);
     for (const p of data.players || []) {
@@ -211,12 +234,12 @@ export class Table {
   get store() { return this.manager.store; }
   get clubs() { return this.manager.clubs; }
   get decimals() {
+    if (this.unit !== null) return this.unit;
     if (this.clubId) return this.clubs.data[this.clubId]?.settings.decimals || 0;
     return this.settings.decimals || 0;
   }
   fmt(a) {
-    const d = this.decimals;
-    return (d ? a / 100 : a).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+    return fmtMoney(a, this.decimals);
   }
 
   isHost(userId) {
@@ -291,7 +314,7 @@ export class Table {
       settings: this.settings, status: this.status, paused: this.paused, handNumber: this.handNumber,
       buttonSeat: this.buttonSeat, revealedThrough: this.revealedThrough, session: this.session,
       rotation: this.rotation, handsSinceBomb: this.handsSinceBomb, ledger: this.ledger,
-      requests: this.requests, endedAt: this.endedAt, logSeq: this.logSeq,
+      requests: this.requests, endedAt: this.endedAt, logSeq: this.logSeq, unit: this.unit,
       players: [...this.players.values()].map((p) => ({
         userId: p.userId, name: p.name, seat: p.seat, stack: p.stack, sittingOut: p.sittingOut,
         timeBank: p.timeBank, joinedAt: p.joinedAt,
@@ -628,7 +651,7 @@ export class Table {
     this.assertOpen();
     let highestSeat = -1;
     for (const p of this.players.values()) highestSeat = Math.max(highestSeat, p.seat);
-    if (input.decimals !== undefined && Number(input.decimals) !== this.settings.decimals && this.ledger.length) {
+    if (input.decimals !== undefined && this.unit === null && Number(input.decimals) !== this.settings.decimals && this.ledger.length) {
       fail('Chip display can only change before anyone buys in');
     }
     const before = this.settings;
@@ -701,7 +724,7 @@ export class Table {
     this.requests = [];
     const last = this.getRecords().at(-1);
     if (last) this.reveal(last.handNumber);
-    this.log(reason === 'time' ? 'Time is up. The game has ended.' : 'The game has ended.', 'game');
+    this.log(reason === 'time' ? 'Time is up. The game has ended.' : reason === 'units' ? 'The game was ended when the club moved to dollars and cents. Chips went back to balances.' : 'The game has ended.', 'game');
     this.snapshot();
     this.broadcast();
     if (this.clubId) this.clubs.changed(this.clubId);
@@ -742,16 +765,70 @@ export class Table {
     return out;
   }
 
+  // Every hand of this game, newest first, with each player's result so the list can be sorted by
+  // pot size or by anyone's biggest wins and losses.
   handList(viewerId) {
-    return this.getRecords().slice(-400).reverse().map((r) => {
+    return this.getRecords().slice().reverse().map((r) => {
       const me = r.players.find((p) => p.userId === viewerId);
       const pot = (r.results?.pots || []).reduce((s, p) => s + p.amount, 0);
+      const nets = {};
+      for (const p of r.players) nets[p.userId] = p.net;
       return {
         handNumber: r.handNumber, at: r.startedAt, gameType: r.gameType, isBomb: r.isBomb, runCount: r.runCount, doubleBoard: !!r.doubleBoard,
         pot, winners: [...new Set((r.results?.payouts || []).map((w) => w.name))], revealed: r.handNumber <= this.revealedThrough,
-        myNet: me ? me.net : null, commitment: r.fairness.commitment,
+        myNet: me ? me.net : null, nets, commitment: r.fairness.commitment, replay: Array.isArray(r.actions),
       };
     });
+  }
+
+  // ---------- stats ----------
+  // The game type the table is on now: the hand being played, else the step it is on.
+  currentGame() {
+    if (this.hand) return this.hand.gameType;
+    const f = this.settings.format;
+    return (f[this.rotation.index] || f[0]).game;
+  }
+
+  // scope 'game': hands at this table. scope 'all': every game of the club, this one included.
+  statsLines(scope) {
+    if (scope === 'all' && this.clubId) return this.manager.clubLines(this.clubId);
+    return this.manager.stats.linesFor(this);
+  }
+
+  // Across all the club's games, other members' results are shown only to people who can see the
+  // whole club ledger (as on the club page); at this table everyone sees this game's results.
+  statsView({ scope = 'game', game = 'all' } = {}, viewer = null) {
+    const lines = this.statsLines(scope);
+    const g = game === 'all' || GAME_TYPES[game] ? game : 'all';
+    let players = statsRows(lines, g, (id) => this.manager.nameOf(id));
+    if (scope === 'all' && this.clubId && viewer) {
+      const seeAll = this.clubs.isManager(this.clubId, viewer.id) || !!this.clubs.data[this.clubId]?.settings.membersSeeLedger;
+      if (!seeAll) players = players.map((r) => (r.userId === viewer.id ? r : { ...r, net: null, bb100: null, best: null }));
+    }
+    // results are in cents whatever the table was played in
+    return { scope, game: g, decimals: 2, games: gamesIn(lines), hands: lines.filter((l) => g === 'all' || l.gameType === g).length, players };
+  }
+
+  // Numbers shown on each seat, for the game being played: this game and all games. Rebuilt only
+  // when a hand finishes somewhere or the game type changes.
+  hudData() {
+    const game = this.currentGame();
+    const key = `${this.manager.stats.version}:${game}:${[...this.players.keys()].join(',')}`;
+    if (this.hudCache?.key === key) return this.hudCache.data;
+    const pick = (lines) => {
+      const agg = aggregate(lines, game);
+      const out = {};
+      for (const id of this.players.keys()) {
+        const t = agg.get(id);
+        if (!t) continue;
+        const x = summarize(t);
+        out[id] = { hands: x.hands, vpip: x.vpip, pfr: x.pfr, af: x.af, threeBet: x.threeBet, ats: x.ats, cbet: x.cbet, wtsd: x.wtsd };
+      }
+      return out;
+    };
+    const data = { game, table: pick(this.statsLines('game')), all: this.clubId ? pick(this.statsLines('all')) : null };
+    this.hudCache = { key, data };
+    return data;
   }
 
   getRecord(handNumber, viewerId) {
@@ -780,20 +857,27 @@ export class Table {
     return (after || eligible[0]).seat;
   }
 
-  // Picks the format step for the hand about to start. A step played for an orbit ends when the
-  // button reaches a player who already had it during that step.
+  // Picks the format step for the hand about to start. A step lasts a number of hands, or a number
+  // of orbits: an orbit ends when the button reaches a player who already had it in that orbit.
   pickStep() {
     const f = this.settings.format;
     const r = this.rotation;
     if (f.length === 1) return f[0];
-    if (!(r.index >= 0 && r.index < f.length)) { r.index = 0; r.seen = []; r.count = 0; }
+    if (!(r.index >= 0 && r.index < f.length)) { r.index = 0; r.seen = []; r.count = 0; r.orbits = 0; }
+    r.orbits ||= 0;
     const btnUser = this.seats[this.buttonSeat];
     const step = f[r.index];
-    const done = step.length === 'orbit' ? r.seen.includes(btnUser) : r.count >= step.length;
+    let done;
+    if (step.unit === 'hands') done = r.count >= step.count;
+    else {
+      if (r.seen.includes(btnUser)) { r.orbits++; r.seen = []; }
+      done = r.orbits >= step.count;
+    }
     if (done) {
       r.index = (r.index + 1) % f.length;
       r.seen = [];
       r.count = 0;
+      r.orbits = 0;
       this.log(`Switching to ${stepText(f[r.index])}`, 'game');
     }
     r.seen.push(btnUser);
@@ -804,19 +888,21 @@ export class Table {
   rotationInfo() {
     const f = this.settings.format;
     if (f.length < 2) return null;
-    const i = this.rotation.index >= 0 && this.rotation.index < f.length ? this.rotation.index : 0;
+    const r = this.rotation;
+    const i = r.index >= 0 && r.index < f.length ? r.index : 0;
     const cur = f[i];
     const next = f[(i + 1) % f.length];
-    let left;
-    if (cur.length === 'orbit') {
+    let handsLeft;
+    let orbit = null;
+    if (cur.unit === 'hands') handsLeft = Math.max(0, cur.count - r.count);
+    else {
       const active = this.eligiblePlayers().map((p) => p.userId);
-      left = active.filter((u) => !this.rotation.seen.includes(u)).length;
-    } else {
-      left = Math.max(0, cur.length - this.rotation.count);
+      handsLeft = active.filter((u) => !r.seen.includes(u)).length;
+      orbit = Math.min(cur.count, (r.orbits || 0) + 1);
     }
     return {
-      step: i, steps: f.length, current: cur.game, currentDouble: !!cur.doubleBoard,
-      next: next.game, nextDouble: !!next.doubleBoard, handsLeft: left, every: cur.length === 'orbit' ? 'orbit' : 'hands',
+      step: i, steps: f.length, current: cur.game, currentDouble: !!cur.doubleBoard, unit: cur.unit, count: cur.count, orbit,
+      next: next.game, nextDouble: !!next.doubleBoard, handsLeft, lastOrbit: cur.unit === 'orbits' ? orbit >= cur.count : true,
     };
   }
 
@@ -1040,6 +1126,7 @@ export class Table {
     const rec = this.buildRecord(hand, meta);
     this.getRecords().push(rec);
     this.store.appendHand(this.id, rec);
+    this.manager.stats.added();
     this.hand = null;
     this.lastHand = hand;
     if (this.settings.revealPolicy === 'hand') this.reveal(hand.number);
@@ -1098,6 +1185,8 @@ export class Table {
       },
       dealt: { ...d.dealt, holes },
       runCount: d.runCount,
+      actions: d.actions,
+      posts: d.posts,
       results: {
         uncontested: results.uncontested,
         boards: results.boards,
@@ -1220,8 +1309,9 @@ export class Table {
         handNumber: this.handNumber, ownerId: this.ownerId, settings: this.settings, decimals: this.decimals,
         session: this.session, endAfterHand: !!this.endAfterHand, revealedThrough: this.revealedThrough,
         createdAt: this.createdAt, endedAt: this.endedAt, waiting: this.waitingReason(), bombNext: this.bombNext,
-        rotation: this.rotationInfo(), handsSinceBomb: this.handsSinceBomb,
+        rotation: this.rotationInfo(), handsSinceBomb: this.handsSinceBomb, hands: this.getRecords().length,
       },
+      hud: this.hudData(),
       me: {
         userId, isHost, seat: me ? me.seat : null, seated: !!me,
         sittingOut: me ? me.sittingOut : false, sitOutNext: me ? me.sitOutNext : false, leaving: me ? me.leaveAfterHand : false,
@@ -1264,9 +1354,12 @@ export class TableManager {
     this.clubs = clubs;
     this.tables = new Map();
     clubs.chipsOnTables = () => this.chipsOnTablesByClub();
+    this.stats = new StatsBook();
     for (const snap of Object.values(store.data.tables)) {
       try {
         const t = new Table(this, snap);
+        // older tables keep the unit they were played in, saved now so it outlasts any change to the club
+        if (t.unit === null) { t.unit = t.decimals; t.snapshot(); }
         this.tables.set(t.id, t);
         if (t.status === 'running') {
           let any = false;
@@ -1281,22 +1374,31 @@ export class TableManager {
     }
   }
 
-  create(user, { name, clubId, settings }) {
-    let base = structuredClone(DEFAULT_SETTINGS);
-    if (clubId) {
-      if (!this.clubs.isManager(clubId, user.id)) fail('Only club managers can open club tables');
-      base.autoApprove = true;
-      base.autoStart = true;
-    }
+  create(user, { name, settings }) {
+    // every game belongs to the one club and is played in dollars and cents
+    const clubId = this.clubs.mainId();
+    if (!clubId) fail('The club is not set up yet');
+    if (!this.clubs.isManager(clubId, user.id)) fail('Only admins can start a game');
+    const base = structuredClone(DEFAULT_SETTINGS);
+    base.autoApprove = true;
+    base.autoStart = true;
     const s = sanitizeSettings(settings || {}, base);
+    s.decimals = 2;
     const n = String(name || '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 40) || `${user.name}'s game`;
-    const t = new Table(this, { id: randomId(7), name: n, clubId: clubId || null, ownerId: user.id, settings: s });
+    const t = new Table(this, { id: randomId(7), name: n, clubId, ownerId: user.id, settings: s, unit: 2 });
     this.tables.set(t.id, t);
     if (s.autoStart) t.startSession({ clockAtFirstHand: true });
     t.log(`${user.name} created the table`, 'game');
     t.snapshot();
-    if (clubId) this.clubs.changed(clubId); // members on the club page see the new table
+    this.clubs.changed(clubId); // members on the club page see the new table
     return t;
+  }
+
+  // Ends the club's unfinished games that are kept in another unit (before the club moves to cents).
+  endTablesNotIn(clubId, unit) {
+    for (const t of this.tables.values()) {
+      if (t.clubId === clubId && t.status !== 'ended' && t.decimals !== unit) t.endGame('units');
+    }
   }
 
   get(id) {
@@ -1305,8 +1407,31 @@ export class TableManager {
     return t;
   }
 
+  nameOf(userId) { return this.auth.users[userId]?.name || 'Unknown'; }
+
+  // Every hand played in the club's games.
+  clubLines(clubId) {
+    const out = [];
+    for (const t of this.tables.values()) if (t.clubId === clubId) out.push(...this.stats.linesFor(t));
+    return out;
+  }
+
+  // All-time stats for the club page. Results of other players are only shown to people who can see
+  // the whole club ledger.
+  clubStats(clubId, viewer, { game = 'all', seeAll = false } = {}) {
+    const lines = this.clubLines(clubId);
+    const g = game === 'all' || GAME_TYPES[game] ? game : 'all';
+    const players = statsRows(lines, g, (id) => this.nameOf(id)).map((r) => (seeAll || r.userId === viewer.id ? r : { ...r, net: null, bb100: null, best: null }));
+    return { game: g, decimals: 2, games: gamesIn(lines), hands: lines.filter((l) => g === 'all' || l.gameType === g).length, players };
+  }
+
   forClub(clubId, viewerId) {
-    return [...this.tables.values()].filter((t) => t.clubId === clubId).sort((a, b) => b.createdAt - a.createdAt).map((t) => t.summary(viewerId));
+    // games from before the single club (no club) are listed with it too
+    const main = this.clubs.isMain(clubId);
+    return [...this.tables.values()]
+      .filter((t) => t.clubId === clubId || (main && !t.clubId && (t.players.has(viewerId) || t.ledger.some((e) => e.userId === viewerId) || t.ownerId === viewerId)))
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map((t) => t.summary(viewerId));
   }
 
   forUser(userId) {

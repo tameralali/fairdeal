@@ -32,13 +32,11 @@ test('moving to a new server: data copied, logins keep working, the old copy for
   const owner = (await call(oldBase, 'POST', `/api/links/${oldSrv.ownerSetupToken}`, { username: 'tamer', password: 'secret123', name: 'Tamer', email: 'tamer@example.com' })).json;
   const inv = (await call(oldBase, 'POST', '/api/admin/invites', { email: 'omar@example.com', name: 'Omar' }, owner.token)).json;
   const omar = (await call(oldBase, 'POST', `/api/links/${inv.link.split('/').pop()}`, { username: 'omar', password: 'secret123', name: 'Omar' })).json;
-  const clubId = (await call(oldBase, 'POST', '/api/clubs', { name: 'The Aquarium' }, owner.token)).json.id;
-  const code = (await call(oldBase, 'GET', `/api/clubs/${clubId}`, null, owner.token)).json.club.inviteCode;
-  assert.equal((await call(oldBase, 'POST', '/api/clubs/join', { code }, omar.token)).status, 200);
-  await call(oldBase, 'POST', `/api/clubs/${clubId}/members/${omar.user.id}/decide`, { approve: true }, owner.token);
-  await call(oldBase, 'POST', `/api/clubs/${clubId}/members/${omar.user.id}/chips`, { amount: 2500, note: 'Cash' }, owner.token);
+  const clubId = (await call(oldBase, 'GET', '/api/me', null, omar.token)).json.clubId;
+  assert.ok(clubId);
+  assert.equal((await call(oldBase, 'POST', `/api/clubs/${clubId}/members/${omar.user.id}/chips`, { amount: 2500, note: 'Cash' }, owner.token)).status, 200);
   await call(oldBase, 'POST', `/api/clubs/${clubId}/members/${omar.user.id}/credit`, { limit: 1000 }, owner.token);
-  const tableId = (await call(oldBase, 'POST', `/api/clubs/${clubId}/tables`, { name: 'Thursday', settings: { format: [{ game: 'plo4', length: 'orbit', doubleBoard: true }] } }, owner.token)).json.id;
+  const tableId = (await call(oldBase, 'POST', '/api/tables', { name: 'Thursday', settings: { format: [{ game: 'plo4', unit: 'orbits', count: 2, doubleBoard: true }] } }, owner.token)).json.id;
   oldSrv.store.appendHand(tableId, { handNumber: 1, note: 'a hand record' });
   const before = (await call(oldBase, 'GET', `/api/clubs/${clubId}`, null, owner.token)).json.club;
 
@@ -65,7 +63,9 @@ test('moving to a new server: data copied, logins keep working, the old copy for
   const after = (await call(newBase, 'GET', `/api/clubs/${clubId}`, null, owner.token)).json;
   assert.deepEqual(after.club.members.map((m) => [m.name, m.balance, m.creditLimit]), before.members.map((m) => [m.name, m.balance, m.creditLimit]));
   assert.equal(after.club.transactions.length, before.transactions.length);
-  assert.deepEqual(after.tables.map((t) => [t.id, t.name, t.format[0].doubleBoard]), [[tableId, 'Thursday', true]]);
+  assert.deepEqual(after.tables.map((t) => [t.id, t.name, t.format[0].doubleBoard, t.format[0].count]), [[tableId, 'Thursday', true, 2]]);
+  assert.equal(after.club.id, clubId, 'the same club, not a new one');
+  assert.equal(Object.keys(newSrv.store.data.clubs).length, 1);
 
   // the old server now sends people on, refuses writes, and turns sockets away
   const page = await call(oldBase, 'GET', `/club/${clubId}?x=1`);

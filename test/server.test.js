@@ -8,6 +8,7 @@ import { io as ioc } from 'socket.io-client';
 import { createServer } from '../server/index.js';
 import { DELAYS } from '../server/table.js';
 import { verifyHandRecord, webCryptoAdapter } from '../shared/fairness.js';
+import { buildReplay } from '../shared/replay.js';
 
 Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10 });
 
@@ -34,14 +35,22 @@ async function call(method, p, body, token) {
   return j;
 }
 
-// Everyone joins through an invite from the site owner.
+// Everyone joins through an invite from the site owner and lands in the one club, The Aquarium.
+// Amounts are in cents. fund gives a member money to buy in with; admin can start games.
 let seq = 0;
-async function member(name, username = null) {
+async function member(name, username = null, { fund = 0 } = {}) {
   seq++;
   const email = `${name.toLowerCase()}${seq}@example.com`;
   const inv = await call('POST', '/api/admin/invites', { email, name }, siteOwner.token);
   const token = inv.link.split('/').pop();
-  return call('POST', `/api/links/${token}`, { username: username || `${name.toLowerCase()}_${seq}`, password: 'secret123', name });
+  const m = await call('POST', `/api/links/${token}`, { username: username || `${name.toLowerCase()}_${seq}`, password: 'secret123', name });
+  if (fund) await call('POST', `/api/clubs/${m.clubId}/members/${m.user.id}/chips`, { amount: fund, note: 'Cash' }, siteOwner.token);
+  return m;
+}
+async function admin(name, opts) {
+  const m = await member(name, null, opts);
+  await call('POST', `/api/admin/users/${m.user.id}/role`, { role: 'admin' }, siteOwner.token);
+  return m;
 }
 
 function rngFrom(seed) {
@@ -126,6 +135,7 @@ class Bot {
 }
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const b0 = (bots) => bots[0].userId;
 let progress = () => '';
 async function until(fn, ms = 20000, label = 'condition') {
   const t0 = Date.now();
@@ -156,15 +166,16 @@ async function verifyAll(tableId, bots, hostToken) {
   return { hands: hands.length, verified };
 }
 
-test('standalone game: approvals, mixed games, bombs, multi-runs, ledger and verification', { timeout: 240000 }, async () => {
-  const auths = [];
-  for (const n of ['Tamer', 'Omar', 'Lina', 'Sam', 'Rami']) auths.push(await member(n));
+test('a game: approvals, mixed games, bombs, multi-runs, ledger, stats, hand lists and verification', { timeout: 240000 }, async () => {
+  const auths = [await admin('Tamer', { fund: 1000000 })];
+  for (const n of ['Omar', 'Lina', 'Sam', 'Rami']) auths.push(await member(n, null, { fund: 1000000 }));
   const host = auths[0];
+  await assert.rejects(call('POST', '/api/tables', { name: 'Not mine' }, auths[1].token), /Only admins/);
   const { id } = await call('POST', '/api/tables', {
     name: 'Thursday game',
     settings: {
-      format: [{ game: 'plo4', length: 'orbit' }, { game: 'nlh', length: 4, doubleBoard: true }],
-      smallBlind: 5, bigBlind: 10, minBuyIn: 500, maxBuyIn: 3000,
+      format: [{ game: 'plo4', unit: 'orbits', count: 1 }, { game: 'nlh', unit: 'hands', count: 4, doubleBoard: true }],
+      smallBlind: 5, bigBlind: 10, minBuyIn: 500, maxBuyIn: 3000, autoApprove: false, autoStart: false,
       bombPot: { mode: 'percent', percent: 30, anteBB: 2, game: 'current', doubleBoard: true }, rit: { enabled: true, maxRuns: 4 },
       decisionSeconds: 5, timeBankSeconds: 0, revealPolicy: 'hand',
     },
@@ -233,6 +244,45 @@ test('standalone game: approvals, mixed games, bombs, multi-runs, ledger and ver
   assert.ok(v.verified >= recs.length * 3);
   for (const b of bots) assert.deepEqual(b.errors.filter((e) => !/not your turn/i.test(e)), [], `${b.name} action errors`);
 
+  // every hand keeps its actions and blinds for the replayer and the stats
+  for (const x of recs) {
+    assert.ok(Array.isArray(x.actions) && Array.isArray(x.posts), 'actions and posts recorded');
+    if (x.isBomb) assert.ok(x.posts.every((p) => p.a === 'ante') && x.posts.length === x.players.length);
+    else assert.deepEqual(x.posts.map((p) => p.a), ['sb', 'bb']);
+  }
+  // live stats: hands played match the records, percentages stay in range, results match the ledger
+  const st = (await bots[1].emit('stats:get', { scope: 'game', game: 'all' })).stats;
+  assert.equal(st.hands, recs.length);
+  for (const row of st.players) {
+    assert.equal(row.hands, recs.filter((x) => x.players.some((p) => p.userId === row.userId)).length, `${row.name} hands`);
+    for (const k of ['vpip', 'pfr', 'threeBet', 'ats', 'cbet', 'wtsd', 'wsd']) if (row[k] !== null) assert.ok(row[k] >= 0 && row[k] <= 100, `${row.name} ${k} ${row[k]}`);
+    assert.ok(row.pfr === null || row.pfr <= row.vpip, 'PFR never above VPIP');
+    const lrow = ledger.rows.find((x) => x.userId === row.userId);
+    assert.equal(row.net, lrow.stack + lrow.buyOut - lrow.buyIn, `${row.name} net matches the ledger`);
+  }
+  assert.deepEqual(st.games.map((g) => g.id).sort(), [...games].sort());
+  const plo = (await bots[1].emit('stats:get', { scope: 'game', game: 'plo4' })).stats;
+  assert.equal(plo.hands, recs.filter((x) => x.gameType === 'plo4').length);
+  // the seats carry the numbers for the game being played
+  const hud = bots[1].state.hud;
+  assert.ok(['plo4', 'nlh'].includes(hud.game));
+  for (const b of bots) assert.ok(hud.table[b.userId]?.hands > 0, 'every seated player has numbers');
+  assert.ok(hud.all[b0(bots)].hands >= hud.table[b0(bots)].hands);
+  // the hand list has everyone's result so it can sort by pot and by anyone's wins and losses
+  const list = (await bots[1].emit('hands:list', {})).hands;
+  assert.equal(list.length, recs.length, 'every hand, not just the latest');
+  const big = list.slice().sort((a, b) => b.pot - a.pot)[0];
+  assert.equal(big.pot, Math.max(...recs.map((x) => x.results.pots.reduce((s2, p) => s2 + p.amount, 0))));
+  for (const h of list.slice(0, 5)) assert.equal(Object.values(h.nets).reduce((a, b) => a + b, 0), 0, 'a hand moves money between players only');
+  // the replayer can step through every hand: money adds up at each step and it ends on the real stacks
+  for (const x of recs) {
+    const R = buildReplay(x);
+    const total = x.players.reduce((s2, p) => s2 + p.startStack, 0);
+    for (const step of R.steps) if (!step.final) assert.equal(step.players.reduce((s2, p) => s2 + p.stack, 0) + step.pot, total, `hand ${x.handNumber} at "${step.text}"`);
+    for (const p of x.players) assert.equal(R.steps.at(-1).players.find((q) => q.id === p.userId).stack, p.endStack, `hand ${x.handNumber} end stacks`);
+    assert.equal(R.steps.filter((st) => st.dealt === 'run').length, x.runCount > 1 ? x.runCount : 0, `hand ${x.handNumber} runs`);
+  }
+
   // time limit: end shortly, the game ends after the current hand and everyone is cashed out
   await bots[0].emit('host:pause', { value: false });
   t.session.endsAt = Date.now() + 300;
@@ -245,8 +295,8 @@ test('standalone game: approvals, mixed games, bombs, multi-runs, ledger and ver
 });
 
 test('seeds stay hidden until the game ends when the reveal policy is per session', { timeout: 120000 }, async () => {
-  const a = await member('Host');
-  const b = await member('Guest');
+  const a = await admin('Host', { fund: 100000 });
+  const b = await member('Guest', null, { fund: 100000 });
   const { id } = await call('POST', '/api/tables', { settings: { revealPolicy: 'session', autoApprove: true, decisionSeconds: 5, timeBankSeconds: 0 } }, a.token);
   const bots = [new Bot('Host', a, 1), new Bot('Guest', b, 2)];
   for (const x of bots) await x.connect(id);
@@ -268,46 +318,46 @@ test('seeds stay hidden until the game ends when the reveal policy is per sessio
   bots.forEach((x) => x.close());
 });
 
-test('club: invites, approvals, chips, credit limits, buy-ins draw from balance, cash-outs return', { timeout: 150000 }, async () => {
-  const owner = await member('Tamer', 'tamer');
+test('the club: one club, chips, credit limits, buy-ins draw from balance, cash-outs return', { timeout: 150000 }, async () => {
+  const owner = siteOwner;
   const m1 = await member('Omar', 'omar');
   const m2 = await member('Lina', 'lina');
-  const guest = await member('Drifter');
   await assert.rejects(call('POST', '/api/auth/guest', { name: 'Nope' }), /invite only/);
-  const { id: clubId } = await call('POST', '/api/clubs', { name: 'Dubai Thursday Club', decimals: 2 }, owner.token);
+  await assert.rejects(call('POST', '/api/clubs', { name: 'Dubai Thursday Club' }, owner.token), /only club/);
+  const clubId = m1.clubId;
   let view = await call('GET', `/api/clubs/${clubId}`, null, owner.token);
-  const code = view.club.inviteCode;
-  assert.ok(code);
-  for (const m of [m1, m2]) {
-    const j = await call('POST', '/api/clubs/join', { code }, m.token);
-    assert.equal(j.status, 'pending');
-  }
-  await assert.rejects(call('POST', `/api/clubs/${clubId}/members/${m2.user.id}/decide`, { approve: true }, m1.token), /owner or a manager/);
-  for (const m of [m1, m2]) await call('POST', `/api/clubs/${clubId}/members/${m.user.id}/decide`, { approve: true }, owner.token);
+  assert.equal(view.club.name, 'The Aquarium');
+  assert.equal(view.club.settings.decimals, 2, 'dollars and cents');
+  assert.equal(view.club.myRole, 'owner');
+  assert.ok([m1, m2].every((m) => view.club.members.some((x) => x.userId === m.user.id)), 'invited people are members straight away');
+  await assert.rejects(call('POST', '/api/clubs/join', { code: view.club.inviteCode }, m1.token), /already in The Aquarium/);
+  await assert.rejects(call('POST', `/api/clubs/${clubId}/members/${m2.user.id}/chips`, { amount: 100 }, m1.token), /owner or a manager/);
+  await assert.rejects(call('POST', `/api/clubs/${clubId}/members/${m2.user.id}/role`, { role: 'manager' }, owner.token), /People page/);
   await call('POST', `/api/clubs/${clubId}/members/${m1.user.id}/chips`, { amount: 50000, note: 'Cash received' }, owner.token);
   await call('POST', `/api/clubs/${clubId}/members/${m2.user.id}/credit`, { limit: 30000 }, owner.token);
   await call('POST', `/api/clubs/${clubId}/members/${owner.user.id}/chips`, { amount: 100000 }, owner.token);
+  const mine = (v) => [owner, m1, m2].map((m) => v.club.members.find((x) => x.userId === m.user.id));
+  const startTotal = mine(await call('GET', `/api/clubs/${clubId}`, null, owner.token)).reduce((s2, x) => s2 + x.balance, 0);
   view = await call('GET', `/api/clubs/${clubId}`, null, m1.token);
   assert.equal(view.club.me.balance, 50000);
   assert.equal(view.club.members.find((x) => x.userId === m2.user.id).balance, undefined, 'members cannot see others by default');
 
-  const { id: tableId } = await call('POST', `/api/clubs/${clubId}/tables`, { name: 'Club PLO', settings: { games: ['plo5'], smallBlind: 25, bigBlind: 50, decisionSeconds: 5, timeBankSeconds: 0, bombPot: { mode: 'every', every: 3, anteBB: 1 } } }, owner.token);
+  const { id: tableId } = await call('POST', '/api/tables', { name: 'Club PLO', settings: { games: ['plo5'], smallBlind: 25, bigBlind: 50, decisionSeconds: 5, timeBankSeconds: 0, bombPot: { mode: 'every', every: 3, anteBB: 1 } } }, owner.token);
   // the start-a-game form sends a format; PLO5 on two boards only fits eight players
-  await assert.rejects(call('POST', `/api/clubs/${clubId}/tables`, { settings: { format: [{ game: 'plo5', length: 'orbit', doubleBoard: true }], maxPlayers: 9 } }, owner.token), /at most 8 seats/);
-  await assert.rejects(call('POST', `/api/clubs/${clubId}/tables`, { settings: { format: [] } }, owner.token), /at least one game/);
-  await assert.rejects(call('POST', `/api/clubs/${clubId}/tables`, { settings: { format: [{ game: 'nlh', length: 'orbit' }] } }, m1.token), /managers/);
-  const { id: laterId } = await call('POST', `/api/clubs/${clubId}/tables`, {
-    name: 'Saturday', settings: { format: [{ game: 'plo4', length: 'orbit' }, { game: 'nlh', length: 10, doubleBoard: true }], autoStart: false, maxPlayers: 7, bombPot: { mode: 'every', every: 8, anteBB: 2, game: 'plo4', doubleBoard: true } },
+  await assert.rejects(call('POST', '/api/tables', { settings: { format: [{ game: 'plo5', unit: 'orbits', count: 1, doubleBoard: true }], maxPlayers: 9 } }, owner.token), /at most 8 seats/);
+  await assert.rejects(call('POST', '/api/tables', { settings: { format: [] } }, owner.token), /at least one game/);
+  await assert.rejects(call('POST', '/api/tables', { settings: { format: [{ game: 'nlh', unit: 'hands', count: 0 }] } }, owner.token), /1 to 500 hands/);
+  await assert.rejects(call('POST', '/api/tables', { settings: { format: [{ game: 'nlh', unit: 'orbits', count: 51 }] } }, owner.token), /1 to 50 orbits/);
+  await assert.rejects(call('POST', '/api/tables', { settings: { format: [{ game: 'nlh', unit: 'orbits', count: 1 }] } }, m1.token), /Only admins/);
+  const { id: laterId } = await call('POST', '/api/tables', {
+    name: 'Saturday', settings: { format: [{ game: 'plo4', unit: 'orbits', count: 2 }, { game: 'nlh', unit: 'hands', count: 10, doubleBoard: true }, { game: 'plo5', length: 'orbit' }], autoStart: false, maxPlayers: 7, bombPot: { mode: 'every', every: 8, anteBB: 2, game: 'plo4', doubleBoard: true } },
   }, owner.token);
   view = await call('GET', `/api/clubs/${clubId}`, null, owner.token);
   const later = view.tables.find((x) => x.id === laterId);
   assert.equal(later.status, 'waiting', 'a table can wait for the host to start it');
-  assert.deepEqual(later.format.map((x) => [x.game, x.length, x.doubleBoard]), [['plo4', 'orbit', false], ['nlh', 10, true]]);
+  assert.deepEqual(later.format.map((x) => [x.game, x.unit, x.count, x.doubleBoard]), [['plo4', 'orbits', 2, false], ['nlh', 'hands', 10, true], ['plo5', 'orbits', 1, false]], 'older step shapes still read');
   assert.equal(srv.tables.get(laterId).settings.bombPot.doubleBoard, true);
-  const outsider = new Bot('Drifter', guest, 9);
-  await assert.rejects(outsider.connect(tableId), /club members/);
-  outsider.close();
-  const bots = [new Bot('Tamer', owner, 11), new Bot('Omar', m1, 12), new Bot('Lina', m2, 13)];
+  const bots = [new Bot('Owner', owner, 11), new Bot('Omar', m1, 12), new Bot('Lina', m2, 13)];
   for (const b of bots) await b.connect(tableId);
   let r = await bots[2].emit('seat:request', { seat: 1, buyIn: 40000 });
   assert.equal(r.ok, false, 'over credit limit rejected');
@@ -317,19 +367,31 @@ test('club: invites, approvals, chips, credit limits, buy-ins draw from balance,
   assert.ok(r.ok && r.seated);
   r = await bots[0].emit('seat:request', { seat: 5, buyIn: 20000 });
   assert.ok(r.ok && r.seated);
+  assert.equal(bots[0].state.table.decimals, 2);
   view = await call('GET', `/api/clubs/${clubId}`, null, owner.token);
   assert.equal(view.club.members.find((x) => x.userId === m2.user.id).balance, -30000);
   await until(() => (bots[0].state?.table.handNumber || 0) >= 12, 90000, 'club hands');
   const t = srv.tables.get(tableId);
   assert.ok(t.getRecords().some((x) => x.isBomb), 'every-N bomb pots');
+  assert.match(t.loadLog().map((e) => e.text).join('\n'), /posts a small blind of \$0\.25/, 'the log shows dollars and cents');
   // bots keep playing so the hand in progress can finish; the game ends right after it
   await bots[0].emit('host:end', {});
   await until(() => bots[0].state?.table.status === 'ended', 60000, 'club table end');
   for (const b of bots) b.passive = true;
   view = await call('GET', `/api/clubs/${clubId}`, null, owner.token);
-  const total = view.club.members.reduce((s, x) => s + x.balance, 0);
-  assert.equal(total, 150000, 'all chips back in balances');
-  assert.equal(view.club.members.reduce((s, x) => s + x.net, 0), 0, 'club nets sum to zero');
+  assert.equal(mine(view).reduce((s2, x) => s2 + x.balance, 0), startTotal, 'all chips back in balances');
+  assert.equal(mine(view).reduce((s2, x) => s2 + x.net, 0), 0, 'nets sum to zero');
+  // all-time stats on the club page: results of others only for those who see the whole ledger
+  const cs = (await call('GET', `/api/clubs/${clubId}/stats`, null, owner.token)).stats;
+  assert.ok(cs.players.find((x) => x.userId === m1.user.id).hands >= 12);
+  assert.ok(cs.players.every((x) => x.net !== null));
+  const ms = (await call('GET', `/api/clubs/${clubId}/stats?game=plo5`, null, m1.token)).stats;
+  assert.equal(ms.game, 'plo5');
+  assert.equal(ms.players.find((x) => x.userId === m2.user.id).net, null, 'members see others\' play, not their results');
+  assert.notEqual(ms.players.find((x) => x.userId === m1.user.id).net, null, 'but always their own');
+  const atTable = (await bots[1].emit('stats:get', { scope: 'all', game: 'all' })).stats;
+  assert.equal(atTable.players.find((x) => x.userId === m2.user.id).net, null, 'the same at the table for all games in the club');
+  assert.notEqual((await bots[1].emit('stats:get', { scope: 'game', game: 'all' })).stats.players.find((x) => x.userId === m2.user.id).net, null, 'this game\'s results are open at the table, as in its ledger');
   const lina = view.club.members.find((x) => x.userId === m2.user.id);
   if (lina.balance !== 0) {
     await call('POST', `/api/clubs/${clubId}/members/${m2.user.id}/settle`, { note: 'Bank transfer' }, owner.token);
@@ -343,12 +405,13 @@ test('club: invites, approvals, chips, credit limits, buy-ins draw from balance,
   const csv = await fetch(`${url}/api/clubs/${clubId}/transactions.csv`, { headers: { authorization: 'Bearer ' + owner.token } }).then((x) => x.text());
   assert.match(csv, /buyin/);
   assert.match(csv, /chips_add/);
+  assert.match(csv, /amount_usd/);
   bots.forEach((b) => b.close());
 });
 
 test('a table that deals on its own starts its time limit with the first hand', { timeout: 60000 }, async () => {
-  const a = await member('Early');
-  const b = await member('Late');
+  const a = await admin('Early', { fund: 100000 });
+  const b = await member('Late', null, { fund: 100000 });
   const { id } = await call('POST', '/api/tables', { settings: { autoStart: true, autoApprove: true, sessionMinutes: 120, decisionSeconds: 5, timeBankSeconds: 0 } }, a.token);
   let t = await call('GET', `/api/tables/${id}`, null, a.token);
   assert.equal(t.status, 'running');

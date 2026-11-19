@@ -146,8 +146,9 @@ input[type=number] { font-family: var(--num); font-size: 17px; font-variant-nume
 .fstep + .fstep { margin-top: .4rem; }
 .fstep-n { font: 700 20px/1 var(--num); color: var(--brass); min-width: 1.3em; text-align: center; }
 .fstep select[data-f=game] { width: auto; flex: 1 1 13rem; }
-.fstep select[data-f=len] { width: auto; flex: 0 1 auto; }
-.fstep input[data-f=hands] { width: 5.5rem; flex: none; }
+.fstep-len { display: inline-flex; gap: .4rem; align-items: center; flex: none; }
+.fstep input[data-f=count] { width: 4.6rem; flex: none; text-align: right; }
+.fstep select[data-f=unit] { width: auto; flex: none; }
 .fstep-for { color: var(--muted); }
 .fstep-db { display: inline-flex; align-items: center; gap: .4rem; color: var(--text); font-weight: 500; font-size: 15px; cursor: pointer; white-space: nowrap; }
 .fstep-db input { accent-color: var(--brass); width: 16px; height: 16px; margin: 0; }
@@ -162,6 +163,11 @@ input[type=number] { font-family: var(--num); font-size: 17px; font-variant-nume
 .sg-where > label { flex: 1 1 15rem; }
 .sg-where .hint, .sg-sec > .hint { margin-bottom: 0; }
 dialog.start-game { width: min(980px, calc(100vw - 24px)); }
+.fmt-foot .hint.bad { color: var(--danger); }
+/* dollar amounts: a $ inside the box */
+.money { position: relative; display: block; }
+.money::before { content: '$'; position: absolute; left: .7em; top: 50%; transform: translateY(-52%); color: var(--muted); font: 500 17px/1 var(--num); pointer-events: none; }
+.money input { padding-left: 1.55em; font-family: var(--num); font-size: 17px; font-variant-numeric: tabular-nums; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .nowrap { white-space: nowrap; }
 
@@ -211,6 +217,31 @@ dialog[open] { display: flex; flex-direction: column; }
 .data tr.total td { border-top: 1px solid var(--line); border-bottom: 0; font-weight: 600; }
 .pos { color: var(--ok); }
 .neg { color: #e48a80; }
+
+/* ---------- stats (table page and club page) ---------- */
+.stats-bar { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; margin-bottom: .9rem; }
+.stats-bar .seg { flex-wrap: wrap; }
+.stats-bar label.inline { display: flex; align-items: center; gap: .5rem; }
+.stats-bar label.inline .lbl { margin: 0; }
+.stats-bar select { width: auto; }
+.stats-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -.2rem; padding: 0 .2rem; }
+.stats-table { font-size: 14.5px; }
+.stats-table th, .stats-table td { white-space: nowrap; padding: .45rem .5rem; }
+.stats-table td.n { font-size: 15.5px; }
+.stats-table tr.grp th { border-bottom: 0; padding-bottom: 0; color: var(--faint); font-size: 12.5px; font-weight: 600; text-align: center; }
+.stats-table tr.grp th:not(:empty) { border-bottom: 1px solid var(--line-soft); }
+.data .who { position: sticky; left: 0; background: var(--panel); z-index: 1; max-width: 11rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.data tr.mine td { background: rgba(211, 170, 94, .06); }
+.data tr.mine td.who { background: color-mix(in srgb, var(--panel) 94%, var(--brass) 6%); }
+.data td.go { color: var(--brass-hi); font-weight: 600; font-size: 13.5px; text-align: right; }
+.glossary { margin-top: 1.1rem; border-top: 1px solid var(--line-soft); padding-top: .8rem; }
+.glossary summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+.glossary dl { margin: .8rem 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .6rem 1.4rem; }
+.glossary dl > div { display: grid; grid-template-columns: 5.6rem 1fr; gap: .6rem; }
+.glossary dt { font: 600 15px/1.3 var(--num); color: var(--brass-hi); }
+.glossary dd { margin: 0; font-size: 14px; color: var(--muted); }
+.glossary dd b { color: var(--text); font-weight: 600; }
+@media (max-width: 640px) { .hide-sm { display: none; } }
 
 /* ---------- toasts ---------- */
 .toasts { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 1000; display: grid; gap: 8px; pointer-events: none; }

@@ -4,11 +4,11 @@ Private online poker for a home game. It plays like PokerNow (share a link, appr
 
 ## What it does
 
-**Home page.** With a club, the home page is the club: your balance, the tables running now, every member's balance, credit limit and net from play, and the ledger of every chip movement. Managers add chips, set credit limits and settle up from there (on a phone, tap a member). Start a game opens as a pop-out.
+**One club, in dollars and cents.** The site is a single club, The Aquarium, and every account is in it. All amounts are dollars and cents, down to $0.01 (blinds of $0.10/$0.25 work). The home page is the club: your balance, the games running now, every member's balance, credit limit and net from play, the ledger of every movement, and all-time stats. Admins add to or take from balances, set credit limits and settle up from there (on a phone, tap a member).
 
-**Start a game.** One pop-out sets everything: where the game is (a club, or a private table), the format, stakes and seats, the clock, bomb pots, running it, and seating. It remembers your last game, so next week is one click.
+**Start a game.** Admins open games from a pop-out that sets the format, stakes and seats, the clock, bomb pots, running it, and seating. It remembers the last game, so next week is one click.
 
-**Format.** No Limit Hold'em, Pot Limit Omaha (4 cards) and PLO5, played as a list of steps that repeats: each step is one game for one orbit or a set number of hands, on one board or two. For example one orbit of PLO, then 10 hands of hold'em on a double board, then back to PLO. Quick picks cover the usual mixes. Up to 10 seats; the seat limit drops when the deck can't deal everyone (9 with PLO5, 8 with PLO5 on two boards).
+**Format.** No Limit Hold'em, Pot Limit Omaha (4 cards) and PLO5, played as a list of steps that repeats: each step is one game for a number of orbits (1 to 50) or a number of hands (1 to 500), on one board or two. For example 2 orbits of PLO, then 10 hands of hold'em on a double board, then back to PLO. An orbit ends when the button has gone around the table once. Quick picks cover the usual mixes. Up to 10 seats; the seat limit drops when the deck can't deal everyone (9 with PLO5, 8 with PLO5 on two boards).
 
 **Double board.** Two boards are dealt, board 1 then board 2 on each street, and every pot is split between them. It can be set per format step and for bomb pots, and it works with running it more than once (two boards per run).
 
@@ -20,13 +20,19 @@ Private online poker for a home game. It plays like PokerNow (share a link, appr
 
 **Time.** Seconds per decision, a time bank per player, and a game length. A table that deals on its own starts the clock with its first hand. When the game length runs out, the hand in progress finishes and everyone is cashed out. The host can add time or remove the limit. Players who run out of time are checked or folded and sat out until they click "I'm back".
 
-**Table ledger.** Buy-ins, cash-outs, current stacks and net for everyone who played, a "settle up" list with the fewest payments that square everyone, and CSV download.
+**In-game ledger.** Buy-ins, cash-outs, current stack, net, hands played, VPIP, PFR and aggression for everyone who played, and CSV download. Pick a player for their sheet: money, every stat, and their biggest wins and losses, each one a click from the replayer.
 
-**Clubs.** Members hold a chip balance across games. Managers add or remove chips with a note, set a credit limit per member (how far below zero they may buy in), record settlements, approve new members, and choose whether members can see everyone's balance and send chips to each other. Club tables seat members straight from their balance and pay back into it when they stand up, so games run without a manager present. Every movement is a ledger entry with the balance after it, downloadable as CSV.
+**Live stats.** VPIP, PFR, 3-bet, fold to 3-bet, ATS (attempt to steal), fold to steal, AF and AFq (aggression), c-bet, fold to c-bet, WTSD, W$SD, WWSF, net and bb/100, updated after every hand. They can be shown for this game or all games in the club, for every game type or one of them. Each seat shows VPIP / PFR / AF and the hands behind them for the game being played (Look and feel turns this off or switches it to all games). Bomb pots have no preflop betting, so they only count toward the numbers after the flop. Members see how everyone plays; other members' results follow the club's ledger setting.
+
+**Replayer.** Every hand can be replayed step by step after it ends: blinds, each action, each street and run as it was dealt, and the result, with play, step and a slider. The hand list sorts by newest, biggest pots, or anyone's biggest wins and losses (yours by default). The replayer shows cards the way the hand history does: your own, cards shown at showdown, and every card once that hand's seed is revealed.
+
+**Club ledger.** Members hold a balance across games. Admins add or take money with a note, set a credit limit per member (how far below zero they may buy in), record settlements, and choose whether members can see everyone's balance and send money to each other. Tables seat members straight from their balance and pay back into it when they stand up, so games run without an admin present. Every movement is a ledger entry with the balance after it, downloadable as CSV.
 
 **Look and feel.** Felt color (the host sets the default, each player can override it), four-color deck, large-index or classic card faces, five card backs, a turn sound, and a readout of what your hand makes. These are saved per browser.
 
 **Hand history.** Every hand with its cards, results and actions, plus the full log and ledger as downloads.
+
+**Any screen.** The table fits laptops, big monitors, tablets and phones held either way. On a phone on its side the controls move to a column at the right so the table keeps its height; on big monitors the bars grow with the table.
 
 ## Proving the shuffle
 
@@ -81,7 +87,7 @@ Serve it over HTTPS (Render and Fly do this automatically). Settings come from e
 The Aquarium is invite only. Nobody can see a table, a club or the lobby without an account, and an account can only be made from an invite link.
 
 - **The owner.** When the site has no owner, the server prints a one-time setup link in its log at every start (on Render: the service's Logs tab). Opening it creates the owner's account, or makes an existing account the owner.
-- **Admins.** The owner makes and removes admins on the People page. Admins and the owner invite people by email, optionally straight into a club, and send members password reset links. Only the owner changes admins or turns someone's access off (that signs them out everywhere; their balances stay as they are).
+- **Admins.** The owner makes and removes admins on the People page. Admins and the owner invite people by email (they join the club straight away), start games, look after the club ledger and send members password reset links. Only the owner changes admins or turns someone's access off (that signs them out everywhere; their balances stay as they are).
 - **Invite links** work once, only for the email address they were sent to, and expire after 1 to 30 days. The invitee picks their own username and password. An admin can send a fresh link (the old one stops working) or cancel it.
 
 **Sending the emails.** With these two settings the site emails invites and reset links from your Gmail:
@@ -99,6 +105,8 @@ A forgotten owner password can also be reset on the server itself:
 node scripts/reset-password.js <username> <new password>
 ```
 
+**Moving to one club.** The first start of this version turns an older site into the single club: the owner's club (or the oldest one) becomes The Aquarium (renamed, which Club settings can change), every account becomes a member, and anyone who managed it becomes an admin. A club kept in whole chips moves to dollars with 1 chip = $1.00; games still running in chips are ended first, so everyone's chips go back to their balance. Older games keep showing the chips they were played with.
+
 ## Backups
 
 Everything lives in the data folder: `db.json` (accounts, clubs, club ledgers, table settings and table ledgers), `hands/` (one file per table, every hand with its seed and cards) and `logs/`. Copy the folder to back it up. If the server restarts during a hand, that hand is cancelled, stacks go back to where they were when it started, and seated players are set to sitting out until they return.
@@ -113,7 +121,7 @@ The data folder can be handed from one running server to another, for example to
 npm test
 ```
 
-43 tests: hand rankings including the Omaha two-card rule; betting rules (heads-up order, incomplete all-in raises, pot-limit maximums, side pots, uncalled bets); the run-it vote (lowest vote, once wins straight away, missing votes, cards face down while voting); double board pot splits and double board run several times; 6,000 random hands across all three games, on one board or two, checking that chips are conserved and every card can be rebuilt from the seed; full games against a running server with bot players covering approvals, rebuys, the format steps, double board bomb pots, multi-run all-ins, time limits and browser-side verification of every hand; the club flow with credit limits, buy-ins, cash-outs and settlements; invite-only access (refused sign-ups, the owner link, email-bound single-use invites, roles, password resets, turning access off, a failed email); and moving the data to a new server.
+55 tests: hand rankings including the Omaha two-card rule; betting rules (heads-up order, incomplete all-in raises, pot-limit maximums, side pots, uncalled bets); the run-it vote (lowest vote, once wins straight away, missing votes, cards face down while voting); double board pot splits and double board run several times; 6,000 random hands across all three games, on one board or two, checking that chips are conserved and every card can be rebuilt from the seed; full games against a running server with bot players covering approvals, rebuys, the format steps, double board bomb pots, multi-run all-ins, time limits and browser-side verification of every hand; the club flow with credit limits, buy-ins, cash-outs and settlements; the move to one club in dollars and cents; every stat on scripted hands and on 60 bot-played hands (hands, percentages in range, results matching the ledger); the replayer on scripted and bot-played hands (money adds up at every step and ends on the real stacks); format steps by orbits and by hands; invite-only access (refused sign-ups, the owner link, email-bound single-use invites, roles, password resets, turning access off, a failed email); and moving the data to a new server.
 
 ## Layout
 
@@ -121,13 +129,14 @@ npm test
 server/        Express + Socket.io server
   engine/      one hand of poker (betting, pots, runs, showdown)
   table.js     seats, host controls, timers, ledger, commit and reveal
-  clubs.js     club balances, credits, settlements, transfers
-shared/        code used by both server and browser: cards, hand evaluator, fairness
-public/        the web app: home (club balances and ledger), start a game, table, verifier
+  clubs.js     the club: balances, credits, settlements, transfers
+  stats.js     player stats from hand records
+shared/        code used by both server and browser: cards, hand evaluator, fairness, money, replayer steps
+public/        the web app: home (club balances, ledger and stats), start a game, table, verifier
 scripts/       maintenance scripts
 test/          automated tests
 ```
 
 ## Not included yet
 
-Tournaments, straddles, antes, a hand replayer and player statistics.
+Tournaments, straddles, antes and voice chat.

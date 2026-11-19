@@ -82,20 +82,21 @@ test('an existing account can claim the owner setup link (sites that had account
   await s1.close();
 });
 
-test('admins invite by email; the link works once, for that email, and can add the person to a club', async () => {
-  const club = await call('POST', '/api/clubs', { name: 'The Aquarium' }, owner.token);
-  const inv = await call('POST', '/api/admin/invites', { email: 'Omar@Example.com', name: 'Omar', clubId: club.id, days: 7 }, owner.token);
+test('admins invite by email; the link works once, for that email, and puts the person in the club', async () => {
+  assert.match((await call('POST', '/api/clubs', { name: 'Another club' }, owner.token)).error, /only club/, 'one club only');
+  const ownerMe = await call('GET', '/api/me', null, owner.token);
+  assert.deepEqual(ownerMe.clubs.map((c) => [c.name, c.role, c.decimals]), [['The Aquarium', 'owner', 2]], 'the owner owns The Aquarium, in dollars and cents');
+  const inv = await call('POST', '/api/admin/invites', { email: 'Omar@Example.com', name: 'Omar', days: 7 }, owner.token);
   assert.equal(inv.status, 200);
   assert.equal(inv.sent, true);
   const mail = sent.at(-1);
   assert.equal(mail.to, 'omar@example.com');
   assert.match(mail.subject, /Tamer invited you to The Aquarium/);
   assert.ok(mail.text.includes(inv.link) && mail.html.includes(inv.link), 'the email carries the link');
-  assert.match(mail.text, /to the club “The Aquarium”/);
   assert.match(inv.link, /\/invite\/[0-9a-f]{64}$/);
 
   const info = await call('GET', `/api/links/${tok(inv.link)}`);
-  assert.deepEqual([info.kind, info.email, info.invitedBy, info.club, info.name], ['join', 'omar@example.com', 'Tamer', 'The Aquarium', 'Omar']);
+  assert.deepEqual([info.kind, info.email, info.invitedBy, info.name], ['join', 'omar@example.com', 'Tamer', 'Omar']);
   assert.match((await call('POST', `/api/links/${tok(inv.link)}`, { username: 'o', password: 'secret123' })).error, /Username/);
   const omar = await call('POST', `/api/links/${tok(inv.link)}`, { username: 'omar', password: 'secret123', name: 'Omar', email: 'someone-else@example.com' });
   assert.equal(omar.status, 200);
@@ -103,14 +104,15 @@ test('admins invite by email; the link works once, for that email, and can add t
   assert.equal(omar.user.role, 'member');
   assert.equal((await call('POST', `/api/links/${tok(inv.link)}`, { username: 'omar2', password: 'secret123' })).status, 410, 'works once');
   const me = await call('GET', '/api/me', null, omar.token);
-  assert.deepEqual(me.clubs.map((c) => [c.name, c.status]), [['The Aquarium', 'active']], 'joined the club straight away');
+  assert.deepEqual(me.clubs.map((c) => [c.name, c.status, c.role]), [['The Aquarium', 'active', 'member']], 'joined the club straight away');
+  assert.equal(me.clubId, ownerMe.clubId);
 
   assert.match((await call('POST', '/api/admin/invites', { email: 'omar@example.com' }, owner.token)).error, /already has an account/);
   assert.match((await call('POST', '/api/admin/invites', { email: 'not an email' }, owner.token)).error, /valid email/);
   assert.equal((await call('POST', '/api/admin/invites', { email: 'lina@example.com' }, omar.token)).status, 403, 'members cannot invite');
   const people = await call('GET', '/api/admin/people', null, owner.token);
   const row = people.invites.find((i) => i.email === 'omar@example.com');
-  assert.deepEqual([row.status, row.usedBy, row.createdBy, row.club], ['used', 'Omar', 'Tamer', 'The Aquarium']);
+  assert.deepEqual([row.status, row.usedBy, row.createdBy], ['used', 'Omar', 'Tamer']);
   assert.equal(people.users.find((u) => u.username === 'omar').invitedBy, 'Tamer');
   assert.deepEqual(people.mail, { on: true, from: 'tamer@gmail.example' });
 });
@@ -153,7 +155,10 @@ test('the owner makes admins; admins invite and reset members; only the owner ma
   const idOf = (u) => people.users.find((x) => x.username === u).id;
   assert.equal((await call('POST', `/api/admin/users/${idOf('rami')}/role`, { role: 'admin' }, omar.token)).status, 403);
   assert.equal((await call('POST', `/api/admin/users/${idOf('omar')}/role`, { role: 'admin' }, owner.token)).user.role, 'admin');
-  assert.equal((await call('GET', '/api/me', null, omar.token)).user.role, 'admin');
+  const omarMe = await call('GET', '/api/me', null, omar.token);
+  assert.equal(omarMe.user.role, 'admin');
+  assert.equal(omarMe.clubs[0].role, 'manager', 'admins manage the club ledger');
+  assert.equal(srv.store.data.clubs[omarMe.clubId].members[idOf('omar')].role, 'manager');
 
   // an admin invites
   const inv = await call('POST', '/api/admin/invites', { email: 'nadia@example.com', name: 'Nadia' }, omar.token);
@@ -188,9 +193,14 @@ test('the owner makes admins; admins invite and reset members; only the owner ma
   assert.equal((await login('rami', 'brand-new-pass')).status, 200);
   assert.equal((await call('POST', `/api/admin/users/${idOf('timzzz17')}/access`, { enabled: false }, owner.token)).status, 400);
 
-  // demoted admins lose admin powers
+  // demoted admins lose admin powers, the club ones too, and keep them after a restart
   await call('POST', `/api/admin/users/${idOf('omar')}/role`, { role: 'member' }, owner.token);
   assert.equal((await call('POST', '/api/admin/invites', { email: 'zaid@example.com' }, omar.token)).status, 403);
+  assert.equal((await call('GET', '/api/me', null, omar.token)).clubs[0].role, 'member');
+  assert.match((await call('POST', '/api/tables', { name: 'Omar game' }, omar.token)).error, /Only admins/);
+  srv.store.flush();
+  const again = createServer({ dataDir: dir, mailer: null });
+  assert.equal(again.auth.roleOf(again.auth.users[idOf('omar')]), 'member', 'a restart does not make a former manager an admin again');
 });
 
 test('sign-ins from before the site was invite only no longer work', async () => {

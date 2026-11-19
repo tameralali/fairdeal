@@ -1,5 +1,6 @@
 // REST client, sign-in and chip formatting.
 import { sealSVG } from './seal.js';
+import { fmtMoney, parseMoney, moneyInput } from '/shared/money.js';
 
 const KEY = 'fd:token';
 
@@ -90,19 +91,7 @@ export function gate() {
   });
 }
 
-export function fmtChips(a, decimals = 0) {
-  if (a === null || a === undefined || Number.isNaN(a)) return '';
-  const v = decimals ? a / 100 : a;
-  return v.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
-}
-
-export function toInput(a, decimals = 0) {
-  if (a === null || a === undefined) return '';
-  return decimals ? (a / 100).toFixed(2) : String(a);
-}
-
-export function parseChips(str, decimals = 0) {
-  const v = Number(String(str ?? '').replace(/[,\s]/g, ''));
-  if (!Number.isFinite(v)) return NaN;
-  return Math.round(decimals ? v * 100 : v);
-}
+// Ledgers keep the cents ($25.00) so amounts line up; see /shared/money.js.
+export function fmtChips(a, decimals = 2) { return fmtMoney(a, decimals, 'always'); }
+export function toInput(a, decimals = 2) { return moneyInput(a, decimals); }
+export function parseChips(str, decimals = 2) { return parseMoney(str, decimals); }

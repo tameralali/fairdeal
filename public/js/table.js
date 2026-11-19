@@ -7,6 +7,7 @@ import { bestHand } from '/shared/evaluator.js';
 import { GAME_TYPES } from '/shared/cards.js';
 import { app, emit, fmt, inp, parse, gameShort, now } from './table-core.js';
 import * as D from './table-dialogs.js';
+import * as S from './table-stats.js';
 import { boardName, stepLabel } from './game-form.js';
 
 import { BRAND_HEX } from './api.js';
@@ -59,7 +60,7 @@ function connect() {
   socket.on('toast', (t) => toast(t.text));
   socket.on('request', (r) => {
     chime('request');
-    toast(`${r.name} ${r.type === 'seat' ? 'asked for a seat' : 'asked to add chips'} (${r.amount})`);
+    toast(`${r.name} ${r.type === 'seat' ? 'asked for a seat' : 'asked to add chips'} (${fmt(r.amount)})`);
   });
   socket.on('hands:revealed', ({ through }) => app.fair.onRevealed(through, fetchRecord));
 }
@@ -108,18 +109,21 @@ function onVerified(n, res) {
 // ---------- layout ----------
 function geometry(n, portrait) {
   const P = portrait
-    ? { cy: 48.5, px: 39, py: 43, bx: 24, by: 29.5, dx: 30.5, dy: 35.5 }
-    : { cy: 47, px: 43.5, py: 40, bx: 29.5, by: 23.5, dx: 36, dy: 29.5 };
+    ? { cy: 47.5, px: 39, py: 41.5, bx: 21, by: 29, k: 0.12 }
+    : { cy: 47, px: 43.5, py: 39, bx: 29.5, by: 23.5, k: 0.3 };
   return Array.from({ length: n }, (_, i) => {
     const t = ((90 + (i * 360) / n) * Math.PI) / 180;
     const c = Math.cos(t);
     const s = Math.sin(t);
-    const td = t + (portrait ? 0.22 : 0.15);
+    // seats at the top and bottom hold their cards toward the middle, so their chips sit further in
+    const f = 1 - P.k * s * s;
+    const x = 50 + P.px * c;
     return {
-      x: 50 + P.px * c, y: P.cy + P.py * s,
-      bx: 50 + P.bx * c, by: P.cy + P.by * s,
-      dx: 50 + P.dx * Math.cos(td), dy: P.cy + P.dy * Math.sin(td),
+      x, y: P.cy + P.py * s,
+      bx: 50 + P.bx * c, by: P.cy + P.by * s * f,
       upper: s < -0.25,
+      // which side of the plate faces the middle: the dealer button goes there, clear of the cards
+      inner: x < 45 ? 'r' : 'l',
     };
   });
 }
@@ -130,7 +134,8 @@ function resize() {
   if (!w || !h) return;
   const portrait = w / h < 0.95;
   const aspect = portrait ? 0.74 : 1.72;
-  let W = Math.min(w * 0.985, h * 0.985 * aspect);
+  // a little room above and below for the action tags and what my hand makes
+  let W = Math.min(w * 0.985, h * 0.955 * aspect);
   let H = W / aspect;
   els.area.style.width = W + 'px';
   els.area.style.height = H + 'px';
@@ -164,7 +169,12 @@ function renderTop(s) {
     const r = t.rotation;
     const cur = stepLabel({ game: r.current, doubleBoard: r.currentDouble });
     const next = stepLabel({ game: r.next, doubleBoard: r.nextDouble });
-    rot = r.handsLeft > 0 ? `${cur} for ${r.handsLeft} more hand${r.handsLeft === 1 ? '' : 's'}, then ${next}` : `${next} from the next hand`;
+    const more = (k) => `${k} more hand${k === 1 ? '' : 's'}`;
+    if (r.unit === 'orbits' && r.count > 1) {
+      rot = r.lastOrbit
+        ? (r.handsLeft > 0 ? `${cur}, last orbit of ${r.count}: ${more(r.handsLeft)}, then ${next}` : `${next} from the next hand`)
+        : `${cur}, orbit ${r.orbit} of ${r.count}, then ${next}`;
+    } else rot = r.handsLeft > 0 ? `${cur} for ${more(r.handsLeft)}, then ${next}` : `${next} from the next hand`;
   }
   let bomb = '';
   if (t.bombNext) bomb = '<span class="pill brass">Bomb pot next hand</span>';
@@ -182,8 +192,8 @@ function renderTop(s) {
   const f = s.fairness;
   els.top.innerHTML = `
     <span class="conn ${app.connected ? '' : 'off'}" title="${app.connected ? 'Connected' : 'Reconnecting'}"></span>
-    <a class="wordmark" href="/" title="Lobby">${sealSVG(BRAND_HEX, 26, 'The Aquarium')}<span>The <b>Aquarium</b></span></a>
-    <div class="tb-title"><strong>${esc(t.name)}</strong>${t.clubId ? `<a href="/club/${esc(t.clubId)}">${esc(t.clubName || 'Club')}</a>` : ''}</div>
+    <a class="wordmark" href="/" title="Back to the club">${sealSVG(BRAND_HEX, 26, 'The Aquarium')}<span>The <b>Aquarium</b></span></a>
+    <div class="tb-title"><strong>${esc(t.name)}</strong><a href="/">${esc(t.clubName || 'The Aquarium')}</a></div>
     <div class="tb-game">
       <span class="pill brass" title="${esc(GAME_TYPES[game]?.name || '')}">${esc(gameShort(game))}</span>${dbNow ? '<span class="pill soft" title="Two boards, each pot split between them">Double board</span>' : ''}
       <span class="pill num">${fmt(st.smallBlind)}/${fmt(st.bigBlind)}</span>
@@ -197,8 +207,9 @@ function renderTop(s) {
       ${reqs ? `<button class="btn primary small" data-open="requests">Requests <span class="count">${reqs}</span></button>` : ''}
       ${s.me.isHost ? '<button class="btn small sm-hide" data-open="options">Options</button>' : ''}
       <button class="btn small sm-hide" data-open="ledger">Ledger</button>
-      <button class="btn small sm-hide" data-open="hands">Hands</button>
-      <button class="btn small sm-hide" data-open="look">Look</button>
+      <button class="btn small sm-hide" data-open="stats">Stats</button>
+      <button class="btn small sm-hide md-hide" data-open="hands">Hands</button>
+      <button class="btn small sm-hide md-hide" data-open="look">Look</button>
       <button class="btn small sm-hide ${els.drawer.classList.contains('collapsed') ? '' : 'primary'}" data-open="log">Log</button>
       <button class="btn small menu-btn" data-open="menu">Menu</button>
     </div>`;
@@ -293,21 +304,19 @@ function renderTable(s) {
       }
     }
     const stack = p ? p.stack : info.stack;
+    const dealer = h && h.buttonSeat === seat ? `<span class="dbtn d${g.inner}" title="Dealer" aria-label="Dealer">D</span>` : '';
     seats += `<div class="${cls}" style="${pos}" ${s.me.isHost && !isMe ? `data-player="${esc(info.userId)}" title="Host actions for ${esc(info.name)}"` : ''}>
       ${hole}
       <div class="plate">
-        ${timer}
+        ${timer}${dealer}
         <div class="nm">${info.connected ? '' : '<span class="dot" title="Disconnected"></span>'}<span>${esc(info.name)}</span>${info.isHost ? '<span class="host-mark" title="Host">&#9733;</span>' : ''}</div>
         <div class="st">${fmt(stack)}${info.pendingChips ? ` <small class="muted">+${fmt(info.pendingChips)}</small>` : ''}</div>
+        ${S.hudHTML(s, info.userId)}
         ${tag ? `<div class="tag ${tagCls}">${esc(tag)}</div>` : ''}
       </div>
       ${strength}
     </div>`;
     if (p && p.bet > 0) chips += `<div class="bet" style="left:${g.bx.toFixed(2)}%;top:${g.by.toFixed(2)}%"><span class="chip"></span>${fmt(p.bet)}</div>`;
-  }
-  if (h && h.buttonSeat !== null && h.buttonSeat !== undefined && h.buttonSeat < n) {
-    const g = geo[(h.buttonSeat - rot + n) % n];
-    chips += `<div class="dealer" style="left:${g.dx.toFixed(2)}%;top:${g.dy.toFixed(2)}%" title="Dealer">D</div>`;
   }
   els.seats.innerHTML = seats;
   els.chips.innerHTML = chips;
@@ -345,7 +354,7 @@ function centerHTML(s, R) {
   const cols = stacked ? 'auto auto' : `${runs > 1 ? 'auto ' : ''}repeat(${bpr}, auto)`;
   let below = '';
   if (h.phase === 'done' && h.results) {
-    below = `<div class="results">${resultLines(h).map((l) => `<div>${l}</div>`).join('')}</div>`;
+    below = `<div class="results">${resultLines(h).map((l) => `<div>${l}</div>`).join('')}</div><button type="button" class="replay-btn" data-replay="${h.number}">Replay hand #${h.number}</button>`;
     if (t.waiting && t.waiting !== 'Waiting for players') below += `<div class="waiting"><small>${esc(t.waiting)}</small></div>`;
   } else {
     below = `<div class="pot"><span>Pot ${fmt(h.potTotal)}</span></div>`;
@@ -644,9 +653,14 @@ function bindEvents() {
         render();
         return;
       }
-      ({ options: D.hostDialog, ledger: D.ledgerDialog, hands: D.handsDialog, look: D.lookDialog, fair: D.fairDialog, requests: D.requestsDialog, menu: D.menuDialog })[k]?.();
+      ({ options: D.hostDialog, ledger: D.ledgerDialog, stats: S.statsDialog, hands: D.handsDialog, look: D.lookDialog, fair: D.fairDialog, requests: D.requestsDialog, menu: D.menuDialog })[k]?.();
       return;
     }
+    if (e.target.closest('dialog')) return; // dialogs handle their own buttons
+    const rp = e.target.closest('[data-replay]');
+    if (rp) return S.replayDialog(Number(rp.dataset.replay), { onDetails: (n) => D.handDetailDialog(n) });
+    const hud = e.target.closest('[data-stats]');
+    if (hud) return S.playerSheet(hud.dataset.stats);
     const player = e.target.closest('[data-player]');
     if (player) return D.playerDialog(player.dataset.player);
     const a = e.target.closest('[data-act]');

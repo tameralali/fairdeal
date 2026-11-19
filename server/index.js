@@ -20,6 +20,8 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   const ownerSetupToken = auth.ownerSetupLink();
   const clubs = new Clubs(store, auth);
   const tables = new TableManager({ store, auth, clubs });
+  // one club, The Aquarium: every account is in it and amounts are in dollars and cents
+  clubs.ensureMain({ endTables: (id) => tables.endTablesNotIn(id, 2) });
 
   const app = express();
   app.disable('x-powered-by');
@@ -89,7 +91,7 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     return { token: r.token, user: auth.publicUser(r.user) };
   }, { needUser: false }));
   app.post('/api/auth/logout', api((req) => { auth.logout(tokenOf(req)); return { ok: true }; }));
-  app.get('/api/me', api((req, user) => ({ user: auth.publicUser(user), clubs: clubs.forUser(user.id), tables: tables.forUser(user.id) })));
+  app.get('/api/me', api((req, user) => ({ user: auth.publicUser(user), clubId: clubs.mainId(), clubs: clubs.forUser(user.id), tables: [] })));
   app.patch('/api/me', api((req, user) => ({ user: auth.publicUser(auth.rename(user, req.body.name)) })));
 
   // invite, owner setup and password reset links (no sign-in needed: the link is the key)
@@ -100,8 +102,8 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   }, { needUser: false }));
   app.post('/api/links/:token', api((req) => {
     const r = auth.acceptLink(req.params.token, req.body || {}, req.ip);
-    if (r.invite.kind === 'join' && r.invite.clubId) clubs.addInvited(r.invite.clubId, r.user.id);
-    return { token: r.token, user: auth.publicUser(r.user), kind: r.invite.kind, clubId: r.invite.clubId || null };
+    clubs.join(r.user.id); // everyone with an account is in the club
+    return { token: r.token, user: auth.publicUser(r.user), kind: r.invite.kind, clubId: clubs.mainId() };
   }, { needUser: false }));
 
   // ----- admin: people, invites, roles -----
@@ -124,20 +126,23 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   }
   const sendInvite = (req, user, r) => {
     const link = linkUrl(req, 'join', r.token);
-    const msg = inviteEmail({ link, inviter: user.name, club: r.invite.clubId ? clubName(r.invite.clubId) : null, name: r.invite.name, expiresAt: r.invite.expiresAt });
+    const msg = inviteEmail({ link, inviter: user.name, club: null, name: r.invite.name, expiresAt: r.invite.expiresAt });
     return deliver(r.invite, r.invite.email, msg).then((m) => ({ ...m, link, email: r.invite.email, expiresAt: r.invite.expiresAt }));
   };
   app.get('/api/admin/people', api((req, user) => ({
     ...auth.people(user, clubName), me: auth.publicUser(user), mail: { on: !!mailer, from: mailer?.address || null },
   })));
   app.post('/api/admin/invites', api(async (req, user) => {
-    const { email, name, clubId, days } = req.body || {};
-    if (clubId && !clubs.isManager(clubId, user.id)) throw new Error('You can only add people to clubs you manage');
-    return sendInvite(req, user, auth.createInvite(user, { email, name, clubId, days }));
+    const { email, name, days } = req.body || {};
+    return sendInvite(req, user, auth.createInvite(user, { email, name, clubId: null, days }));
   }));
   app.post('/api/admin/invites/:id/renew', api(async (req, user) => sendInvite(req, user, auth.renewInvite(user, req.params.id, req.body?.days))));
   app.post('/api/admin/invites/:id/revoke', api((req, user) => { auth.revokeInvite(user, req.params.id); return { ok: true }; }));
-  app.post('/api/admin/users/:id/role', api((req, user) => ({ user: auth.publicUser(auth.setRole(user, req.params.id, req.body?.role)) })));
+  app.post('/api/admin/users/:id/role', api((req, user) => {
+    const u = auth.setRole(user, req.params.id, req.body?.role);
+    clubs.join(u.id); // admins manage the club ledger
+    return { user: auth.publicUser(u) };
+  }));
   app.post('/api/admin/users/:id/access', api((req, user) => {
     const u = auth.setAccess(user, req.params.id, !!req.body?.enabled);
     if (u.disabled) for (const sock of io.sockets.sockets.values()) if (sock.data.user?.id === u.id) sock.disconnect(true);
@@ -178,6 +183,12 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   app.get('/api/clubs/invite/:code', api((req) => { const c = clubs.lookupInvite(req.params.code); return { id: c.id, name: c.name }; }));
   app.post('/api/clubs/join', api((req, user) => { const r = clubs.joinByCode(user, req.body.code); return { id: r.club.id, status: r.status }; }));
   app.get('/api/clubs/:id', api((req, user) => clubView(req.params.id, user)));
+  app.get('/api/clubs/:id/stats', api((req, user) => {
+    const v = clubs.view(req.params.id, user);
+    if (!v.myStatus || v.myStatus !== 'active') throw new Error('Not a member');
+    return { stats: tables.clubStats(req.params.id, user, { game: String(req.query.game || 'all'), seeAll: v.seeAll }) };
+  }));
+  app.get('/api/tables/:id/stats', api((req, user) => ({ stats: viewTable(req, user).statsView({ scope: String(req.query.scope || 'game'), game: String(req.query.game || 'all') }, user) })));
   app.patch('/api/clubs/:id', api((req, user) => { clubs.updateSettings(user, req.params.id, req.body || {}); return clubView(req.params.id, user); }));
   app.post('/api/clubs/:id/invite', api((req, user) => ({ inviteCode: clubs.regenerateInvite(user, req.params.id) })));
   app.post('/api/clubs/:id/tables', api((req, user) => ({ id: tables.create(user, { ...(req.body || {}), clubId: req.params.id }).id })));
@@ -239,6 +250,7 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     on('hands:list', () => ({ hands: T().handList(u.id) }));
     on('hand:get', (p) => ({ record: T().getRecord(p.handNumber, u.id) }));
     on('ledger:get', () => ({ ledger: T().ledgerSummary() }));
+    on('stats:get', (p) => ({ stats: T().statsView(p, u) }));
     on('host:decide', (p) => T().hostDecide(u, p.requestId, !!p.approve));
     on('host:settings', (p) => T().hostSettings(u, p.settings || {}));
     on('host:start', () => T().hostStart(u));

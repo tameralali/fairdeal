@@ -94,6 +94,8 @@ export class Hand {
     this.street = 'preflop';
     this.phase = 'init'; // betting | pending | rit | runout | done
     this.pending = null; // next-street | runout | showdown
+    this.actions = []; // every betting action, for hand history and player stats
+    this.posts = []; // blinds and bomb pot antes, for the replayer
     this.currentBet = 0;
     this.minRaise = bigBlind;
     this.lastAggressorId = null;
@@ -154,11 +156,12 @@ export class Hand {
         p.stack -= amt;
         p.committed += amt;
         if (p.stack === 0) p.allIn = true;
+        this.posts.push({ id: p.id, a: 'ante', amt, allIn: !!p.allIn });
         this.log(`${p.name} posts a bomb pot ante of ${this.fmt(amt)}${p.allIn ? ' and is all in' : ''}`);
       }
     } else {
-      this.postBlind(this.sbIdx, this.sb, 'small blind');
-      this.postBlind(this.bbIdx, this.bb, 'big blind');
+      this.postBlind(this.sbIdx, this.sb, 'small blind', 'sb');
+      this.postBlind(this.bbIdx, this.bb, 'big blind', 'bb');
       this.currentBet = this.bb;
       this.minRaise = this.bb;
     }
@@ -173,13 +176,14 @@ export class Hand {
     this.version++;
   }
 
-  postBlind(idx, amount, label) {
+  postBlind(idx, amount, label, a) {
     const p = this.players[idx];
     const amt = Math.min(p.stack, amount);
     p.stack -= amt;
     p.bet += amt;
     p.committed += amt;
     if (p.stack === 0) p.allIn = true;
+    this.posts.push({ id: p.id, a, amt, allIn: !!p.allIn });
     this.log(`${p.name} posts a ${label} of ${this.fmt(amt)}${p.allIn ? ' and is all in' : ''}`);
   }
 
@@ -293,6 +297,7 @@ export class Hand {
     const idx = this.actorIndex;
     const p = this.players[idx];
     let type = action.type;
+    let kind = type; // fold, check, call, bet or raise, as recorded
     if (type === 'call' && !legal.canCall) type = 'check';
     if (type === 'check' && !legal.canCheck) throw new Error('You cannot check, there is a bet to call');
     if ((type === 'bet' || type === 'raise' || type === 'allin') && !legal.canRaise) {
@@ -306,12 +311,14 @@ export class Hand {
         this.log(`${p.name} folds`);
         break;
       case 'check':
+        kind = 'check';
         p.hasActed = true;
         p.actedAtLevel = this.currentBet;
         p.lastAction = 'Check';
         this.log(`${p.name} checks`);
         break;
       case 'call': {
+        kind = 'call';
         const amt = legal.toCall;
         p.stack -= amt;
         p.bet += amt;
@@ -334,6 +341,7 @@ export class Hand {
         const add = to - p.bet;
         const raiseSize = to - this.currentBet;
         const wasBet = this.currentBet === 0;
+        kind = wasBet ? 'bet' : 'raise';
         p.stack -= add;
         p.bet = to;
         p.committed += add;
@@ -352,6 +360,7 @@ export class Hand {
       default:
         throw new Error('Unknown action');
     }
+    this.actions.push({ s: this.street, id: p.id, a: kind, to: p.bet, allIn: !!p.allIn });
     this.afterAction(idx);
     this.version++;
   }
@@ -654,6 +663,8 @@ export class Hand {
         placements: this.placements.map((t) => t.slice()),
       },
       runCount: this.runCount,
+      actions: this.actions.map((x) => ({ ...x })),
+      posts: this.posts.map((x) => ({ ...x })),
       results: this.results,
     };
   }

@@ -6,8 +6,11 @@ import { cardHTML, prefs, savePrefs, FELTS, BACKS } from './cards.js';
 import { sealSVG } from './seal.js';
 import { webCryptoAdapter } from '/shared/fairness.js';
 import { GAME_TYPES } from '/shared/cards.js';
-import { app, emit, fmt, parse, inp, gameShort, gameName } from './table-core.js';
-import { seg, bindSegs, formatEditorHTML, bindFormatEditor, readFormat, bombFieldsHTML, bindBombFields, readBomb, fitSeats, ritText, boardName } from './game-form.js';
+import { app, emit, fmt, fmtC, parse, inp, gameShort, gameName } from './table-core.js';
+import { seg, bindSegs, formatEditorHTML, bindFormatEditor, readFormat, formatProblem, bombFieldsHTML, bindBombFields, readBomb, fitSeats, ritText, boardName } from './game-form.js';
+import { statsDialog, playerSheet, replayDialog, afText } from './table-stats.js';
+import { canReplay } from '/shared/replay.js';
+import { fmtMoney } from '/shared/money.js';
 
 const wc = webCryptoAdapter();
 const open = {};
@@ -19,6 +22,14 @@ export function onState(s) {
 
 const val = (form, n) => form.elements.namedItem(n);
 const stepAttr = () => (app.dec ? '0.01' : '1');
+// an amount box: with a $ in front at tables played in dollars
+const amountBox = (name, value, placeholder = '') => {
+  const req = placeholder ? `placeholder="${esc(placeholder)}"` : 'required';
+  return app.dec
+    ? `<span class="money"><input name="${name}" type="text" inputmode="decimal" autocomplete="off" value="${esc(value)}" ${req}></span>`
+    : `<input name="${name}" type="number" inputmode="numeric" step="1" min="0" value="${esc(value)}" ${req}>`;
+};
+const availText = (s) => (s.table.clubId && s.me.clubAvailable !== null ? ` You have ${fmtC(Math.max(0, s.me.clubAvailable))} available in your balance, credit included.` : '');
 
 // ---------- seats & chips ----------
 export function seatDialog(seat) {
@@ -29,13 +40,13 @@ export function seatDialog(seat) {
   if (st.minBuyIn) def = Math.max(def, st.minBuyIn);
   if (st.maxBuyIn) def = Math.min(def, st.maxBuyIn);
   const range = st.minBuyIn || st.maxBuyIn ? `Buy-in ${st.minBuyIn ? fmt(st.minBuyIn) : 'any'} to ${st.maxBuyIn ? fmt(st.maxBuyIn) : 'any'}.` : '';
-  const avail = club && s.me.clubAvailable !== null ? ` You have ${fmt(Math.max(0, s.me.clubAvailable))} club chips available.` : '';
+  const avail = club ? availText(s) : '';
   const auto = s.me.isHost || st.autoApprove;
   const dlg = dialog({
     title: `Sit in seat ${seat + 1}`, className: 'narrow',
     body: `<form class="stack">
       <label><span class="lbl">Name at this table</span><input name="nick" type="text" maxlength="24" value="${esc(app.me?.name || '')}" required></label>
-      <label><span class="lbl">Buy-in</span><input name="buyIn" type="number" inputmode="decimal" step="${stepAttr()}" min="0" value="${inp(def)}" required></label>
+      <label><span class="lbl">Buy-in</span>${amountBox('buyIn', inp(def))}</label>
       <p class="hint">${esc(range + avail)}${auto ? '' : ' The host approves seat requests.'}</p>
       <p class="bad hidden" data-err></p>
       <button class="btn primary" type="submit">${auto ? 'Sit down' : 'Request seat'}</button>
@@ -64,11 +75,11 @@ export function chipsDialog() {
   const room = st.maxBuyIn ? Math.max(0, st.maxBuyIn - seat.stack - (seat.pendingChips || 0)) : null;
   const def = room !== null ? room : st.bigBlind * 100;
   const auto = s.me.isHost || st.autoApprove;
-  const club = s.table.clubId && s.me.clubAvailable !== null ? ` You have ${fmt(Math.max(0, s.me.clubAvailable))} club chips available.` : '';
+  const club = availText(s);
   const dlg = dialog({
     title: 'Add chips', className: 'narrow',
     body: `<form class="stack">
-      <label><span class="lbl">Amount</span><input name="amount" type="number" inputmode="decimal" step="${stepAttr()}" value="${inp(def)}" required></label>
+      <label><span class="lbl">Amount</span>${amountBox('amount', inp(def))}</label>
       <p class="hint">${room !== null ? `You can add up to ${fmt(room)} (maximum stack ${fmt(st.maxBuyIn)}).` : ''}${esc(club)} Chips added during a hand arrive when it ends.${auto ? '' : ' The host approves chip requests.'}</p>
       <button class="btn primary" type="submit">${auto ? 'Add chips' : 'Request chips'}</button>
     </form>`,
@@ -165,10 +176,10 @@ export function hostDialog() {
           <p class="hint">An orbit ends when the button has gone around the table once. Changes apply from the next hand; changing which games are played, or their order, starts again from step 1.</p>
         </div>
         <div class="field-grid">
-          <label><span class="lbl">Small blind</span><input name="smallBlind" type="number" step="${stepAttr()}" min="0" value="${inp(st.smallBlind)}"></label>
-          <label><span class="lbl">Big blind</span><input name="bigBlind" type="number" step="${stepAttr()}" min="0" value="${inp(st.bigBlind)}"></label>
-          <label><span class="lbl">Minimum buy-in</span><input name="minBuyIn" type="number" step="${stepAttr()}" min="0" value="${st.minBuyIn ? inp(st.minBuyIn) : ''}" placeholder="Any"></label>
-          <label><span class="lbl">Maximum stack</span><input name="maxBuyIn" type="number" step="${stepAttr()}" min="0" value="${st.maxBuyIn ? inp(st.maxBuyIn) : ''}" placeholder="Any"></label>
+          <label><span class="lbl">Small blind</span>${amountBox('smallBlind', inp(st.smallBlind))}</label>
+          <label><span class="lbl">Big blind</span>${amountBox('bigBlind', inp(st.bigBlind))}</label>
+          <label><span class="lbl">Minimum buy-in</span>${amountBox('minBuyIn', st.minBuyIn ? inp(st.minBuyIn) : '', 'Any')}</label>
+          <label><span class="lbl">Maximum stack</span>${amountBox('maxBuyIn', st.maxBuyIn ? inp(st.maxBuyIn) : '', 'Any')}</label>
           <label><span class="lbl">Seats</span><select name="maxPlayers">${[2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => opt(n, n, st.maxPlayers)).join('')}</select></label>
         </div>
         <p class="hint" data-seat-hint></p>
@@ -208,7 +219,6 @@ export function hostDialog() {
           <p class="hint">Players can still pick their own felt under Look.</p>
         </div>
         <label class="check"><input type="checkbox" name="spectatorChat" ${st.spectatorChat ? 'checked' : ''}> Spectators can chat</label>
-        ${t.clubId ? '' : `<div><span class="lbl">Chip amounts</span>${seg('decimals', [[0, 'Whole chips'], [2, 'Two decimals (0.25/0.50)']], st.decimals)}<p class="hint">Can only change before anyone buys in.</p></div>`}
         <div class="row">
           ${t.status === 'waiting' ? '<button type="button" class="btn primary" data-now="start">Start the game</button>' : ''}
           ${t.status === 'running' ? (t.paused ? '<button type="button" class="btn" data-now="resume">Resume</button>' : '<button type="button" class="btn" data-now="pause">Pause after this hand</button>') : ''}
@@ -282,8 +292,8 @@ export function hostDialog() {
       format: readFormat(form),
       smallBlind: parse(val(form, 'smallBlind').value),
       bigBlind: parse(val(form, 'bigBlind').value),
-      minBuyIn: val(form, 'minBuyIn').value ? parse(val(form, 'minBuyIn').value) : 0,
-      maxBuyIn: val(form, 'maxBuyIn').value ? parse(val(form, 'maxBuyIn').value) : 0,
+      minBuyIn: val(form, 'minBuyIn').value.trim() ? parse(val(form, 'minBuyIn').value) : 0,
+      maxBuyIn: val(form, 'maxBuyIn').value.trim() ? parse(val(form, 'maxBuyIn').value) : 0,
       maxPlayers: num('maxPlayers'),
       autoApprove: val(form, 'autoApprove').checked,
       bombPot: readBomb(form),
@@ -295,8 +305,8 @@ export function hostDialog() {
       feltColor: val(form, 'feltColor').value,
       spectatorChat: val(form, 'spectatorChat').checked,
     };
-    const dec = val(form, 'decimals');
-    if (dec && Number(dec.value) !== st.decimals) settings.decimals = Number(dec.value);
+    const bad = formatProblem(settings.format);
+    if (bad) { toast(bad, 'error'); return; }
     const a = await emit('host:settings', { settings });
     if (a.ok) { toast('Settings saved'); dlg.close(); }
   });
@@ -321,33 +331,43 @@ function settleUp(rows) {
 }
 
 export async function ledgerDialog() {
-  const r = await emit('ledger:get');
+  const [r, sr] = await Promise.all([emit('ledger:get'), emit('stats:get', { scope: 'game', game: 'all' })]);
   if (!r.ok) return;
   const L = r.ledger;
+  const stats = new Map((sr.ok ? sr.stats.players : []).map((x) => [x.userId, x]));
   const rows = L.rows.slice().sort((a, b) => b.net - a.net);
   const tot = rows.reduce((a, x) => ({ buyIn: a.buyIn + x.buyIn, buyOut: a.buyOut + x.buyOut, stack: a.stack + x.stack, net: a.net + x.net }), { buyIn: 0, buyOut: 0, stack: 0, net: 0 });
-  const sign = (n) => `<span class="${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}">${n > 0 ? '+' : ''}${fmt(n)}</span>`;
+  const sign = (n) => `<span class="${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}">${n > 0 ? '+' : ''}${fmtC(n)}</span>`;
+  const p = (v) => (v === null || v === undefined ? '<span class="faint">-</span>' : Math.round(v));
   const transfers = settleUp(rows);
   const typeName = { buyin: 'Buy-in', cashout: 'Cash-out', adjust: 'Host adjustment' };
   const dlg = dialog({
     title: 'Ledger', className: 'wide',
     body: `
-      ${rows.length ? `<table class="data">
-        <thead><tr><th>Player</th><th class="n">Buy-ins</th><th class="n">Cash-outs</th><th class="n">Stack</th><th class="n">Net</th></tr></thead>
-        <tbody>${rows.map((x) => `<tr><td>${esc(x.name)}${x.seated ? '' : ' <span class="faint">(left)</span>'}</td><td class="n">${fmt(x.buyIn)}</td><td class="n">${fmt(x.buyOut)}</td><td class="n">${x.seated ? fmt(x.stack) : '<span class="faint">-</span>'}</td><td class="n">${sign(x.net)}</td></tr>`).join('')}
-        <tr class="total"><td>Total</td><td class="n">${fmt(tot.buyIn)}</td><td class="n">${fmt(tot.buyOut)}</td><td class="n">${fmt(tot.stack)}</td><td class="n">${sign(tot.net)}</td></tr></tbody>
-      </table>` : '<p class="muted">No buy-ins yet.</p>'}
-      ${L.clubId ? `<p class="hint">Buy-ins come out of club balances and cash-outs go back in. See the <a href="/club/${esc(L.clubId)}">club ledger</a> for balances and credit.</p>` : transfers.length ? `
+      ${rows.length ? `<div class="stats-scroll"><table class="data ledger-table">
+        <thead><tr><th class="who">Player</th><th class="n">Buy-ins</th><th class="n">Cash-outs</th><th class="n">Stack</th><th class="n">Net</th><th class="n">Hands</th><th class="n" title="Voluntarily put money in the pot">VPIP</th><th class="n" title="Preflop raise">PFR</th><th class="n" title="Aggression factor after the flop">AF</th><th></th></tr></thead>
+        <tbody>${rows.map((x) => {
+          const st = stats.get(x.userId);
+          return `<tr class="hand-row" data-player-sheet="${esc(x.userId)}" tabindex="0"><td class="who">${esc(x.name)}${x.seated ? '' : ' <span class="faint">(left)</span>'}</td><td class="n">${fmtC(x.buyIn)}</td><td class="n">${fmtC(x.buyOut)}</td><td class="n">${x.seated ? fmtC(x.stack) : '<span class="faint">-</span>'}</td><td class="n">${sign(x.net)}</td>
+            <td class="n">${st ? st.hands : 0}</td><td class="n">${p(st?.vpip)}</td><td class="n">${p(st?.pfr)}</td><td class="n">${st ? afText(st) : '<span class="faint">-</span>'}</td><td class="go">Details</td></tr>`;
+        }).join('')}
+        <tr class="total"><td>Total</td><td class="n">${fmtC(tot.buyIn)}</td><td class="n">${fmtC(tot.buyOut)}</td><td class="n">${fmtC(tot.stack)}</td><td class="n">${sign(tot.net)}</td><td colspan="5"></td></tr></tbody>
+      </table></div>
+      <p class="hint">Pick a player for their stats and biggest hands. Open Stats for every number.</p>` : '<p class="muted">No buy-ins yet.</p>'}
+      ${L.clubId ? `<p class="hint">Buy-ins come out of club balances and cash-outs go back in. See the <a href="/">club ledger</a> for balances and credit.</p>` : transfers.length ? `
         <h3 class="section-title">Settle up</h3>
         <p class="hint">The fewest payments that square everyone, based on the net column${app.state.table.status === 'ended' ? '' : ' right now'}.</p>
-        <table class="data"><tbody>${transfers.map((t) => `<tr><td>${esc(t.from)} pays ${esc(t.to)}</td><td class="n">${fmt(t.amt)}</td></tr>`).join('')}</tbody></table>` : ''}
+        <table class="data"><tbody>${transfers.map((t) => `<tr><td>${esc(t.from)} pays ${esc(t.to)}</td><td class="n">${fmtC(t.amt)}</td></tr>`).join('')}</tbody></table>` : ''}
       <details style="margin-top:1rem"><summary class="muted" style="cursor:pointer">Every entry (${L.entries.length})</summary>
-        <table class="data" style="margin-top:.5rem"><thead><tr><th>Time</th><th>Player</th><th>Type</th><th class="n">Amount</th><th>Note</th></tr></thead><tbody>
-        ${L.entries.slice().reverse().map((e) => `<tr><td class="muted">${new Date(e.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td><td>${esc(e.name)}</td><td>${typeName[e.type] || esc(e.type)}</td><td class="n">${fmt(e.amount)}</td><td class="muted">${esc(e.note || '')}</td></tr>`).join('')}
-        </tbody></table></details>`,
-    foot: '<button class="btn" data-csv>Download CSV</button><button class="btn primary" data-close>Done</button>',
+        <div class="stats-scroll"><table class="data" style="margin-top:.5rem"><thead><tr><th>Time</th><th>Player</th><th>Type</th><th class="n">Amount</th><th>Note</th></tr></thead><tbody>
+        ${L.entries.slice().reverse().map((e) => `<tr><td class="muted">${new Date(e.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td><td>${esc(e.name)}</td><td>${typeName[e.type] || esc(e.type)}</td><td class="n">${fmtC(e.amount)}</td><td class="muted">${esc(e.note || '')}</td></tr>`).join('')}
+        </tbody></table></div></details>`,
+    foot: '<button class="btn" data-csv>Download CSV</button><button class="btn" data-stats-open>Stats</button><button class="btn primary" data-close>Done</button>',
   });
   dlg.$('[data-csv]').addEventListener('click', () => api.download(`/api/tables/${app.tableId}/ledger.csv`, `ledger-${app.state.table.name.replace(/[^\w-]+/g, '-')}.csv`).catch((e) => toast(e.message, 'error')));
+  dlg.$('[data-stats-open]').addEventListener('click', () => statsDialog());
+  dlg.el.addEventListener('click', (e) => { const row = e.target.closest('[data-player-sheet]'); if (row) playerSheet(row.dataset.playerSheet); });
+  dlg.el.addEventListener('keydown', (e) => { const row = e.target.closest('[data-player-sheet]'); if (row && e.key === 'Enter') playerSheet(row.dataset.playerSheet); });
 }
 
 // ---------- hand history ----------
@@ -358,35 +378,89 @@ function badge(n, revealed) {
   return '<span class="vbadge wait">Not checked</span>';
 }
 
-export async function handsDialog() {
+const SORTS = [['new', 'Newest'], ['pot', 'Biggest pots'], ['won', 'Biggest wins'], ['lost', 'Biggest losses']];
+const PAGE = 150;
+
+// sort: new | pot | won | lost. player: whose wins and losses (defaults to you if you played).
+export async function handsDialog({ sort = 'new', player = null } = {}) {
   const r = await emit('hands:list');
   if (!r.ok) return;
+  const all = r.hands;
+  const me = app.state.me.userId;
+  const names = new Map();
+  for (const st of app.state.seats) if (st) names.set(st.userId, st.name);
+  const sr = await emit('stats:get', { scope: 'game', game: 'all' }, { quiet: true });
+  for (const x of sr.ok ? sr.stats.players : []) if (!names.has(x.userId)) names.set(x.userId, x.name);
+  const played = (id) => all.some((h) => h.nets[id] !== undefined);
+  let who = player || (played(me) ? me : [...names.keys()].find(played) || me);
+  let shown = PAGE;
   const dlg = dialog({ title: 'Hand history', className: 'wide', body: '' });
+  const ordered = () => {
+    let list = all.slice();
+    if (sort === 'pot') list.sort((a, b) => b.pot - a.pot || b.handNumber - a.handNumber);
+    if (sort === 'won' || sort === 'lost') {
+      list = list.filter((h) => (sort === 'won' ? h.nets[who] > 0 : h.nets[who] < 0));
+      list.sort((a, b) => (sort === 'won' ? b.nets[who] - a.nets[who] : a.nets[who] - b.nets[who]) || b.handNumber - a.handNumber);
+    }
+    return list;
+  };
   const showList = () => {
     dlg.$('h2').textContent = 'Hand history';
-    dlg.setBody(r.hands.length ? `<table class="data"><thead><tr><th>Hand</th><th>Time</th><th>Game</th><th>Won by</th><th class="n">Pot</th><th class="n">You</th><th>Deck check</th></tr></thead><tbody>
-      ${r.hands.map((x) => `<tr class="hand-row" data-hand="${x.handNumber}" tabindex="0">
-        <td class="num">#${x.handNumber}</td><td class="muted">${new Date(x.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-        <td>${esc(gameShort(x.gameType))}${x.isBomb ? ' bomb pot' : ''}${x.doubleBoard ? ', double board' : ''}${x.runCount > 1 ? `, ran ${x.runCount}×` : ''}</td>
-        <td>${x.winners.map(esc).join(', ')}</td><td class="n">${fmt(x.pot)}</td>
-        <td class="n">${x.myNet === null ? '<span class="faint">-</span>' : `<span class="${x.myNet > 0 ? 'pos' : x.myNet < 0 ? 'neg' : ''}">${x.myNet > 0 ? '+' : ''}${fmt(x.myNet)}</span>`}</td>
-        <td>${badge(x.handNumber, x.revealed)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No finished hands yet.</p>');
+    const list = ordered();
+    const whoName = who === me ? 'You' : names.get(who) || 'Player';
+    const people = [...names.entries()].filter(([id]) => played(id)).sort((a, b) => (a[0] === me ? -1 : b[0] === me ? 1 : a[1].localeCompare(b[1])));
+    dlg.setBody(`
+      <div class="stats-bar hands-bar">
+        <div class="seg" data-sort role="group" aria-label="Sort hands">${SORTS.map(([v, l]) => `<button type="button" data-v="${v}" class="${v === sort ? 'on' : ''}">${l}</button>`).join('')}</div>
+        ${people.length ? `<label class="inline"><span class="lbl">Player</span><select data-who>${people.map(([id, nm]) => `<option value="${esc(id)}" ${id === who ? 'selected' : ''}>${id === me ? 'You' : esc(nm)}</option>`).join('')}</select></label>` : ''}
+      </div>
+      ${list.length ? `<div class="stats-scroll"><table class="data hands-table"><thead><tr><th>Hand</th><th class="hide-sm">Time</th><th>Game</th><th class="hide-sm">Won by</th><th class="n">Pot</th><th class="n">${esc(whoName)}</th><th class="hide-sm">Deck check</th><th><span class="sr">Replay</span></th></tr></thead><tbody>
+      ${list.slice(0, shown).map((x) => {
+        const net = x.nets[who];
+        return `<tr class="hand-row" data-hand="${x.handNumber}" tabindex="0">
+        <td class="num">#${x.handNumber}</td><td class="muted hide-sm">${new Date(x.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+        <td>${esc(gameShort(x.gameType))}${x.isBomb ? ' bomb' : ''}${x.doubleBoard ? ', DB' : ''}${x.runCount > 1 ? `, ${x.runCount}×` : ''}</td>
+        <td class="hide-sm">${x.winners.map(esc).join(', ')}</td><td class="n">${fmtC(x.pot)}</td>
+        <td class="n">${net === undefined ? '<span class="faint">-</span>' : `<span class="${net > 0 ? 'pos' : net < 0 ? 'neg' : ''}">${net > 0 ? '+' : ''}${fmtC(net)}</span>`}</td>
+        <td class="hide-sm">${badge(x.handNumber, x.revealed)}</td>
+        <td>${x.replay ? `<button type="button" class="btn tiny" data-replay="${x.handNumber}">Replay</button>` : ''}</td></tr>`;
+      }).join('')}</tbody></table></div>
+      ${list.length > shown ? `<div class="row" style="justify-content:center;margin-top:.8rem"><button type="button" class="btn small" data-more>Show ${Math.min(PAGE, list.length - shown)} more</button></div>` : ''}`
+      : `<p class="muted">${all.length ? (sort === 'won' ? `${esc(whoName)} has not won a hand yet.` : `${esc(whoName)} has not lost a hand yet.`) : 'No finished hands yet.'}</p>`}`);
   };
   showList();
+  const order = () => ordered().map((h) => h.handNumber);
   dlg.el.addEventListener('click', (e) => {
+    const so = e.target.closest('[data-sort] button');
+    if (so) { sort = so.dataset.v; shown = PAGE; showList(); return; }
+    if (e.target.closest('[data-more]')) { shown += PAGE; showList(); return; }
+    const rp = e.target.closest('[data-replay]');
+    if (rp) { replayDialog(Number(rp.dataset.replay), { order: order(), onDetails: (n) => handDetailDialog(n) }); return; }
     const row = e.target.closest('[data-hand]');
     if (row) showHand(dlg, Number(row.dataset.hand), showList);
     if (e.target.closest('[data-back]')) showList();
   });
+  dlg.el.addEventListener('change', (e) => { if (e.target.matches('[data-who]')) { who = e.target.value; shown = PAGE; showList(); } });
   dlg.el.addEventListener('keydown', (e) => {
     const row = e.target.closest('[data-hand]');
-    if (row && e.key === 'Enter') showHand(dlg, Number(row.dataset.hand), showList);
+    if (row && e.key === 'Enter' && !e.target.closest('button')) showHand(dlg, Number(row.dataset.hand), showList);
+  });
+}
+
+// The full record of one hand (cards, results, deck check) in its own dialog.
+export function handDetailDialog(n) {
+  const dlg = dialog({ title: `Hand #${n}`, className: 'wide', body: '' });
+  showHand(dlg, n, () => dlg.close(), 'Close');
+  dlg.el.addEventListener('click', (e) => {
+    if (e.target.closest('[data-back]')) dlg.close();
+    const rp = e.target.closest('[data-replay]');
+    if (rp) { dlg.close(); replayDialog(Number(rp.dataset.replay), { onDetails: (k) => handDetailDialog(k) }); }
   });
 }
 
 const mini = (cards) => `<span class="mini-cards">${(cards || []).map((c) => cardHTML(c)).join('')}</span>`;
 
-async function showHand(dlg, n, back) {
+async function showHand(dlg, n, back, backLabel = 'All hands') {
   dlg.$('h2').textContent = `Hand #${n}`;
   dlg.setBody('<p class="muted">Loading…</p>');
   const r = await emit('hand:get', { handNumber: n });
@@ -396,8 +470,7 @@ async function showHand(dlg, n, back) {
   const res = rec.revealed ? await app.fair.verify(rec) : null;
   const seedHash = f.serverSeed ? await wc.sha256Hex(f.serverSeed) : null;
   const obs = app.fair.observed(n) || {};
-  const dec = rec.decimals;
-  const F = (a) => (dec ? (a / 100).toFixed(2) : String(a));
+  const F = (a) => fmtMoney(a, rec.decimals ?? app.dec);
   const lines = [];
   const bpr = rec.dealt.boardsPerRun || 1;
   const nb = rec.dealt.boards.length;
@@ -407,7 +480,7 @@ async function showHand(dlg, n, back) {
     lines.push(`${run.winners.map((w) => esc(w.name)).join(' and ')} ${run.winners.length > 1 ? 'split' : 'won'} ${fmt(run.amount)}${run.winners[0]?.hand ? ` with ${esc(run.winners[0].hand)}` : ''}${where(run)}${rec.results.pots.length > 1 ? (pi ? ` (side pot ${pi})` : ' (main pot)') : ''}`);
   }));
   dlg.setBody(`
-    <div class="row" style="justify-content:space-between"><button class="btn small ghost" data-back>All hands</button>
+    <div class="row" style="justify-content:space-between"><span class="row"><button class="btn small ghost" data-back>${esc(backLabel)}</button>${canReplay(rec) ? `<button class="btn small" data-replay="${rec.handNumber}">Replay</button>` : ''}</span>
       <span class="muted">${esc(gameName(rec.gameType))}${rec.isBomb ? ', bomb pot' : ''}${rec.doubleBoard ? ', double board' : ''}, blinds ${F(rec.smallBlind)}/${F(rec.bigBlind)}, ${new Date(rec.startedAt).toLocaleString()}</span></div>
     <h3 class="section-title">Board${nb > 1 ? 's' : ''}</h3>
     <div class="stack-sm">${rec.dealt.boards.map((b, i) => `<div>${nb > 1 ? `<span class="muted blabel">${esc(boardName(i, bpr, nb))}</span>` : ''}${b.length ? mini(b) : '<span class="faint">No board dealt</span>'}</div>`).join('')}</div>
@@ -415,7 +488,7 @@ async function showHand(dlg, n, back) {
     <table class="data"><thead><tr><th>Seat</th><th>Player</th><th>Cards</th><th class="n">Start</th><th class="n">End</th><th class="n">Net</th></tr></thead><tbody>
     ${rec.players.map((p) => `<tr><td>${p.seat + 1}${p.seat === rec.buttonSeat ? ' <span class="faint">(D)</span>' : ''}</td><td>${esc(p.name)}${p.folded ? ' <span class="faint">folded</span>' : ''}</td>
       <td>${rec.dealt.holes[p.seat] ? mini(rec.dealt.holes[p.seat]) : '<span class="faint">Hidden</span>'}</td>
-      <td class="n">${fmt(p.startStack)}</td><td class="n">${fmt(p.endStack)}</td><td class="n"><span class="${p.net > 0 ? 'pos' : p.net < 0 ? 'neg' : ''}">${p.net > 0 ? '+' : ''}${fmt(p.net)}</span></td></tr>`).join('')}
+      <td class="n">${fmtC(p.startStack)}</td><td class="n">${fmtC(p.endStack)}</td><td class="n"><span class="${p.net > 0 ? 'pos' : p.net < 0 ? 'neg' : ''}">${p.net > 0 ? '+' : ''}${fmtC(p.net)}</span></td></tr>`).join('')}
     </tbody></table>
     <p style="margin-top:.6rem">${lines.join('<br>')}</p>
     <h3 class="section-title">Deck check</h3>
@@ -460,6 +533,7 @@ export function lookDialog() {
         <label class="check" style="align-self:flex-end"><input type="checkbox" data-pref="fourColor" ${prefs.fourColor ? 'checked' : ''}> Four-color deck</label></div>
       <div><span class="lbl">Card backs</span><div class="swatches">${BACKS.map((b) => `<button type="button" class="swatch ${prefs.back === b.id ? 'on' : ''}" data-back="${b.id}" title="${esc(b.name)}" style="background:var(--back)" data-backswatch="${b.id}"></button>`).join('')}</div></div>
       <div><span class="lbl">When everyone is all in</span>${seg('autoRun', [['ask', 'Ask me to vote'], ['once', 'Always vote once'], ['max', 'Always vote the most']], prefs.autoRun)}</div>
+      <div><span class="lbl">Stats on each seat (VPIP / PFR / AF, then hands)</span>${seg('hud', [['game', 'This game'], ['all', 'All games'], ['off', 'Off']], prefs.hud || 'game')}<p class="hint">Numbers are for the game type being played. Pick a seat’s numbers for every stat.</p></div>
       <label class="check"><input type="checkbox" data-pref="handStrength" ${prefs.handStrength ? 'checked' : ''}> Show what my hand makes</label>
       <label class="check"><input type="checkbox" data-pref="sound" ${prefs.sound ? 'checked' : ''}> Sound when it is my turn</label>
       <label class="check"><input type="checkbox" data-pref="verifyNotes" ${prefs.verifyNotes ? 'checked' : ''}> Note in the log when my browser has checked a hand</label>
@@ -488,11 +562,11 @@ export function menuDialog() {
   const s = app.state;
   const items = [
     s.me.isHost && ['options', 'Game options'],
-    ['ledger', 'Ledger'], ['hands', 'Hand history'], ['fair', 'Sealed deck'], ['look', 'Look and feel'], ['log', 'Log and chat'],
+    ['ledger', 'Ledger'], ['stats', 'Stats'], ['hands', 'Hand history'], ['fair', 'Sealed deck'], ['look', 'Look and feel'], ['log', 'Log and chat'],
   ].filter(Boolean);
   const dlg = dialog({
     title: 'Menu', className: 'narrow',
-    body: `<div class="stack-sm">${items.map(([k, l]) => `<button class="btn" style="width:100%" data-go="${k}">${l}</button>`).join('')}<a class="btn ghost" style="width:100%" href="/">Back to the lobby</a></div>`,
+    body: `<div class="stack-sm">${items.map(([k, l]) => `<button class="btn" style="width:100%" data-go="${k}">${l}</button>`).join('')}<a class="btn ghost" style="width:100%" href="/">Back to the club</a></div>`,
   });
   dlg.el.addEventListener('click', (e) => {
     const b = e.target.closest('[data-go]');
@@ -500,7 +574,7 @@ export function menuDialog() {
     dlg.close();
     const k = b.dataset.go;
     if (k === 'log') { document.querySelector('[data-open="log"]')?.click(); return; }
-    ({ options: hostDialog, ledger: ledgerDialog, hands: handsDialog, fair: fairDialog, look: lookDialog })[k]?.();
+    ({ options: hostDialog, ledger: ledgerDialog, stats: statsDialog, hands: handsDialog, fair: fairDialog, look: lookDialog })[k]?.();
   });
 }
 
