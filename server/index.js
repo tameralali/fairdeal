@@ -294,6 +294,15 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     socket.data.user = user;
     next();
   });
+  // Voice connects browser to browser. STUN lets most home connections find each other; a TURN relay
+  // (TURN_URLS, TURN_USERNAME, TURN_CREDENTIAL) carries the audio for networks that block that.
+  const iceServers = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+  if (process.env.TURN_URLS) {
+    iceServers.push({
+      urls: process.env.TURN_URLS.split(',').map((x) => x.trim()).filter(Boolean),
+      username: process.env.TURN_USERNAME || undefined, credential: process.env.TURN_CREDENTIAL || undefined,
+    });
+  }
   io.on('connection', (socket) => {
     const u = socket.data.user;
     let table = null;
@@ -338,6 +347,10 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     on('host:away', (p) => T().hostSetAway(u, p.userId));
     on('host:adjust', (p) => T().hostAdjustStack(u, p.userId, p.delta));
     on('host:reveal', () => T().hostRevealNow(u));
+    on('voice:join', () => ({ ...T().voiceJoin(socket), iceServers }));
+    on('voice:leave', () => T().voiceLeave(socket));
+    on('voice:signal', (p) => T().voiceSignal(socket, p));
+    on('voice:mute', (p) => T().voiceMute(socket, !!p.muted));
     on('club:watch', (p) => { if (clubs.role(p.clubId, u.id)) socket.join('club:' + p.clubId); });
     socket.on('disconnect', () => { if (table) table.leave(socket); });
   });

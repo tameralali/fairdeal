@@ -10,6 +10,8 @@ import { fmtMoney } from '../shared/money.js';
 
 // Pauses, in ms: before each street, between the streets of an all-in runout, before the showdown,
 // after a hand, and for the run-it vote.
+const VOICE_MAX = 10; // each person in voice sends to each other one, so it stays small
+
 export const DELAYS = {
   street: 1400, runoutFirst: 2400, runout: 2200, showdown: 1400,
   afterUncontested: 3000, afterShowdown: 5500, perExtraRun: 1500, perExtraBoard: 1000,
@@ -242,6 +244,7 @@ export class Table {
     this.ritDeadline = null;
     this.timers = { session: [] };
     this.awayTimers = new Map(); // userId -> timer: seated players whose page closed, until they count as gone
+    this.voice = new Map(); // socket id -> { socket, userId, name, muted }: pages in the table's voice chat
     this.sockets = new Set();
     this.logEntries = null;
     this.logSeq = data.logSeq || 0;
@@ -380,6 +383,7 @@ export class Table {
   }
   leave(socket) {
     this.sockets.delete(socket);
+    this.voiceLeave(socket);
     this.broadcast();
     // a run-it vote goes ahead without players who disconnect: only votes that came in count
     if (this.hand && this.hand.phase === 'rit') this.afterHandChange();
@@ -411,6 +415,51 @@ export class Table {
     if (actor && actor.id === userId) this.autoAct(userId, false);
     else this.broadcast();
   }
+
+  // ---------- voice chat ----------
+  // Audio goes straight between browsers. The server keeps who is in (one page per person, so a second
+  // tab takes over from the first) and passes on the messages that set up each pair's connection.
+  voiceJoin(socket) {
+    if (!this.sockets.has(socket)) fail('Open the table first');
+    const u = socket.data.user;
+    for (const [id, v] of [...this.voice]) {
+      if (v.userId !== u.id || id === socket.id) continue;
+      v.socket.emit('voice:ended', { reason: 'You joined voice on another page, so it left here.' });
+      this.voiceLeave(v.socket);
+    }
+    if (!this.voice.has(socket.id) && this.voice.size >= VOICE_MAX) fail(`Voice takes ${VOICE_MAX} people at a time`);
+    const peers = [...this.voice.entries()].filter(([id]) => id !== socket.id).map(([peerId, v]) => ({ peerId, userId: v.userId, name: v.name, muted: v.muted }));
+    const name = this.players.get(u.id)?.name || u.name;
+    this.voice.set(socket.id, { socket, userId: u.id, name, muted: false });
+    for (const [id, v] of this.voice) if (id !== socket.id) v.socket.emit('voice:joined', { peerId: socket.id, userId: u.id, name });
+    this.broadcast();
+    return { peers };
+  }
+
+  voiceLeave(socket) {
+    if (!this.voice.delete(socket.id)) return;
+    for (const v of this.voice.values()) v.socket.emit('voice:left', { peerId: socket.id });
+    this.broadcast();
+  }
+
+  // An offer, answer or network candidate for one other page in voice, passed on as it is.
+  voiceSignal(socket, { to, data } = {}) {
+    if (!this.voice.has(socket.id)) fail('Join voice first');
+    if (typeof to !== 'string' || !data || typeof data !== 'object' || (!data.sdp && !data.candidate)) fail('Not a voice message');
+    const target = this.voice.get(to);
+    if (!target) return { gone: true };
+    target.socket.emit('voice:signal', { from: socket.id, data: data.sdp ? { sdp: data.sdp } : { candidate: data.candidate } });
+    return {};
+  }
+
+  voiceMute(socket, muted) {
+    const v = this.voice.get(socket.id);
+    if (!v) fail('Join voice first');
+    v.muted = !!muted;
+    this.broadcast();
+  }
+
+  voiceList() { return [...this.voice.values()].map((v) => ({ userId: v.userId, name: v.name, muted: v.muted })); }
 
   // ---------- seats and chips ----------
   checkBuyIn(amount, current = 0, rathole = null) {
@@ -1480,6 +1529,7 @@ export class Table {
       hand: handState,
       fairness: { handNumber: pend.handNumber, commitment: pend.commitment, contributions: pend.contributions.size, iContributed: pend.contributions.has(userId) },
       requests: isHost ? this.requests : null,
+      voice: this.voiceList(),
     };
   }
 }

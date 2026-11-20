@@ -11,6 +11,7 @@ import { app, emit, fmt, inp, parse, gameShort, now } from './table-core.js';
 import * as D from './table-dialogs.js';
 import * as S from './table-stats.js';
 import * as H from './hand-history.js';
+import * as VC from './voice.js';
 import { boardName, stepLabel } from './game-form.js';
 
 import { BRAND_HEX } from './api.js';
@@ -45,9 +46,12 @@ function fatal(msg) {
 function connect() {
   const socket = window.io({ auth: { token: api.token }, transports: ['websocket', 'polling'], reconnectionDelayMax: 4000 });
   app.socket = socket;
+  VC.bindVoice(socket, () => { if (app.state) renderBottom(app.state); VC.paintVoice(); });
+  window.aquariumVoice = { peers: VC.voicePeers, stats: VC.voiceStats, state: VC.voice }; // for checking calls from the console
   socket.on('connect', () => {
     setConn(true);
     if (app.fair) app.fair.reconnected();
+    VC.voiceReconnected();
     socket.emit('table:join', { tableId: app.tableId }, (ack) => { if (!ack || !ack.ok) fatal(ack?.error || 'Could not open this table'); });
   });
   socket.on('disconnect', () => setConn(false));
@@ -555,11 +559,12 @@ function renderTable(s) {
     // the bubble pops in once; later redraws of the table leave it still
     const bubble = bub && bub.until > nowMs ? `<div class="bubble ${g.bubbleIn ? 'in' : 'out'}${bub.fresh ? ' fresh' : ''}" role="status"><span>${esc(bub.text)}</span></div>` : '';
     if (bub) bub.fresh = false;
-    seats += `<div class="${cls}${bubble ? ' talking' : ''}" style="${pos}" ${s.me.isHost && !isMe ? `data-player="${esc(info.userId)}" title="Host actions for ${esc(info.name)}"` : ''}>
+    const vin = (s.voice || []).find((x) => x.userId === info.userId);
+    seats += `<div class="${cls}${bubble ? ' talking' : ''}" style="${pos}" data-uid="${esc(info.userId)}" ${s.me.isHost && !isMe ? `data-player="${esc(info.userId)}" title="Host actions for ${esc(info.name)}"` : ''}>
       <div class="plate">
         ${fan}${extra}
         <div class="who">
-          <div class="nm">${info.connected ? '' : '<span class="dot" title="Disconnected"></span>'}<span>${esc(info.name)}</span>${info.isHost ? '<span class="host-mark" title="Host">&#9733;</span>' : ''}</div>
+          <div class="nm">${info.connected ? '' : '<span class="dot" title="Disconnected"></span>'}<span>${esc(info.name)}</span>${info.isHost ? '<span class="host-mark" title="Host">&#9733;</span>' : ''}${vin ? `<span class="vc ${vin.muted ? 'muted' : ''}" title="${vin.muted ? 'In voice, muted' : 'In voice'}">${vin.muted ? MIC_OFF : MIC}</span>` : ''}</div>
           <div class="st">${allIn ? 'All In' : fmt(stack)}${info.pendingChips ? ` <small>+${fmt(info.pendingChips)}</small>` : ''}</div>
           ${S.hudHTML(s, info.userId)}
         </div>
@@ -573,6 +578,7 @@ function renderTable(s) {
   }
   els.seats.innerHTML = seats;
   els.chips.innerHTML = chips;
+  VC.paintVoice();
   els.center.innerHTML = centerHTML(s, R);
   fitMark();
 }
@@ -706,8 +712,24 @@ function waitingHTML(s) {
   return `<div class="waiting">${t.waiting ? `<span>${esc(t.waiting)}</span>` : ''}${btn}${extra}</div>`;
 }
 
+const MIC = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+const MIC_OFF = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor" opacity=".55"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".55"/><path d="M4 4l16 16" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>';
+
+function voiceHTML(s) {
+  const v = VC.voice;
+  const inVoice = s.voice || [];
+  const others = inVoice.filter((x) => x.userId !== s.me.userId);
+  const names = others.map((x) => x.name + (x.muted ? ' (muted)' : '')).join(', ');
+  const who = others.length ? `<span class="vwho" title="${esc(names)}">${others.length === 1 ? `${esc(others[0].name)} is` : `${others.length} others are`} in voice</span>` : '';
+  if (!v.on) {
+    if (s.table.status === 'ended' && !inVoice.length) return '';
+    return `<span class="vgroup"><button class="btn vbtn" data-voice="join" ${v.joining ? 'disabled' : ''}>${MIC}<span>${v.joining ? 'Joining voice' : 'Join voice'}</span></button>${who}</span>`;
+  }
+  return `<span class="vgroup on"><button class="btn vbtn ${v.muted ? 'muted' : 'live'}" data-voice="mute" aria-pressed="${v.muted}" title="${v.muted ? 'Your microphone is off' : 'Your microphone is on'}">${v.muted ? MIC_OFF : MIC}<span>${v.muted ? 'Unmute' : 'Mute'}</span></button><button class="btn ghost small" data-voice="leave">Leave voice</button>${who || '<span class="vwho">Nobody else in voice yet</span>'}</span>`;
+}
+
 function renderBottom(s) {
-  let my = '';
+  let my = voiceHTML(s);
   if (s.me.seated) {
     const out = s.me.sittingOut || s.me.sitOutNext;
     my += out
@@ -908,6 +930,8 @@ function bindEvents() {
   document.addEventListener('click', async (e) => {
     const sit = e.target.closest('[data-sit]');
     if (sit) return D.seatDialog(Number(sit.dataset.sit));
+    const vb = e.target.closest('[data-voice]');
+    if (vb) { const k = vb.dataset.voice; return k === 'join' ? VC.joinVoice() : k === 'mute' ? VC.toggleMute() : VC.leaveVoice(); }
     const my = e.target.closest('[data-my]');
     if (my) {
       const k = my.dataset.my;

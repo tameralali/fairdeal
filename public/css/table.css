@@ -757,3 +757,25 @@ dialog.hh-dlg .dlg-body { padding: 0; overflow: hidden; flex: 1; min-height: 0; 
 @media (max-width: 640px), (orientation: portrait) and (max-width: 900px) {
   .hh-stage .rp-felt { width: min(100%, calc((100dvh - 290px) * 3 / 4)); }
 }
+
+/* ---------- voice chat ---------- */
+.vgroup { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.vbtn { display: inline-flex; align-items: center; gap: .45em; }
+.vbtn svg { width: 1.15em; height: 1.15em; flex: none; }
+.vbtn.live { background: #3f8f55; border-color: #3f8f55; color: #fff; }
+.vbtn.live:hover { background: #47a060; border-color: #47a060; }
+.vbtn.muted { background: #5a2f2b; border-color: #8a443d; color: #ffd6d0; }
+.vwho { color: var(--muted); font-size: 13.5px; max-width: 18em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plate .nm .vc { display: inline-grid; place-items: center; flex: none; width: 1.15em; height: 1.15em; color: #8fdc9c; }
+.plate .nm .vc svg { width: 100%; height: 100%; }
+.plate .nm .vc.muted { color: #f08a7e; }
+.seat.speaking .plate { box-shadow: 0 0 0 2px #6fd07f, 0 0 calc(var(--u) * 1.6) rgba(111, 208, 127, .5); }
+.seat.speaking .plate .nm .vc { color: #b7f5c0; }
+audio.voice-out { position: fixed; width: 0; height: 0; opacity: 0; pointer-events: none; }
+/* where the bottom bar steps aside on your turn, Mute stays */
+@media (max-width: 640px), (max-height: 780px) and (min-width: 641px), (max-height: 520px) and (orientation: landscape) {
+  body.my-turn .mybar:has(.vgroup.on) { display: flex; }
+  body.my-turn .mybar:has(.vgroup.on) > :not(.vgroup) { display: none; }
+  body.my-turn .mybar .vgroup.on > :not([data-voice="mute"]) { display: none; }
+}
+body.my-turn .vgroup .vwho { display: none; }

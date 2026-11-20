@@ -726,6 +726,52 @@ test('the join link: anyone with it asks for an account, an admin approves or de
   await assert.rejects(call('GET', `/api/join/${fresh.token}`), /turned off or replaced/);
 });
 
+test('voice: the server sets up calls only between people in voice, shows who is muted, and lets go when they leave', { timeout: 30000 }, async () => {
+  const a = await admin('Talker');
+  const b = await member('Listener');
+  const c = await member('Outside');
+  const { id } = await call('POST', '/api/tables', { settings: {} }, a.token);
+  const bots = [new Bot('Talker', a, 21), new Bot('Listener', b, 22), new Bot('Outside', c, 23)];
+  for (const x of bots) await x.connect(id);
+  const got = bots.map(() => []);
+  const listen = (x, i) => { for (const ev of ['voice:joined', 'voice:left', 'voice:signal', 'voice:ended']) x.socket.on(ev, (p) => got[i].push([ev, p])); };
+  bots.forEach(listen);
+  const j0 = await bots[0].emit('voice:join', {});
+  assert.ok(j0.ok);
+  assert.deepEqual(j0.peers, []);
+  assert.ok(j0.iceServers.some((x) => String(x.urls).includes('stun:')));
+  const j1 = await bots[1].emit('voice:join', {});
+  assert.equal(j1.peers.length, 1);
+  assert.equal(j1.peers[0].userId, a.user.id);
+  const peerA = j1.peers[0].peerId;
+  await until(() => got[0].some(([ev]) => ev === 'voice:joined'), 5000, 'the joined notice');
+  const peerB = got[0].find(([ev]) => ev === 'voice:joined')[1].peerId;
+  // the newcomer calls; the offer reaches only the one it is for, marked with who sent it
+  assert.ok((await bots[1].emit('voice:signal', { to: peerA, data: { sdp: { type: 'offer', sdp: 'v=0' } } })).ok);
+  await until(() => got[0].some(([ev]) => ev === 'voice:signal'), 5000, 'the offer');
+  const sig = got[0].find(([ev]) => ev === 'voice:signal')[1];
+  assert.equal(sig.from, peerB);
+  assert.equal(sig.data.sdp.type, 'offer');
+  assert.ok(!got[2].some(([ev]) => ev === 'voice:signal'), 'someone outside voice gets nothing');
+  assert.equal((await bots[2].emit('voice:signal', { to: peerA, data: { candidate: { candidate: '' } } })).ok, false, 'and cannot send');
+  assert.equal((await bots[1].emit('voice:signal', { to: peerA, data: { other: 1 } })).ok, false, 'only offers, answers and candidates pass');
+  await bots[1].emit('voice:mute', { muted: true });
+  await until(() => (bots[2].state?.voice || []).some((v) => v.userId === b.user.id && v.muted), 5000, 'muted in the state');
+  // the same person joining on a second page takes over from the first
+  const again = new Bot('Talker', a, 24);
+  await again.connect(id);
+  const j2 = await again.emit('voice:join', {});
+  assert.ok(j2.ok);
+  await until(() => got[0].some(([ev]) => ev === 'voice:ended'), 5000, 'the first page to leave voice');
+  await wait(50);
+  assert.equal(srv.tables.get(id).voiceList().filter((v) => v.userId === a.user.id).length, 1, 'one page per person');
+  // leaving, or closing the page, tells the others
+  bots[1].close();
+  await until(() => srv.tables.get(id).voiceList().length === 1, 5000, 'the listener to drop out');
+  bots.forEach((x) => x.close());
+  again.close();
+});
+
 test('accounts: invite only, login, rename', async () => {
   await assert.rejects(call('POST', '/api/auth/guest', { name: 'Temp' }), /invite only/);
   await assert.rejects(call('POST', '/api/auth/register', { username: 'temp_user', password: 'abcdefgh' }), /invite only/);
