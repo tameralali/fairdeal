@@ -212,3 +212,34 @@
 .fair-page .fair-cmd code { flex: 1; min-width: 0; padding: 0; border-radius: 0; background: none; font: 13.5px/1.45 var(--mono); color: var(--text); white-space: normal; overflow-wrap: anywhere; }
 .fair-cmd code span { white-space: nowrap; }
 .fair-cmd .btn { flex: none; }
+
+/* ---------- a game's summary page ---------- */
+.game-page { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+.gp-nav { display: flex; justify-content: space-between; gap: 8px; }
+.gp-hero h1 { margin: 0; font-size: clamp(26px, 4vw, 38px); line-height: 1.1; }
+.gp-meta { margin: .5rem 0 0; color: var(--muted); }
+.gp-win { margin: .9rem 0 0; font-size: 19px; }
+.gp-win b { color: var(--text); }
+.gp-live { margin: .9rem 0 0; color: var(--brass-hi, #e0c27a); }
+.hl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.hl { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid var(--line-soft); border-radius: var(--r-md); background: rgba(255, 255, 255, .02); color: inherit; text-decoration: none; }
+a.hl:hover { border-color: var(--tint-strong, #5c8a5a); }
+.hl-l { color: var(--muted); font-size: 13.5px; }
+.hl-v { font: 800 22px/1.15 var(--num, inherit); font-variant-numeric: tabular-nums; }
+.hl-n { color: var(--muted); font-size: 13.5px; }
+.hl-cards { display: inline-flex; gap: 6px; font-size: 19px; }
+.ct { font-weight: 800; }
+.ct.s-s { color: #e8e8e8; } .ct.s-h { color: #ef7d72; } .ct.s-d { color: #79a6f2; } .ct.s-c { color: #6fca7a; }
+.bh-list { display: flex; flex-direction: column; margin-bottom: 10px; }
+.bh-row { display: grid; grid-template-columns: 3.6em 7em minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 10px 6px; border-bottom: 1px solid var(--line-soft); color: inherit; text-decoration: none; }
+.bh-row:hover { background: rgba(255, 255, 255, .03); }
+.bh-n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.bh-pot { font: 800 17px/1 var(--num, inherit); font-variant-numeric: tabular-nums; }
+.bh-who small { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
+.bh-sub { color: var(--muted); font-size: 13.5px; text-align: right; }
+.bh-go { color: var(--tint-strong, #7fb27c); font-weight: 700; font-size: 14px; }
+@media (max-width: 640px) {
+  .bh-row { grid-template-columns: 3em 5.6em minmax(0, 1fr) auto; }
+  .bh-sub { display: none; }
+}
+@media (max-width: 640px) { .hl-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .hl-v { font-size: 19px; } .hl-cards { font-size: 16px; gap: 4px; } }

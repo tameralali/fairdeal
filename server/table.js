@@ -7,6 +7,7 @@ import { newCommitment, settleCommitment, randomId, openV2, savedCommitment, res
 import { cleanName } from './auth.js';
 import { StatsBook, statsRows, gamesIn, summarize, aggregate } from './stats.js';
 import { fmtMoney } from '../shared/money.js';
+import { score5 } from '../shared/evaluator.js';
 
 // Pauses, in ms: before each street, between the streets of an all-in runout, before the showdown,
 // after a hand, and for the run-it vote.
@@ -14,9 +15,10 @@ const VOICE_MAX = 10; // each person in voice sends to each other one, so it sta
 
 export const DELAYS = {
   street: 1400, runoutFirst: 2400, runout: 2200, showdown: 1400,
-  afterUncontested: 3000, afterShowdown: 5500, perExtraRun: 1500, perExtraBoard: 1000,
-  rit: 20000, ritSettle: 8000, autoAct: 400, away: 5000, call: 30 * 60000,
+  afterUncontested: 4000, afterShowdown: 7500, perExtraRun: 1500, perExtraBoard: 1000,
+  rit: 45000, ritSettle: 15000, autoAct: 400, away: 5000, call: 30 * 60000,
 };
+export const BANK_REFILL = { hands: 10, seconds: 5 };
 
 // The format is a list of steps played in order, then repeated from the top. Each step is one game
 // for one orbit or a set number of hands, dealt on one board or two (double board).
@@ -33,7 +35,7 @@ export const DEFAULT_SETTINGS = {
   minPlayers: 2, // the first hand waits until this many are in; after that two are enough
   ratholeMinutes: 0, // 0 off, -1 for the whole game: a player who leaves comes back with at least what they left with
   decisionSeconds: 30,
-  timeBankSeconds: 60,
+  timeBankSeconds: 20,
   autoApprove: false,
   bombPot: { mode: 'off', every: 10, percent: 10, anteBB: 2, game: 'current', doubleBoard: false },
   rit: { enabled: true, maxRuns: 4 },
@@ -45,6 +47,8 @@ export const DEFAULT_SETTINGS = {
   decimals: 0,
   spectatorChat: true,
   autoStart: false,
+  straddle: false, // the player under the gun may post twice the big blind before the deal
+  sevenDeuce: 0, // the 7-2 game: a Hold'em hand won with 7-2, shown, collects this from everyone else dealt in
 };
 
 const fail = (m) => { throw new Error(m); };
@@ -162,7 +166,8 @@ export function sanitizeSettings(input = {}, current = DEFAULT_SETTINGS, ctx = {
   }
   if (has('decisionSeconds')) s.decisionSeconds = intIn(input.decisionSeconds, 5, 600, 'Decision time');
   if (has('timeBankSeconds')) s.timeBankSeconds = intIn(input.timeBankSeconds, 0, 3600, 'Time bank');
-  for (const k of ['autoApprove', 'spectatorChat', 'autoStart']) if (has(k)) s[k] = !!input[k];
+  for (const k of ['autoApprove', 'spectatorChat', 'autoStart', 'straddle']) if (has(k)) s[k] = !!input[k];
+  if (has('sevenDeuce')) s.sevenDeuce = intIn(input.sevenDeuce, 0, 1e12, 'The 7-2 bounty');
   if (has('bombPot')) {
     const b = input.bombPot || {};
     const mode = ['off', 'every', 'percent', 'both'].includes(b.mode) ? b.mode : s.bombPot.mode;
@@ -361,7 +366,7 @@ export class Table {
       fairPending: this.fair ? savedCommitment(this.fair.pending) : undefined,
       players: [...this.players.values()].map((p) => ({
         userId: p.userId, name: p.name, seat: p.seat, stack: p.stack, sittingOut: p.sittingOut,
-        timeBank: p.timeBank, joinedAt: p.joinedAt, leaveAt: p.leaveAt || null,
+        timeBank: p.timeBank, bankHands: p.bankHands || 0, joinedAt: p.joinedAt, leaveAt: p.leaveAt || null, straddle: !!p.straddle,
       })),
     };
     this.store.save();
@@ -409,7 +414,7 @@ export class Table {
       if (this.inHand(userId)) p.sitOutNext = true;
       else p.sittingOut = true;
       p.away = true;
-      this.log(`${p.name} left the table and sits out until they are back`, 'seat');
+      this.log(`${p.name} left the table and is away until they are back`, 'seat');
       this.snapshot();
     }
     const actor = this.hand && this.hand.phase !== 'done' ? this.hand.actor() : null;
@@ -684,13 +689,23 @@ export class Table {
     this.broadcast();
   }
 
+  // Straddle when under the gun: a choice that stays on until it is turned off.
+  setStraddle(user, value) {
+    const p = this.players.get(user.id);
+    if (!p) fail('You are not seated');
+    if (value && !this.settings.straddle) fail('The host has not turned on the straddle');
+    p.straddle = value;
+    this.snapshot();
+    this.broadcast();
+  }
+
   setSitOut(user, value) {
     const p = this.players.get(user.id);
     if (!p) fail('You are not seated');
     if (value) {
       if (this.inHand(p.userId)) p.sitOutNext = true;
       else p.sittingOut = true;
-      this.log(`${p.name} is sitting out`, 'seat');
+      this.log(`${p.name} is away`, 'seat');
     } else {
       const was = p.sittingOut || p.sitOutNext;
       p.sittingOut = false;
@@ -746,7 +761,7 @@ export class Table {
     if (!p) fail('Not seated');
     if (this.inHand(userId)) p.sitOutNext = true;
     else p.sittingOut = true;
-    this.log(`The host set ${p.name} to sitting out`, 'seat');
+    this.log(`The host set ${p.name} to away`, 'seat');
     this.snapshot();
     this.broadcast();
   }
@@ -1007,11 +1022,23 @@ export class Table {
       const nets = {};
       const names = {};
       for (const p of r.players) { nets[p.userId] = p.net; names[p.userId] = p.name; }
+      // the strongest hand that won a pot at a showdown (its cards were shown to win), to rank the game's best hands
+      let best = null;
+      for (const pot of r.results?.pots || []) {
+        for (const run of pot.runs || []) {
+          for (const w of run.winners || []) {
+            if (!w.cards || w.cards.length !== 5 || w.cards.some((c) => !c)) continue;
+            const score = score5(w.cards);
+            if (!best || score > best.score) best = { score, hand: w.hand, name: w.name, userId: r.players.find((p) => p.seat === w.seat)?.userId || null, cards: w.cards };
+          }
+        }
+      }
       return {
         handNumber: r.handNumber, at: r.startedAt, gameType: r.gameType, isBomb: r.isBomb, runCount: r.runCount, doubleBoard: !!r.doubleBoard,
         pot, winners: [...new Set((r.results?.payouts || []).map((w) => w.name))], revealed: r.fairness.version === FAIRNESS_V2 || r.handNumber <= this.revealedThrough,
         myNet: me ? me.net : null, nets, names, cards: this.visibleHoles(r, viewerId), showdown: !r.results?.uncontested,
         allIn: (r.actions || []).some((a) => a.allIn), commitment: r.fairness.commitment, replay: Array.isArray(r.actions),
+        best, bounty: r.bounty ? { name: r.bounty.name, userId: r.bounty.userId, total: r.bounty.total } : null,
       };
     });
   }
@@ -1202,6 +1229,7 @@ export class Table {
         number, gameType, buttonSeat: this.buttonSeat, smallBlind: s.smallBlind, bigBlind: s.bigBlind,
         deck: settled.deck, bombAnte, ritMax: s.rit.enabled ? s.rit.maxRuns : 1, fmt: (a) => this.fmt(a), doubleBoard,
         players: eligible.map((p) => ({ id: p.userId, seat: p.seat, name: p.name, stack: p.stack })),
+        straddleIds: s.straddle && !bombAnte ? eligible.filter((p) => p.straddle).map((p) => p.userId) : [],
       });
       this.handNumber = number;
       this.handMeta = {
@@ -1332,7 +1360,7 @@ export class Table {
     if (timedOut && p && !p.leaveAfterHand) {
       p.sitOutNext = true;
       p.away = true;
-      this.log(`${p.name} ran out of time and will sit out next hand`, 'seat');
+      this.log(`${p.name} ran out of time and is away from the next hand`, 'seat');
     }
     this.turn = null;
     hand.act(userId, { type: legal.canCheck ? 'check' : 'fold' });
@@ -1362,6 +1390,49 @@ export class Table {
     this.afterHandChange();
   }
 
+  // The 7-2 game. A Hold'em hand won, all of the pot or part of it, holding a 7 and a 2 (any suits), with
+  // both cards shown, collects the bounty from every other player dealt into the hand, up to what each
+  // has in front of them. Paid once a hand: at the end when the cards were shown at showdown, or when
+  // the winner shows them afterwards. With two winners holding 7-2, nobody collects.
+  sevenDeuceWinner(hand) {
+    if (!this.settings.sevenDeuce || !hand.results || hand.game.holeCount !== 2) return null;
+    const won = new Set((hand.results.payouts || []).filter((w) => w.amount > 0).map((w) => w.id));
+    const holders = hand.players.filter((p) => won.has(p.id) && p.hole.length === 2 && p.hole.map((c) => c[0]).sort().join('') === '27');
+    if (holders.length !== 1) return null;
+    const w = holders[0];
+    return w.shown || (w.showIdx || []).length >= 2 ? w : null;
+  }
+
+  paySevenDeuce(hand, rec) {
+    if (!rec || rec.bounty) return null;
+    const w = this.sevenDeuceWinner(hand);
+    const winner = w && this.players.get(w.id);
+    if (!winner) return null;
+    const each = this.settings.sevenDeuce;
+    const payers = [];
+    for (const hp of hand.players) {
+      const p = hp.id !== w.id && this.players.get(hp.id);
+      const amount = p ? Math.min(each, p.stack) : 0;
+      if (amount <= 0) continue;
+      p.stack -= amount;
+      winner.stack += amount;
+      payers.push({ userId: hp.id, name: hp.name, amount });
+    }
+    if (!payers.length) return null;
+    const total = payers.reduce((a, x) => a + x.amount, 0);
+    rec.bounty = { kind: '7-2', userId: w.id, name: w.name, each, total, payers };
+    const nets = {};
+    for (const pr of rec.players) {
+      const d = pr.userId === w.id ? total : -(payers.find((x) => x.userId === pr.userId)?.amount || 0);
+      if (!d) continue;
+      pr.endStack += d;
+      pr.net += d;
+      nets[pr.userId] = { endStack: pr.endStack, net: pr.net };
+    }
+    this.log(`${w.name} won with 7-2 and collects the ${this.fmt(each)} bounty from ${payers.length === 1 ? payers[0].name : `${payers.length} players`}: ${this.fmt(total)}`, 'win bounty');
+    return { nets };
+  }
+
   // cards: indexes of the hole cards to show (all of them when left out).
   showCards(user, cards = null) {
     const hand = this.hand || this.lastHand;
@@ -1374,6 +1445,13 @@ export class Table {
         const pr = rec.players.find((x) => x.userId === user.id);
         if (pr) { pr.shown = hp.shown; pr.showIdx = hp.showIdx.slice(); }
         this.store.appendHandPatch(this.id, rec.handNumber, { shows: { [user.id]: { shown: hp.shown, showIdx: hp.showIdx.slice() } } });
+        // won without a showdown holding 7-2: showing it claims the bounty
+        const paid = this.paySevenDeuce(hand, rec);
+        if (paid) {
+          this.store.appendHandPatch(this.id, rec.handNumber, { bounty: rec.bounty, nets: paid.nets });
+          this.manager.stats.added();
+          this.snapshot();
+        }
       }
       this.broadcast();
     }
@@ -1387,9 +1465,14 @@ export class Table {
     this.ritDeadline = null;
     for (const hp of hand.players) {
       const p = this.players.get(hp.id);
-      if (p) p.stack = hp.stack;
+      if (!p) continue;
+      p.stack = hp.stack;
+      // the time bank refills a little as you play: 5 seconds for every 10 hands dealt to you, up to its full size
+      p.bankHands = (p.bankHands || 0) + 1;
+      if (p.bankHands % BANK_REFILL.hands === 0) p.timeBank = Math.min(this.settings.timeBankSeconds, (p.timeBank || 0) + BANK_REFILL.seconds);
     }
     const rec = this.buildRecord(hand, meta);
+    this.paySevenDeuce(hand, rec); // won at showdown with 7-2: the cards are already shown
     this.getRecords().push(rec);
     this.store.appendHand(this.id, rec);
     this.manager.stats.added();
@@ -1576,7 +1659,7 @@ export class Table {
       const uid = this.seats[i];
       const p = uid && this.players.get(uid);
       seats.push(p ? {
-        seat: i, userId: p.userId, name: p.name, stack: p.stack, sittingOut: p.sittingOut, sitOutNext: p.sitOutNext,
+        seat: i, userId: p.userId, name: p.name, stack: p.stack, sittingOut: p.sittingOut, sitOutNext: p.sitOutNext, straddle: !!p.straddle,
         leaving: p.leaveAfterHand, leaveAt: p.leaveAt || null, connected: this.isConnected(uid), timeBank: Math.floor(p.timeBank),
         isHost: this.isHost(uid), pendingChips: p.pendingChips, away: p.away,
       } : null);
@@ -1599,7 +1682,7 @@ export class Table {
       hud: this.hudData(),
       me: {
         userId, isHost, seat: me ? me.seat : null, seated: !!me,
-        sittingOut: me ? me.sittingOut : false, sitOutNext: me ? me.sitOutNext : false, leaving: me ? me.leaveAfterHand : false, leaveAt: me ? me.leaveAt || null : null,
+        sittingOut: me ? me.sittingOut : false, sitOutNext: me ? me.sitOutNext : false, leaving: me ? me.leaveAfterHand : false, leaveAt: me ? me.leaveAt || null : null, straddle: !!(me && me.straddle),
         pendingChips: me ? me.pendingChips : 0, requests: this.requests.filter((r) => r.userId === userId), clubAvailable,
         rathole: me ? null : this.ratholeFor(userId),
       },
@@ -1646,6 +1729,8 @@ function describeChanges(a, b, fmt) {
   if (a.autoApprove !== b.autoApprove) out.push(b.autoApprove ? 'seat requests approved automatically' : 'host approves seat requests');
   if (a.feltColor !== b.feltColor) out.push('felt color');
   if (a.spectatorChat !== b.spectatorChat) out.push(b.spectatorChat ? 'spectator chat on' : 'spectator chat off');
+  if (!!a.straddle !== !!b.straddle) out.push(b.straddle ? 'straddle allowed' : 'no straddle');
+  if ((a.sevenDeuce || 0) !== (b.sevenDeuce || 0)) out.push(b.sevenDeuce ? `7-2 game, bounty ${fmt(b.sevenDeuce)}` : 'no 7-2 game');
   return out;
 }
 
@@ -1681,7 +1766,7 @@ export class TableManager {
         if (t.status === 'running') {
           let any = false;
           for (const p of t.players.values()) { if (!p.sittingOut) any = true; p.sittingOut = true; }
-          if (any) t.log('The server restarted. Seated players were set to sitting out; click "I’m back" to continue.', 'game');
+          if (any) t.log('The server restarted. Seated players were set to away; click "I’m back" to continue.', 'game');
           t.scheduleSession();
           if (t.session.endsAt && Date.now() >= t.session.endsAt) t.endGame('time');
         }

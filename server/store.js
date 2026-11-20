@@ -65,6 +65,12 @@ export class Store {
           const p = rec?.players.find((x) => x.userId === userId);
           if (p) { p.shown = sh.shown; p.showIdx = sh.showIdx; }
         }
+        // a 7-2 bounty claimed by showing after the hand: who paid, and everyone's stacks after it
+        if (r.bounty && rec) rec.bounty = r.bounty;
+        for (const [userId, v] of Object.entries(r.nets || {})) {
+          const p = rec?.players.find((x) => x.userId === userId);
+          if (p) { p.endStack = v.endStack; p.net = v.net; }
+        }
         continue;
       }
       out.push(r);

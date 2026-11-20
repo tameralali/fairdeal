@@ -267,7 +267,14 @@ export function fitSeats(select, format, bombPot, hintEl) {
 }
 
 // ---------- start a game ----------
-function loadLast() { try { return JSON.parse(localStorage.getItem(LAST_KEY) || 'null'); } catch { return null; } }
+function loadLast() {
+  try {
+    const v = JSON.parse(localStorage.getItem(LAST_KEY) || 'null');
+    // the time bank used to be 60 seconds by default, which was too long: games saved with it start at 20
+    if (v && v.settings && !v.bank20) { if (v.settings.timeBankSeconds === 60) v.settings.timeBankSeconds = 20; v.bank20 = true; }
+    return v;
+  } catch { return null; }
+}
 function saveLast(v) { try { localStorage.setItem(LAST_KEY, JSON.stringify(v)); } catch { /* storage blocked */ } }
 
 const LENGTHS = [[0, 'No limit'], [60, '1 hour'], [90, '1 hour 30'], [120, '2 hours'], [150, '2 hours 30'], [180, '3 hours'], [240, '4 hours'], [300, '5 hours'], [360, '6 hours']];
@@ -325,10 +332,10 @@ function startFormHTML(values, presets, activeId) {
           <h3>Clock</h3>
           <div class="field-grid">
             <label><span class="lbl">Seconds to act</span><input name="decisionSeconds" type="number" min="5" max="600" value="${s.decisionSeconds || 30}"></label>
-            <label><span class="lbl">Time bank (seconds)</span><input name="timeBankSeconds" type="number" min="0" max="3600" value="${s.timeBankSeconds ?? 60}"></label>
+            <label><span class="lbl">Time bank (seconds)</span><input name="timeBankSeconds" type="number" min="0" max="3600" value="${s.timeBankSeconds ?? 20}"></label>
             <label><span class="lbl">Game length</span><select name="sessionMinutes">${lengths.map(([m, l]) => opt(m, l, minutes)).join('')}</select></label>
           </div>
-          <p class="hint">When the game length runs out, the hand in progress finishes and everyone is cashed out.</p>
+          <p class="hint">The time bank is extra time once the seconds to act run out, used up as it goes and refilled 5 seconds for every 10 hands. When the game length runs out, the hand in progress finishes and everyone is cashed out.</p>
         </div>
       </section>
       <section class="sg-sec">
@@ -345,6 +352,17 @@ function startFormHTML(values, presets, activeId) {
           <h3>Coming back</h3>
           <label><span class="lbl">Rathole time</span><select name="rathole">${rats.map(([m, l]) => opt(m, l, rat)).join('')}</select></label>
           <p class="hint">${esc(ratholeHint)}</p>
+        </div>
+      </section>
+      <section class="sg-sec sg-cols">
+        <div>
+          <h3>Straddle</h3>
+          <label class="check"><input type="checkbox" name="straddle" ${s.straddle ? 'checked' : ''}> Allow a straddle<small>The player under the gun can post twice the big blind before the deal, and acts last before the flop. Each player turns it on for themselves.</small></label>
+        </div>
+        <div>
+          <h3>7-2 game</h3>
+          <label><span class="lbl">Bounty from each player</span>${money('s72', s.sevenDeuce ? toInput(s.sevenDeuce, dec) : '', 'Off')}</label>
+          <p class="hint">Win a Hold’em hand holding 7-2 and show both cards, and everyone else dealt in pays you this. Leave it empty for no 7-2 game.</p>
         </div>
       </section>
       <section class="sg-sec sg-cols">
@@ -377,6 +395,7 @@ function readStartForm(form) {
   if (!(sb > 0) || !(bb > 0)) return { error: 'Enter the blinds in dollars, like 0.25 and 0.50.' };
   if (bb < sb) return { error: 'The big blind should be at least the small blind.' };
   for (const k of ['min', 'max']) if (el(k).value.trim() && !(P(k) > 0)) return { error: `Enter the ${k === 'min' ? 'minimum buy-in' : 'maximum stack'} in dollars, or leave it empty.` };
+  if (el('s72').value.trim() && !(P('s72') > 0)) return { error: 'Enter the 7-2 bounty in dollars, or leave it empty for no 7-2 game.' };
   const runs = Number(el('rit').value);
   return {
     name: el('tname').value.trim(),
@@ -390,6 +409,7 @@ function readStartForm(form) {
       decisionSeconds: Number(el('decisionSeconds').value), timeBankSeconds: Number(el('timeBankSeconds').value),
       sessionMinutes: Number(el('sessionMinutes').value), ratholeMinutes: Number(el('rathole').value),
       autoApprove: el('autoApprove').checked, autoStart: el('autoStart').checked,
+      straddle: el('straddle').checked, sevenDeuce: el('s72').value.trim() ? P('s72') : 0,
       revealPolicy: el('folded').value,
     },
   };

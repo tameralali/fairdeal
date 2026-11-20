@@ -21,14 +21,20 @@ const els = {};
 applyPrefs();
 
 async function main() {
-  for (const id of ['top', 'stage', 'area', 'felt', 'center', 'seats', 'chips', 'mybar', 'actions', 'drawer', 'log', 'chat']) els[id] = document.getElementById(id);
+  for (const id of ['top', 'stage', 'area', 'felt', 'center', 'seats', 'chips', 'mybar', 'actions', 'drawer', 'log', 'chat', 'chatfab']) els[id] = document.getElementById(id);
   let me;
   try { me = await ensureIdentity(); }
   catch (e) { fatal(e.message); return; }
   app.me = me.user;
   app.fair = new FairClient(app.tableId, (ev, p) => emit(ev, p, { quiet: true }), onVerified);
-  const drawerPref = localStorage.getItem('fd:drawer');
+  // Chat sits on the right, open, on a wide screen; on a phone it opens from the chat button.
+  const drawerPref = localStorage.getItem('fd:chatpanel');
   if (drawerPref === 'closed' || (drawerPref === null && window.innerWidth < 900)) els.drawer.classList.add('collapsed');
+  app.logOnlyChat = localStorage.getItem('fd:logtab') !== 'log';
+  $$('[data-logfilter]').forEach((b) => b.classList.toggle('on', (b.dataset.logfilter === 'chat') === app.logOnlyChat));
+  els.log.classList.toggle('chat-view', app.logOnlyChat);
+  app.unread = 0;
+  keepAboveKeyboard();
   // browsers only allow sound after a tap or key press on the page
   for (const ev of ['pointerdown', 'keydown', 'touchstart']) document.addEventListener(ev, unlockSound, { capture: true, passive: true });
   connect();
@@ -68,6 +74,15 @@ function connect() {
     if (app.logs.length > 900) app.logs.splice(0, app.logs.length - 900);
     appendLog(entries);
     bubbles(entries);
+    for (const e of entries) {
+      if (!/bounty/.test(e.kind || '')) continue;
+      const m = /^(.+?) won with 7-2 and collects the (.+?) bounty from (.+): (.+)$/.exec(e.text);
+      if (m) announce(`${m[1]} won with 7-2`, `${m[4]} bounty: ${m[2]} from ${m[3]}`, 'bounty');
+    }
+    if (els.drawer.classList.contains('collapsed')) {
+      const fresh = entries.filter((e) => e.kind === 'chat' && e.userId !== myId()).length;
+      if (fresh) { app.unread += fresh; paintUnread(); }
+    }
   });
   socket.on('toast', (t) => toast(t.text));
   socket.on('request', (r) => {
@@ -128,11 +143,49 @@ function onState(s) {
   }
   if (first) app.fair.onRevealed(s.table.revealedThrough, fetchRecord);
   render();
-  // A finished game opens on its hand history; an open history picks up each hand as it ends.
-  if (first && s.table.status === 'ended' && s.table.hands > 0) H.historyDialog();
+  // A finished game opens on its hand history; an open history picks up each hand as it ends. A link
+  // with ?hand=N (from the game's summary page) opens the replayer on that hand.
+  const want = first ? Number(new URLSearchParams(location.search).get('hand')) || null : null;
+  if (first && s.table.hands > 0 && (want || s.table.status === 'ended')) H.historyDialog(want ? { start: want, sort: 'pot' } : {});
   else if (prev && prev.table.hands !== s.table.hands) H.historyRefresh();
   tableSounds(prev, s);
+  announceSeats(prev, s);
   D.onState(s);
+}
+
+// Calling 30 is announced across the table for everyone, as well as the countdown on the seat: when
+// someone calls it, when a big pot starts their 30 minutes again, and when they take it back.
+const CLOCK = '<svg class="an-clock" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17" fill="none" stroke="currentColor" stroke-width="3"/><path class="an-hand" d="M20 20V8.5" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/><path d="M20 20l6.5 4" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/></svg>';
+const notices = [];
+function announceSeats(prev, s) {
+  if (!prev || !prev.seats) return;
+  for (const info of s.seats) {
+    if (!info) continue;
+    const was = prev.seats.find((x) => x && x.userId === info.userId);
+    if (!was || info.leaving) continue;
+    const you = info.userId === s.me.userId;
+    if (info.leaveAt && !was.leaveAt) announce(you ? 'You called 30' : `${info.name} called 30`, you ? 'You leave in 30 minutes' : 'Leaving in 30 minutes');
+    else if (info.leaveAt && was.leaveAt && info.leaveAt - was.leaveAt > 60000) announce(you ? 'Your 30 minutes start again' : `${info.name}'s 30 minutes start again`, 'Won a pot over the line');
+    else if (!info.leaveAt && was.leaveAt) announce(you ? 'You are staying' : `${info.name} is staying`, 'Called 30 is taken back', 'soft');
+  }
+}
+function announce(title, sub, kind = '') {
+  notices.push({ title, sub, kind });
+  if (notices.length === 1) nextNotice();
+}
+function nextNotice() {
+  const a = notices[0];
+  if (!a || !els.stage) return;
+  const el = document.createElement('div');
+  el.className = `announce ${a.kind}`;
+  el.setAttribute('role', 'status');
+  el.innerHTML = `${CLOCK}<div class="an-txt"><b>${esc(a.title)}</b><small>${esc(a.sub)}</small></div>`;
+  els.stage.appendChild(el);
+  if (prefs.sound && a.kind !== 'soft') playSound(a.kind === 'bounty' ? 'win' : 'call30');
+  setTimeout(() => {
+    el.classList.add('out');
+    setTimeout(() => { el.remove(); notices.shift(); nextNotice(); }, 450);
+  }, a.kind === 'soft' ? 2400 : 3800);
 }
 
 // Chips for bets and calls, a slide for a fold, a knock for a check, and the pot pushed to a winner,
@@ -373,6 +426,7 @@ function renderTop(s) {
     <div class="tb-game">
       <span class="pill brass" title="${esc(GAME_TYPES[game]?.name || '')}">${esc(gameShort(game))}</span>${dbNow ? '<span class="pill soft" title="Two boards, each pot split between them">Double board</span>' : ''}
       <span class="pill num">${fmt(st.smallBlind)}/${fmt(st.bigBlind)}</span>
+      ${st.sevenDeuce ? `<span class="pill s72" title="Win a Hold’em hand with 7-2 and show it: everyone else dealt in pays ${esc(fmt(st.sevenDeuce))}">7-2 ${fmt(st.sevenDeuce)}</span>` : ''}${st.straddle ? '<span class="pill soft sm-hide" title="The player under the gun can straddle">Straddle</span>' : ''}
       ${rot ? `<span class="tb-note">${esc(rot)}</span>` : ''}
       ${bomb}${status}
     </div>
@@ -387,7 +441,7 @@ function renderTop(s) {
       <button class="btn small sm-hide" data-open="stats">Stats</button>
       <button class="btn small sm-hide md-hide" data-open="hands">Hands</button>
       <button class="btn small sm-hide md-hide" data-open="look">Look</button>
-      <button class="btn small sm-hide ${els.drawer.classList.contains('collapsed') ? '' : 'primary'}" data-open="log">Log</button>
+      <button class="btn small sm-hide chat-btn ${els.drawer.classList.contains('collapsed') ? '' : 'primary'}" data-open="log">Chat<span class="unread" ${app.unread ? '' : 'hidden'}>${app.unread > 9 ? '9+' : app.unread || ''}</span></button>
       <button class="btn small menu-btn" data-open="menu">Menu</button>
     </div>`;
   tick();
@@ -452,12 +506,54 @@ function madeHand(h, hole) {
   return made.map((r) => shortHandName(r.score, true)).join(' / ');
 }
 
+// Who won each board, once the hand is over: board index -> [{ seat, name, amount }], the most first.
+function boardWinners(h) {
+  const r = h && h.phase === 'done' && h.results;
+  if (!r || r.uncontested || !r.pots) return null;
+  const per = new Map();
+  for (const pot of r.pots) {
+    if (pot.uncontested) continue;
+    for (const run of pot.runs || []) {
+      const i = run.b ?? run.run;
+      const m = per.get(i) || new Map();
+      for (const w of run.winners) {
+        const cur = m.get(w.seat) || { seat: w.seat, name: w.name, amount: 0 };
+        cur.amount += w.amount;
+        m.set(w.seat, cur);
+      }
+      per.set(i, m);
+    }
+  }
+  return new Map([...per].map(([i, m]) => [i, [...m.values()].sort((a, b) => b.amount - a.amount)]));
+}
+
+// With more than one board (run more than once, or a double board), what a hand makes on each board,
+// as small numbered labels under the cards, green where it won that board.
+const BRIEF = ['High card', 'Pair', 'Two pair', 'Trips', 'Straight', 'Flush', 'Full house', 'Quads', 'Str. flush'];
+function boardLabels(h, hole, seat, wins) {
+  const boards = h.boards || [h.board];
+  if (boards.length < 2 || !hole || !hole.length || !hole.every(Boolean)) return '';
+  const omaha = GAME_TYPES[h.gameType].omaha;
+  const pills = [];
+  boards.forEach((b, i) => {
+    if (!b || b.length < 3) return;
+    const best = bestHand(hole, b, omaha);
+    if (!best) return;
+    const c = best.score >> 20;
+    const name = c === 8 && ((best.score >> 16) & 15) === 14 ? 'Royal' : BRIEF[c];
+    const won = wins ? (wins.get(i) || []).some((w) => w.seat === seat) : null;
+    pills.push(`<span class="bl${won ? ' won' : won === false ? ' lost' : ''}"><i>${i + 1}</i>${esc(name)}</span>`);
+  });
+  return pills.length ? pills.join('') : '';
+}
+
 const FOLD_MARK = '<span class="foldmark" aria-label="Folded"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg><span>Fold</span></span>';
 
 function renderTable(s) {
   const t = s.table;
   const n = t.settings.maxPlayers;
   const h = s.hand;
+  const wins = boardWinners(h);
   if (h && app.seenHand !== h.number) { app.seenHand = h.number; app.seen = new Set(); }
   const nextGame = t.rotation ? t.rotation.current : t.settings.format[0].game;
   const holeN = GAME_TYPES[h ? h.gameType : nextGame]?.holeCount || 2;
@@ -489,10 +585,16 @@ function renderTable(s) {
     if (!info) {
       const mine = myReq && myReq.seat === seat;
       const canSit = !s.me.seated && !myReq && t.status !== 'ended';
-      let inner = canSit ? `<button class="sit" data-sit="${seat}">Sit here</button>` : '';
-      if (mine) inner = '<span>Waiting for the host</span>';
-      else if (pendingSeats.has(seat)) inner = '<span>Requested</span>';
-      seats += `<div class="seat empty ${side} ${mine ? 'reserved' : ''} ${inner ? '' : 'quiet'}" style="${pos}"><div class="plate" ${inner ? '' : `title="Seat ${seat + 1} is free"`}>${inner}</div></div>`;
+      // a free seat: its number in the corner and, for someone who can take it, the whole box to click
+      const no = `<span class="seat-no" aria-hidden="true">${seat + 1}</span>`;
+      if (canSit && !pendingSeats.has(seat)) {
+        seats += `<div class="seat empty open ${side}" style="${pos}"><button type="button" class="plate" data-sit="${seat}" aria-label="Sit in seat ${seat + 1}">${no}<span class="sit-word">Sit</span></button></div>`;
+        continue;
+      }
+      let inner = '';
+      if (mine) inner = '<span class="sit-note">Waiting for the host</span>';
+      else if (pendingSeats.has(seat)) inner = '<span class="sit-note">Requested</span>';
+      seats += `<div class="seat empty ${side} ${mine ? 'reserved' : ''} ${inner ? '' : 'quiet'}" style="${pos}"><div class="plate" ${inner ? '' : `title="Seat ${seat + 1} is free"`}>${no}${inner}</div></div>`;
       continue;
     }
     const p = hp.get(seat);
@@ -519,10 +621,13 @@ function renderTable(s) {
       };
       if (faces) {
         const hc = R.handCards.get(seat);
+        // once the hand is over your own cards can be tapped to show them, as well as the Show buttons
+        const canShow = isMe && h && h.canShow;
         cards = p.hole.map((c, i) => {
           if (!c) { const [m, st] = motion(`b${seat}${i}`, `b${seat}${i}`, i); return backHTML(m, `--i:${i}${st}`); }
           const [m, st] = motion(`h${seat}${i}${c}`, `b${seat}${i}`, i);
-          return cardHTML(c, `${hc ? (hc.has(c) ? 'win' : 'dim') : ''} ${isMe ? '' : 'tint'} ${m}`, `--i:${i}${st}`);
+          const showable = canShow && !(p.showIdx || []).includes(i);
+          return cardHTML(c, `${hc ? (hc.has(c) ? 'win' : 'dim') : ''} ${isMe ? '' : 'tint'} ${m}${showable ? ' showable' : ''}`, `--i:${i}${st}`, showable ? `data-show-card="${i}" title="Show this card to the table"` : '');
         }).join('');
       } else if (!p.folded) {
         cards = Array.from({ length: count }, (_, i) => { const [m, st] = motion(`b${seat}${i}`, `b${seat}${i}`, i); return backHTML(m, `--i:${i}${st}`); }).join('');
@@ -538,8 +643,12 @@ function renderTable(s) {
       }
       const seeAll = p.hole && p.hole.length && p.hole.every(Boolean);
       if (seeAll && (!p.folded || p.shown) && (isMe ? prefs.handStrength || !live : true) && (isMe || !live || chances || p.shown)) {
-        const name = madeHand(h, p.hole);
-        if (name) extra += `<span class="made n${count}">${esc(name)}</span>`;
+        const multi = (h.boards || []).length > 1 ? boardLabels(h, p.hole, seat, wins) : '';
+        if (multi) extra += `<span class="mades n${count} k${Math.min(4, (h.boards || []).length)}">${multi}</span>`;
+        else {
+          const name = madeHand(h, p.hole);
+          if (name) extra += `<span class="made n${count}">${esc(name)}</span>`;
+        }
       }
     }
 
@@ -551,9 +660,9 @@ function renderTable(s) {
     else if (ritPick) { tag = ritPick.pick === null ? 'Picking' : ritPick.pick === 'any' ? 'Any number' : cap(TIMES[ritPick.pick]); tagCls = ritPick.pick === null ? 'out' : 'pick'; }
     else if (p && live && p.lastAction && !p.allIn && !(p.folded && !isMe)) { tag = p.lastAction; tagCls = p.lastAction.toLowerCase().replace(/[^a-z]/g, ''); }
     else if (info.leaving) { tag = 'Leaving'; tagCls = 'out'; }
-    else if (!p && info.sittingOut) { tag = info.away ? 'Away' : 'Sitting out'; tagCls = 'out'; }
+    else if (!p && info.sittingOut) { tag = 'Away'; tagCls = 'out'; }
     else if (!p && info.stack === 0) { tag = 'Out of chips'; tagCls = 'out'; }
-    else if (info.sitOutNext) { tag = 'Sitting out next'; tagCls = 'out'; }
+    else if (info.sitOutNext) { tag = 'Away'; tagCls = 'out'; }
     let timer = '';
     if (actor && h.turn) {
       timer = `<div class="timer ${h.turn.usingBank ? 'bank' : ''}"><i data-deadline="${h.turn.deadline}" data-total="${h.turn.total || 30000}"></i></div>`;
@@ -612,11 +721,20 @@ function centerHTML(s, R) {
   let turned = 0;
   let grid = '';
   if (bpr > 1 && !stacked) grid += `${runs > 1 ? '<span></span>' : ''}${Array.from({ length: bpr }, (_, i) => `<span class="bhead">Board ${i + 1}</span>`).join('')}`;
+  // once the hand is over, each run (or board) names who won it
+  const wins = boardWinners(h);
+  const winNames = (i) => {
+    const list = wins && wins.get(i);
+    if (!list || !list.length) return '';
+    return list.length === 1 ? esc(list[0].name) : `${list.slice(0, 2).map((w) => esc(w.name)).join(', ')}${list.length > 2 ? ' +' : ''} split`;
+  };
+  const runWin = (i) => { const n = winNames(i); return n ? `<b class="rwin">${n}</b>` : ''; };
   for (let r = 0; r < runs; r++) {
-    if (runs > 1) grid += `<span class="run">Run ${r + 1}</span>`;
+    // one board a run: the winner under the run's name; two boards a run: under each board instead
+    if (runs > 1) grid += `<span class="run">Run ${r + 1}${bpr > 1 ? '' : runWin(r)}</span>`;
     for (let side = 0; side < bpr; side++) {
       const i = r * bpr + side;
-      if (stacked) grid += `<span class="run">Board ${side + 1}</span>`;
+      if (stacked) grid += `<span class="run">Board ${side + 1}${runWin(i)}</span>`;
       const b = boards[i] || [];
       const used = R.boardUsed[i];
       let slots = '';
@@ -631,7 +749,8 @@ function centerHTML(s, R) {
         const cls = [isNew ? 'flip' : '', shared ? 'shared' : '', used ? (used.has(c) ? 'win' : 'dim') : ''].join(' ');
         slots += cardHTML(c, cls, style);
       }
-      grid += `<div class="board" aria-label="${esc(boardName(i, bpr, boards.length) || 'Board')}">${slots}</div>`;
+      const cap = bpr > 1 && runs > 1 ? winNames(i) : '';
+      grid += `<div class="board${cap ? ' capd' : ''}" aria-label="${esc(boardName(i, bpr, boards.length) || 'Board')}">${slots}${cap ? `<small class="bwin">${cap}</small>` : ''}</div>`;
     }
   }
   const cols = stacked ? 'auto auto' : `${runs > 1 ? 'auto ' : ''}repeat(${bpr}, auto)`;
@@ -652,7 +771,7 @@ function centerHTML(s, R) {
   }
   const bombWhy = h.bombReason === 'manual' ? 'called by the host' : h.bombReason === 'every' ? 'scheduled' : h.bombReason === 'percent' ? 'random' : '';
   const bomb = h.isBomb ? `<span class="bomb" title="${esc(bombWhy)}">Bomb pot</span>` : '';
-  return `${above}<div class="boards k${Math.min(runs, 4)} b${bpr}${stacked ? ' stacked' : ''}" style="grid-template-columns:${cols}">${grid}</div>${below}
+  return `${above}<div class="boards k${Math.min(runs, 4)} b${bpr}${stacked ? ' stacked' : ''}${wins && bpr > 1 && runs > 1 ? ' capped' : ''}" style="grid-template-columns:${cols}">${grid}</div>${below}
     <div class="meta">${bomb}<span>${esc(gameShort(h.gameType))} hand ${h.number}</span></div>`;
 }
 
@@ -740,14 +859,18 @@ function renderBottom(s) {
     const out = s.me.sittingOut || s.me.sitOutNext;
     my += out
       ? `<button class="btn ${s.me.sittingOut ? 'primary' : ''}" data-my="back">I’m back</button>`
-      : '<button class="btn" data-my="sitout">Sit out next hand</button>';
+      : '<button class="btn" data-my="sitout" title="Away from the next hand on. I’m back brings you back in.">Away</button>';
     if (s.table.status !== 'ended') my += '<button class="btn" data-my="chips">Add chips</button>';
+    if (s.table.settings.straddle && s.table.status !== 'ended') my += `<button class="btn tog ${s.me.straddle ? 'on' : ''}" data-my="straddle" aria-pressed="${!!s.me.straddle}" title="Post a straddle, twice the big blind, whenever you are under the gun">Straddle</button>`;
     if (s.me.leaveAt && !s.me.leaving) my += `<span class="status-line call30">Leaving in <b data-leave-at="${s.me.leaveAt}">--:--</b></span><button class="btn ghost" data-my="stay" title="Take back calling it">Stay</button>`;
     else if (!s.me.leaving && s.table.status !== 'ended') my += '<button class="btn" data-my="call30" title="Tell the table you are leaving in 30 minutes. A pot over $1,000 starts the 30 minutes again.">Call 30</button>';
     if (!s.me.leaving) my += '<button class="btn ghost" data-my="stand">Stand up</button>';
     if (s.hand && s.hand.canShow) {
       const mine = s.hand.players.find((p) => p.id === s.me.userId);
       const left = (mine?.hole || []).map((c, i) => [c, i]).filter(([, i]) => !(mine.showIdx || []).includes(i));
+      const st72 = s.table.settings.sevenDeuce;
+      const won = (s.hand.results?.payouts || []).some((w) => w.id === s.me.userId && w.amount > 0);
+      if (st72 && won && mine?.hole?.length === 2 && mine.hole.map((c) => c && c[0]).sort().join('') === '27') my += `<span class="status-line s72-hint">Show both cards to collect the 7-2 bounty</span>`;
       my += `<span class="show-pick" role="group" aria-label="Show your cards"><span class="sp-lbl">Show</span>${left.map(([c, i]) => `<button type="button" class="sp-card" data-show="${i}" title="Show this card">${cardHTML(c)}</button>`).join('')}<button type="button" class="btn small" data-show="all">${left.length === (mine?.hole || []).length ? 'All' : 'The rest'}</button></span>`;
     }
     if (s.me.requests.some((r) => r.type === 'chips')) my += '<span class="status-line">Chip request sent to the host</span>';
@@ -769,15 +892,46 @@ function presetList(L) {
   return list;
 }
 
+// For a seated player the action bar keeps its size, so the table never shifts as the turn moves round:
+// on your turn it has the real buttons; otherwise the same places hold pre-clicks while you are in the hand
+// (Check/Fold, Check or Call, Call any), or sit greyed out. The sizing row keeps its room when unused.
+const GHOST_SIZING = `<div class="presets">${['Min', '½ pot', '¾ pot', 'Pot', 'All-in'].map((l) => `<button type="button" tabindex="-1">${l}</button>`).join('')}</div><input type="range" tabindex="-1" disabled><input type="number" tabindex="-1" disabled>`;
+const ghostSizing = (note = '') => `<div class="sizing ghost" aria-hidden="true">${GHOST_SIZING}</div>${note ? `<div class="ghost-note">${note}</div>` : ''}`;
+
+// A pre-click is for the betting round it was picked in, and is dropped once it no longer fits.
+const preKey = (h) => `${h.number}|${h.street}`;
+function firePre(h, L) {
+  const pre = app.pre;
+  app.pre = null;
+  if (!pre || pre.key !== preKey(h)) return false;
+  let type = null;
+  if (pre.kind === 'checkfold') type = L.canCheck ? 'check' : 'fold';
+  else if (pre.kind === 'check') type = L.canCheck ? 'check' : null;
+  else if (pre.kind === 'call') type = L.canCheck ? 'check' : L.toCall === pre.amount ? 'call' : null;
+  else if (pre.kind === 'callany') type = L.canCheck ? 'check' : 'call';
+  if (!type) return false;
+  emit('action', { type }).then((ack) => { if (!ack.ok) { app.actionKey = null; render(); } });
+  return true;
+}
+
 function renderActions(s) {
   const h = s.hand;
   const L = h && h.legal;
+  const seated = !!(s.me.seated && s.table.status !== 'ended');
+  document.body.classList.toggle('bar-fixed', seated);
+  document.body.classList.remove('rit-open');
   if (L) {
-    const key = `${h.number}|${h.street}|${L.currentBet}|${L.toCall}|${L.minTo}|${L.maxTo}|${L.canRaise}`;
+    const v = VC.voice;
+    const key = `${h.number}|${h.street}|${L.currentBet}|${L.toCall}|${L.minTo}|${L.maxTo}|${L.canRaise}|${v.on ? (v.muted ? 'm' : 'u') : ''}`;
     if (key === app.actionKey) return;
+    if (firePre(h, L)) {
+      app.actionKey = key;
+      $$('.act', els.actions).forEach((b) => { b.disabled = true; });
+      return;
+    }
     app.actionKey = key;
     const call = L.canCheck ? '<span>Check</span>' : `<span>${L.toCall >= L.stack ? 'Call all-in' : 'Call'}</span><span class="amt">${fmt(L.toCall)}</span>`;
-    let sizing = '';
+    let sizing = ghostSizing();
     if (L.canRaise && L.minTo < L.maxTo) {
       sizing = `<div class="sizing">
         <div class="presets">${presetList(L).map((p) => `<button type="button" data-to="${p.to}">${p.label}</button>`).join('')}</div>
@@ -785,11 +939,13 @@ function renderActions(s) {
         <input type="number" inputmode="decimal" step="${app.dec ? '0.01' : '1'}" value="${inp(L.minTo)}" data-amount aria-label="Raise to amount">
       </div>`;
     }
-    els.actions.innerHTML = `${sizing}<div class="act-row">
+    // on a phone the buttons under the table give way on your turn, so the mute comes along into the row
+    const mute = v.on ? `<button type="button" class="btn act-mute ${v.muted ? 'muted' : 'live'}" data-voice="mute" aria-pressed="${v.muted}" title="${v.muted ? 'Unmute' : 'Mute'}">${v.muted ? MIC_OFF : MIC}</button>` : '';
+    els.actions.innerHTML = `${sizing}<div class="act-row">${mute}
       <span class="act-clock" data-actclock></span>
       <button class="act fold" data-act="fold"><span>Fold</span><kbd>F</kbd></button>
       <button class="act call" data-act="${L.canCheck ? 'check' : 'call'}">${call}<kbd>${L.canCheck ? 'K' : 'C'}</kbd></button>
-      ${L.canRaise ? `<button class="act raise" data-act="raise"><span data-raise-label>${raiseLabel(L, L.minTo)}</span><span class="amt" data-raise-amt>${fmt(L.minTo)}</span><kbd>R</kbd></button>` : ''}
+      ${L.canRaise ? `<button class="act raise" data-act="raise"><span data-raise-label>${raiseLabel(L, L.minTo)}</span><span class="amt" data-raise-amt>${fmt(L.minTo)}</span><kbd>R</kbd></button>` : '<button class="act raise" disabled><span>Raise</span></button>'}
     </div>`;
     app.raiseTo = L.minTo;
     tick();
@@ -820,7 +976,10 @@ function renderActions(s) {
       const dim = by.size > 0 && k > 1 && !names.length && mine !== k;
       return `<button class="act ${k === 1 ? 'call' : 'raise'}${mine === k ? ' on' : ''}${names.length ? ' theirs' : ''}${dim ? ' dim' : ''}" data-run="${k}" aria-pressed="${mine === k}"${names.length ? ` aria-label="${esc(cap(TIMES[k]))}, picked by ${esc(names.join(' and '))}"` : ''}><span>${cap(TIMES[k])}</span>${names.length ? `<small class="who">${esc(names.join(', '))}</small>` : ''}</button>`;
     }).join('');
-    els.actions.innerHTML = `<div class="rit-box" role="group" aria-label="Pick how many times to run it"><p>Run it how many times?<small>It runs more than once only if everyone picks the same number. Picking once settles it, and so does time running out before you agree. <span data-ritclock></span></small>${notes.length ? `<small class="rit-picks">${esc(notes.join(' '))}</small>` : ''}</p>${buttons}</div>`;
+    const box = `<div class="rit-box${seated ? ' over' : ''}" role="group" aria-label="Pick how many times to run it"><p>Run it how many times? <span data-ritclock></span><small class="rit-why">It runs more than once only if everyone picks the same number. Picking once settles it, and so does time running out before you agree.</small>${notes.length ? `<small class="rit-picks">${esc(notes.join(' '))}</small>` : ''}</p>${buttons}</div>`;
+    // the vote sits over the bar's usual places, which keep their room underneath it
+    els.actions.innerHTML = seated ? `${ghostSizing()}<div class="act-row ghost" aria-hidden="true">${idleRow()}</div>${box}` : box;
+    if (seated) document.body.classList.add('rit-open');
     tick();
     return;
   }
@@ -833,8 +992,43 @@ function renderActions(s) {
       if (a && a.userId !== s.me.userId) status = `Waiting for ${esc(a.name)}`;
     }
   }
-  els.actions.innerHTML = status ? `<div class="status-line">${status}</div>` : '';
+  if (!seated) {
+    app.pre = null;
+    els.actions.innerHTML = status ? `<div class="status-line">${status}</div>` : '';
+    if (status) tick();
+    return;
+  }
+  const mine = h && h.players.find((p) => p.id === s.me.userId);
+  const live = !!(h && h.phase === 'betting' && mine && !mine.folded && !mine.allIn);
+  let row = idleRow();
+  if (live) {
+    const toCall = Math.max(0, Math.min((h.currentBet || 0) - (mine.bet || 0), mine.stack));
+    const pre = app.pre;
+    if (pre && (pre.key !== preKey(h) || (pre.kind === 'check' && toCall > 0) || (pre.kind === 'call' && toCall !== pre.amount))) app.pre = null;
+    const on = (k) => !!(app.pre && app.pre.kind === k);
+    const btn = (cls, kind, label, extra = '') => `<button type="button" class="act pre ${cls}${on(kind) ? ' on' : ''}" data-pre="${kind}" aria-pressed="${on(kind)}"${extra}><span class="box" aria-hidden="true"></span><span class="pre-l">${label}</span></button>`;
+    row = btn('fold', 'checkfold', toCall > 0 ? 'Fold' : 'Check/Fold')
+      + (toCall > 0 ? btn('call', 'call', `Call <span class="amt">${fmt(toCall)}</span>`, ` data-amount="${toCall}"`) : btn('call', 'check', 'Check'))
+      + btn('raise', 'callany', 'Call any');
+  } else app.pre = null;
+  els.actions.innerHTML = `${ghostSizing(status)}<div class="act-row${live ? ' pre-row' : ''}"><span class="act-clock"></span>${row}</div>`;
   if (status) tick();
+}
+
+// the three places, greyed out, while you have no move to make
+function idleRow() {
+  return '<button class="act fold" disabled><span>Fold</span></button><button class="act call" disabled><span>Check</span></button><button class="act raise" disabled><span>Raise</span></button>';
+}
+
+// picking a pre-click, or picking it again to take it back
+function togglePre(btn) {
+  const h = app.state && app.state.hand;
+  if (!h) return;
+  const kind = btn.dataset.pre;
+  const amount = btn.dataset.amount ? Number(btn.dataset.amount) : null;
+  const same = app.pre && app.pre.kind === kind && app.pre.amount === amount;
+  app.pre = same ? null : { kind, amount, key: preKey(h) };
+  renderActions(app.state);
 }
 
 const cap = (t) => t[0].toUpperCase() + t.slice(1);
@@ -914,7 +1108,11 @@ function tick() {
 // ---------- log & chat ----------
 function entryHTML(e) {
   if (e.kind === 'hand-end') return '';
-  if (e.kind === 'chat') return `<div class="e k-chat ${e.spectator ? 'spec' : ''}"><b>${esc(e.name)}</b> ${esc(e.text)}</div>`;
+  if (e.kind === 'chat') {
+    const mine = !!e.userId && e.userId === myId();
+    const at = e.at ? new Date(e.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+    return `<div class="e k-chat ${e.spectator ? 'spec' : ''} ${mine ? 'mine' : ''}"><b>${esc(mine ? 'You' : e.name)}</b>${at ? `<time>${at}</time>` : ''} <span class="msg">${esc(e.text)}</span></div>`;
+  }
   let text = e.text;
   const m = /^-- starting hand #(\d+) \((.+?)\) \(dealer: (.+)\) --$/.exec(text);
   if (m) text = `Hand #${m[1]}, ${m[2].replace('BOMB POT, ', 'bomb pot, ').replace('DOUBLE BOARD, ', 'double board, ')}, dealer ${m[3]}`;
@@ -925,11 +1123,37 @@ function entryHTML(e) {
 function logFilter(e) { return app.logOnlyChat ? e.kind === 'chat' : true; }
 
 function renderLog() {
-  els.log.innerHTML = app.logs.filter(logFilter).map(entryHTML).join('');
+  const shown = app.logs.filter(logFilter);
+  els.log.innerHTML = shown.length || !app.logOnlyChat ? shown.map(entryHTML).join('') : '<p class="chat-empty">No messages yet. Say something to the table below.</p>';
   els.log.scrollTop = els.log.scrollHeight;
 }
 
+const myId = () => app.state?.me?.userId || app.me?.id;
+
+// unread chat from the others, on the Chat button and the phone's chat button, while the chat is shut
+function paintUnread() {
+  const n = app.unread || 0;
+  const label = n > 9 ? '9+' : String(n);
+  for (const el of document.querySelectorAll('.unread')) { el.hidden = !n; el.textContent = label; }
+  if (els.chatfab) els.chatfab.setAttribute('aria-label', n ? `Chat, ${n} new` : 'Chat');
+}
+
+// On a phone the chat opens from the bottom; when the keyboard comes up it keeps the box above it.
+function keepAboveKeyboard() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const fit = () => {
+    const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    document.documentElement.style.setProperty('--kb', `${Math.round(kb)}px`);
+    document.documentElement.style.setProperty('--vvh', `${Math.round(vv.height)}px`);
+  };
+  vv.addEventListener('resize', fit);
+  vv.addEventListener('scroll', fit);
+  fit();
+}
+
 function appendLog(entries) {
+  if (app.logOnlyChat && entries.some((e) => e.kind === 'chat') && els.log.querySelector('.chat-empty')) els.log.innerHTML = '';
   const nearBottom = els.log.scrollHeight - els.log.scrollTop - els.log.clientHeight < 80;
   els.log.insertAdjacentHTML('beforeend', entries.filter(logFilter).map(entryHTML).join(''));
   while (els.log.childElementCount > 900) els.log.firstElementChild.remove();
@@ -952,6 +1176,7 @@ function bindEvents() {
       else if (k === 'chips') D.chipsDialog();
       else if (k === 'stand') D.standDialog();
       else if (k === 'call30') emit('call30');
+      else if (k === 'straddle') emit('straddle', { value: !app.state.me.straddle });
       else if (k === 'stay') emit('call30:cancel');
       else if (k === 'show') emit('show', {});
       else if (k === 'cancel') emit('seat:cancel');
@@ -968,7 +1193,9 @@ function bindEvents() {
       const k = open.dataset.open;
       if (k === 'log') {
         els.drawer.classList.toggle('collapsed');
-        localStorage.setItem('fd:drawer', els.drawer.classList.contains('collapsed') ? 'closed' : 'open');
+        const shut = els.drawer.classList.contains('collapsed');
+        localStorage.setItem('fd:chatpanel', shut ? 'closed' : 'open');
+        if (!shut) { app.unread = 0; paintUnread(); els.log.scrollTop = els.log.scrollHeight; }
         resize();
         render();
         return;
@@ -986,8 +1213,15 @@ function bindEvents() {
     if (player) return D.playerDialog(player.dataset.player);
     const a = e.target.closest('[data-act]');
     if (a && els.actions.contains(a)) return act(a.dataset.act);
+    const pre = e.target.closest('[data-pre]');
+    if (pre && els.actions.contains(pre)) return togglePre(pre);
     const pr = e.target.closest('[data-to]');
     if (pr && els.actions.contains(pr)) return setRaise(Number(pr.dataset.to));
+    const sc = e.target.closest('[data-show-card]');
+    if (sc && !sc.classList.contains('sent')) {
+      sc.classList.add('sent');
+      return emit('show', { cards: [Number(sc.dataset.showCard)] });
+    }
     const sh = e.target.closest('[data-show]');
     if (sh && els.mybar.contains(sh)) {
       sh.disabled = true;
@@ -1001,6 +1235,8 @@ function bindEvents() {
     const lf = e.target.closest('[data-logfilter]');
     if (lf) {
       app.logOnlyChat = lf.dataset.logfilter === 'chat';
+      try { localStorage.setItem('fd:logtab', app.logOnlyChat ? 'chat' : 'log'); } catch { /* storage blocked */ }
+      els.log.classList.toggle('chat-view', app.logOnlyChat);
       $$('[data-logfilter]').forEach((b) => b.classList.toggle('on', b === lf));
       renderLog();
     }

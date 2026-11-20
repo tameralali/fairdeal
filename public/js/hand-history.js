@@ -9,7 +9,7 @@ import { boardName } from './game-form.js';
 import { handDetailsInto, checkBadge } from './table-dialogs.js';
 
 const SORTS = [['new', 'Newest first'], ['old', 'Oldest first'], ['pot', 'Biggest pots'], ['won', 'Biggest wins'], ['lost', 'Biggest losses']];
-const FILTERS = [['all', 'All hands'], ['played', 'Dealt in'], ['showdown', 'Showdowns'], ['allin', 'All-ins'], ['bomb', 'Bomb pots']];
+const FILTERS = [['all', 'All hands'], ['showdown', 'Showdowns'], ['allin', 'All-ins'], ['bomb', 'Bomb pots']];
 const STEP_MS = 1100;
 const HOLD_MS = 2400; // how long the result stays up before Play moves on to the next hand
 const LETTER = { flop: 'F', turn: 'T', river: 'R' };
@@ -27,7 +27,8 @@ const icon = {
 
 let current = null; // the open history, so new hands can be added to its list while it is open
 
-// start: the hand to show first. sort and who: how the list opens (who is whose results it shows).
+// start: the hand to show first. sort and who: how the list opens. who is the player whose hands and
+// results the list shows; empty (Everyone) shows every hand with its pot.
 export async function historyDialog({ start = null, sort = null, who = null } = {}) {
   if (current) current.close();
   const r = await emit('hands:list');
@@ -44,7 +45,7 @@ export async function historyDialog({ start = null, sort = null, who = null } = 
     for (const h of v.all) for (const [id, nm] of Object.entries(h.names || {})) if (!out.has(id)) out.set(id, nm);
     return out;
   };
-  v.who = who && played(who) ? who : played(me) ? me : [...names().keys()].find(played) || me;
+  v.who = who && played(who) ? who : played(me) ? me : '';
 
   const dlg = dialog({ title: `Hand history, ${app.state.table.name}`, className: 'hh-dlg', body: '<p class="muted" style="padding:1.2rem">Loading…</p>' });
   current = { close: () => dlg.close(), refresh };
@@ -54,13 +55,15 @@ export async function historyDialog({ start = null, sort = null, who = null } = 
   const list = () => {
     let out = v.all.filter((h) => {
       if (v.game !== 'all' && h.gameType !== v.game) return false;
-      if (v.filter === 'played') return h.nets[v.who] !== undefined;
+      if (v.who && h.nets[v.who] === undefined) return false;
       if (v.filter === 'showdown') return h.showdown;
       if (v.filter === 'allin') return h.allIn;
       if (v.filter === 'bomb') return h.isBomb;
       return true;
     });
-    const net = (h) => h.nets[v.who];
+    // a player's own result; for everyone, the biggest single win or loss in the hand
+    const vals = (h) => Object.values(h.nets || {});
+    const net = (h) => (v.who ? h.nets[v.who] : v.sort === 'lost' ? Math.min(0, ...vals(h)) : Math.max(0, ...vals(h)));
     if (v.sort === 'old') out.sort((a, b) => a.handNumber - b.handNumber);
     else if (v.sort === 'pot') out.sort((a, b) => b.pot - a.pot || b.handNumber - a.handNumber);
     else if (v.sort === 'won') out = out.filter((h) => net(h) > 0).sort((a, b) => net(b) - net(a) || b.handNumber - a.handNumber);
@@ -69,7 +72,23 @@ export async function historyDialog({ start = null, sort = null, who = null } = 
     return out;
   };
   const whoName = () => (v.who === me ? 'You' : names().get(v.who) || 'Player');
+  // for everyone: who won the most in the hand, by name
+  const topWinner = (h) => {
+    const [id, amt] = Object.entries(h.nets || {}).sort((a, b) => b[1] - a[1])[0] || [];
+    return id && amt > 0 ? `${id === me ? 'You' : h.names?.[id] || names().get(id) || 'Someone'} +${fmtC(amt)}` : '';
+  };
   const rowHTML = (h) => {
+    if (!v.who) {
+      const flags = [h.isBomb ? 'bomb pot' : '', h.doubleBoard ? 'two boards' : '', h.runCount > 1 ? `ran ${h.runCount} times` : ''].filter(Boolean).join(', ');
+      const vals = Object.values(h.nets || {});
+      const big = v.sort === 'won' ? Math.max(0, ...vals) : v.sort === 'lost' ? Math.min(0, ...vals) : null;
+      return `<button type="button" class="hh-row ${h.handNumber === v.cur ? 'on' : ''}" data-h="${h.handNumber}" role="option" aria-selected="${h.handNumber === v.cur}">
+      <span class="hh-n">${h.handNumber}</span>
+      <span class="hh-net ${big === null ? 'even' : big > 0 ? 'pos' : 'neg'}">${big === null ? fmtC(h.pot) : signed(big)}</span>
+      <span class="hh-cards"></span>
+      <span class="hh-sub">${esc(when(h.at))}, ${esc(gameShort(h.gameType))}${flags ? `, ${esc(flags)}` : ''}${topWinner(h) ? `<b>${esc(topWinner(h))}</b>` : ''}</span>
+    </button>`;
+    }
     const net = h.nets[v.who];
     const cls = net === undefined ? 'out' : net > 0 ? 'pos' : net < 0 ? 'neg' : 'even';
     const cards = h.cards?.[v.who];
@@ -85,17 +104,17 @@ export async function historyDialog({ start = null, sort = null, who = null } = 
     const L = list();
     const games = [...new Set(v.all.map((h) => h.gameType))];
     const people = [...names().entries()].filter(([id]) => played(id)).sort((a, b) => (a[0] === me ? -1 : b[0] === me ? 1 : a[1].localeCompare(b[1])));
-    const total = L.reduce((s, h) => s + (h.nets[v.who] || 0), 0);
+    const total = v.who ? L.reduce((s, h) => s + (h.nets[v.who] || 0), 0) : 0;
     const opt = (pairs, val) => pairs.map(([k, l]) => `<option value="${esc(k)}" ${k === val ? 'selected' : ''}>${esc(l)}</option>`).join('');
     return `
       <div class="hh-side-top"><button type="button" class="btn small" data-list>Back to the hand</button></div>
       <div class="hh-tools">
+        <label class="hh-who"><span class="lbl">Player</span><select data-k="who">${opt([['', 'Everyone'], ...people.map(([id, nm]) => [id, id === me ? 'You' : nm])], v.who)}</select></label>
         <label><span class="lbl">Sort</span><select data-k="sort">${opt(SORTS, v.sort)}</select></label>
         <label><span class="lbl">Show</span><select data-k="filter">${opt(FILTERS, v.filter)}</select></label>
-        ${people.length > 1 ? `<label><span class="lbl">Results for</span><select data-k="who">${opt(people.map(([id, nm]) => [id, id === me ? 'You' : nm]), v.who)}</select></label>` : ''}
         ${games.length > 1 ? `<label><span class="lbl">Game</span><select data-k="game">${opt([['all', 'All games'], ...games.map((g) => [g, gameShort(g)])], v.game)}</select></label>` : ''}
       </div>
-      <p class="hh-sum">${L.length} hand${L.length === 1 ? '' : 's'}${L.length ? `, ${esc(whoName())} <b class="${total > 0 ? 'pos' : total < 0 ? 'neg' : ''}">${signed(total)}</b>` : ''}</p>
+      <p class="hh-sum">${L.length} hand${L.length === 1 ? '' : 's'}${L.length && v.who ? `, ${esc(whoName())} <b class="${total > 0 ? 'pos' : total < 0 ? 'neg' : ''}">${signed(total)}</b>` : ''}</p>
       <div class="hh-list" role="listbox" aria-label="Hands">${L.length ? L.map(rowHTML).join('') : `<p class="muted hh-empty">${v.all.length ? 'No hands match.' : 'No finished hands yet.'}</p>`}</div>`;
   };
   const drawSide = () => {
@@ -152,7 +171,7 @@ export async function historyDialog({ start = null, sort = null, who = null } = 
         <div><h3>Hand #${rec.handNumber}${pos >= 0 ? `<small>${pos + 1} of ${L.length}</small>` : ''}${checkBadge(rec.handNumber, L[pos]?.revealed ?? rec.revealed)}</h3><p>${esc(meta(rec))}</p></div>
         <div class="hh-views"><button type="button" class="btn small hh-list-btn" data-list>Hands</button><div class="seg" data-mode role="group" aria-label="View"><button type="button" data-v="replay" class="${v.mode === 'replay' ? 'on' : ''}">Replay</button><button type="button" data-v="details" class="${v.mode === 'details' ? 'on' : ''}" title="Details and the deck check">Details</button></div></div>
       </div>
-      <div class="hh-stage ${v.mode === 'details' ? 'det' : ''}">${v.mode === 'details' ? '<div class="hh-details"></div>' : v.R ? feltHTML(rec, v.R, v.R.steps[v.i], v.who) : '<p class="muted">This hand was played before hands were recorded action by action, so it cannot be replayed. Details has everything else.</p>'}</div>
+      <div class="hh-stage ${v.mode === 'details' ? 'det' : ''}">${v.mode === 'details' ? '<div class="hh-details"></div>' : v.R ? feltHTML(rec, v.R, v.R.steps[v.i], v.who || me) : '<p class="muted">This hand was played before hands were recorded action by action, so it cannot be replayed. Details has everything else.</p>'}</div>
       ${v.mode === 'replay' && v.R ? `<div class="hh-step" aria-live="polite"><span class="num">${v.i + 1}/${v.R.steps.length}</span><span>${esc(v.R.steps[v.i].text)}</span></div>` : ''}
       ${controlsHTML()}`;
     if (v.mode === 'details') handDetailsInto(main.querySelector('.hh-details'), rec);

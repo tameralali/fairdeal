@@ -29,6 +29,8 @@ async function boot() {
   const next = new URLSearchParams(location.search).get('next');
   if (next && /^\/(?!\/)/.test(next)) { location.replace(next); return; }
   renderHead();
+  const game = location.pathname.match(/^\/g\/([A-Za-z0-9_-]{4,40})$/);
+  if (game) return gamePage(game[1]);
   route();
 }
 
@@ -95,7 +97,7 @@ function board(tables, empty = 'No tables yet.', canEnd = false) {
     const extra = t.bombMode && t.bombMode !== 'off' && t.status !== 'ended' && !t.ending ? ' with bomb pots' : '';
     const who = t.names.length ? `. ${t.status === 'ended' ? '' : 'Playing: '}${t.names.join(', ')}` : '';
     const end = canEnd && t.status !== 'ended' && !t.ending ? `<button type="button" class="btn small end" data-end="${esc(t.id)}" aria-label="End ${esc(t.name)}">End game</button>` : '';
-    return `<div class="gb-row"><a href="/t/${esc(t.id)}" target="_blank" rel="noopener" class="${t.status === 'ended' ? 'ended' : ''}"><span class="g">${esc(t.format ? formatShort(t.format) : shortGames(t.games))}</span><span class="stakes">${F(t.smallBlind)}/${F(t.bigBlind)}</span>
+    return `<div class="gb-row"><a href="/${t.status === 'ended' ? 'g' : 't'}/${esc(t.id)}" target="_blank" rel="noopener" class="${t.status === 'ended' ? 'ended' : ''}"><span class="g">${esc(t.format ? formatShort(t.format) : shortGames(t.games))}</span><span class="stakes">${F(t.smallBlind)}/${F(t.bigBlind)}</span>
       <span class="nm"><b>${esc(t.name)}</b><small>${esc(status + extra + who)}</small></span>
       <span class="seats"><b>${t.players}</b> of ${t.maxPlayers}</span></a>${end}</div>`;
   }).join('');
@@ -195,7 +197,7 @@ async function clubHome(id) {
   const roleLabel = { owner: 'You own the club', manager: 'You are an admin', member: 'Member' }[c.myRole];
   const live = data.tables.filter((t) => t.status !== 'ended');
   const past = data.tables.filter((t) => t.status === 'ended');
-  const money = (n) => (n === undefined ? '<span class="faint">-</span>' : `<span class="${n < 0 ? 'neg' : ''}">${F(n)}</span>`);
+  const money = (n) => (n === undefined ? '<span class="faint">-</span>' : `<span class="${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}">${F(n)}</span>`);
   const signed = (n) => (n === undefined ? '<span class="faint">-</span>' : `<span class="${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}">${n > 0 ? '+' : ''}${F(n)}</span>`);
   const members = c.members.slice().sort((a, b) => (ui.sort === 'net' ? (b.net ?? -1e18) - (a.net ?? -1e18) : ui.sort === 'balance' ? (b.balance ?? -1e18) - (a.balance ?? -1e18) : 0));
   if (ui.member && !c.members.some((m) => m.userId === ui.member)) ui.member = '';
@@ -210,7 +212,7 @@ async function clubHome(id) {
         <span class="muted">${roleLabel}, ${c.members.length} member${c.members.length === 1 ? '' : 's'}</span>
       </div>
       <div class="cb-bal">
-        <div><small>Your balance</small><b class="${c.me.balance < 0 ? 'neg' : ''}">${F(c.me.balance)}</b></div>
+        <div><small>Your balance</small><b class="${c.me.balance > 0 ? 'pos' : c.me.balance < 0 ? 'neg' : ''}">${F(c.me.balance)}</b></div>
         <div><small>Credit limit</small><b>${F(c.me.creditLimit)}</b></div>
         <div><small>Available to play</small><b>${F(Math.max(0, c.me.available))}</b></div>
       </div>
@@ -264,7 +266,7 @@ async function clubHome(id) {
       </div>
       ${shown.length ? `<div class="scroll-x wide-only"><table class="data"><thead><tr><th>When</th><th>Member</th><th>What</th><th class="n">Amount</th><th class="n">Balance after</th><th>By</th><th>Detail</th></tr></thead><tbody>
       ${shown.map((t) => `<tr><td class="muted nowrap">${when(t.at)}</td><td>${esc(t.name)}</td><td class="nowrap">${TX[t.type] || esc(t.type)}</td>
-        <td class="n">${t.type === 'credit_limit' ? '' : signed(t.amount)}</td><td class="n">${F(t.balanceAfter)}</td>
+        <td class="n">${t.type === 'credit_limit' ? '' : signed(t.amount)}</td><td class="n">${money(t.balanceAfter)}</td>
         <td class="muted">${esc(t.byName || '')}</td><td class="muted">${esc(txDetail(t, F))}</td></tr>`).join('')}</tbody></table></div>
       <ul class="led-list narrow-only">${shown.map((t) => `<li>
         <div class="li-top"><b>${esc(t.name)}</b><span>${t.type === 'credit_limit' ? '' : signed(t.amount)}</span></div>
@@ -349,7 +351,7 @@ async function clubHome(id) {
     const sg = e.target.closest('#stats [data-game] button');
     if (sg) { ui.statsGame = sg.dataset.v; loadClubStats(id, c); return; }
     const rg = e.target.closest('[data-result-game]');
-    if (rg) { window.open(`/t/${encodeURIComponent(rg.dataset.resultGame)}`, '_blank', 'noopener'); return; }
+    if (rg) { window.open(`/g/${encodeURIComponent(rg.dataset.resultGame)}`, '_blank', 'noopener'); return; }
     const b = e.target.closest('[data-m]');
     if (!b) return;
     const m = c.members.find((x) => x.userId === b.dataset.u);
@@ -681,6 +683,125 @@ async function fairPage() {
   </article>`;
   // copies the start of the command: the file and the fingerprint are the reader's own
   main.querySelector('[data-copy-cmd]').addEventListener('click', () => copyText('node scripts/verify-hand.js '));
+}
+
+// ---------- a game: its results, highlights, biggest hands and stats ----------
+const SUIT = { s: '♠', h: '♥', d: '♦', c: '♣' };
+const cardText = (c) => `<span class="ct s-${esc(c[1])}">${esc(c[0] === 'T' ? '10' : c[0])}${SUIT[c[1]] || ''}</span>`;
+const when = (ms) => new Date(ms).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+// "Sam", "Sam and Lina", "Sam, Lina and Omar", "Sam, Lina and 3 others"
+const nameList = (names) => (names.length <= 1 ? names.join('') : names.length <= 3 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : `${names.slice(0, 2).join(', ')} and ${names.length - 2} others`);
+function lasted(ms) {
+  const m = Math.max(1, Math.round(ms / 60000));
+  return m < 60 ? `${m} minutes` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}`;
+}
+
+async function gamePage(id) {
+  main.innerHTML = '<p class="muted" style="padding:2rem 0">Loading the game…</p>';
+  const q = encodeURIComponent(id);
+  let sum, led, list, st;
+  try {
+    [sum, led, list, st] = await Promise.all([
+      api.get(`/api/tables/${q}`), api.get(`/api/tables/${q}/ledger`), api.get(`/api/tables/${q}/hands`),
+      api.get(`/api/tables/${q}/stats?scope=game`).then((r) => r.stats).catch(() => null),
+    ]);
+  } catch (e) {
+    main.innerHTML = `<section class="panel"><p class="bad">${esc(e.message)}</p><p><a class="btn" href="/">Back to the club</a></p></section>`;
+    return;
+  }
+  document.title = `${sum.name} | The Aquarium`;
+  const F = (a) => fmtChips(a, sum.decimals);
+  const signed = (n) => `<span class="${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}">${n > 0 ? '+' : ''}${F(n)}</span>`;
+  const you = (uid, name) => (uid === me.user.id ? 'You' : name);
+  const hands = list.hands.slice().sort((a, b) => a.handNumber - b.handNumber);
+  const replay = (n) => `/t/${q}?hand=${n}`;
+  const first = hands[0];
+  const last = hands[hands.length - 1];
+  const ended = sum.status === 'ended';
+
+  // results: what each player took home, from the game's ledger
+  const played = new Map();
+  for (const h of hands) for (const [uid, net] of Object.entries(h.nets || {})) {
+    const x = played.get(uid) || { hands: 0, won: 0 };
+    x.hands++;
+    if (net > 0) x.won++;
+    played.set(uid, x);
+  }
+  const rows = led.rows.slice().sort((a, b) => b.net - a.net);
+  const top = rows[0] && rows[0].net > 0 ? rows[0] : null;
+
+  // highlights
+  const byPot = hands.slice().sort((a, b) => b.pot - a.pot || a.handNumber - b.handNumber);
+  const swings = hands.flatMap((h) => Object.entries(h.nets || {}).map(([uid, net]) => ({ h, uid, net, name: h.names?.[uid] || 'Someone' })));
+  const bigWin = swings.reduce((m, x) => (x.net > (m?.net ?? 0) ? x : m), null);
+  const bigLoss = swings.reduce((m, x) => (x.net < (m?.net ?? 0) ? x : m), null);
+  const bestHand = hands.filter((h) => h.best).reduce((m, h) => (!m || h.best.score > m.best.score ? h : m), null);
+  const mostPots = [...played.entries()].sort((a, b) => b[1].won - a[1].won)[0];
+  const nameOf = (uid) => rows.find((r) => r.userId === uid)?.name || hands.find((h) => h.names?.[uid])?.names[uid] || 'Someone';
+  const bounties = hands.filter((h) => h.bounty);
+  const multi = hands.filter((h) => h.runCount > 1).length;
+  const hl = [];
+  if (byPot[0]) hl.push(['Biggest pot', F(byPot[0].pot), `Hand #${byPot[0].handNumber}${byPot[0].winners?.length ? `, won by ${esc(nameList(byPot[0].winners))}` : ''}`, byPot[0].handNumber]);
+  if (bigWin) hl.push(['Biggest win', signed(bigWin.net), `${esc(you(bigWin.uid, bigWin.name))}, hand #${bigWin.h.handNumber}`, bigWin.h.handNumber]);
+  if (bigLoss) hl.push(['Biggest loss', signed(bigLoss.net), `${esc(you(bigLoss.uid, bigLoss.name))}, hand #${bigLoss.h.handNumber}`, bigLoss.h.handNumber]);
+  if (bestHand) hl.push(['Best hand', `<span class="hl-cards">${bestHand.best.cards.map(cardText).join('')}</span>`, `${esc(bestHand.best.hand)}, ${esc(you(bestHand.best.userId, bestHand.best.name))}, hand #${bestHand.handNumber}`, bestHand.handNumber]);
+  if (mostPots && mostPots[1].won) hl.push(['Most pots won', String(mostPots[1].won), `${esc(you(mostPots[0], nameOf(mostPots[0])))}, of ${mostPots[1].hands} hands played`, null]);
+  if (bounties.length) hl.push(['7-2 bounties', String(bounties.length), bounties.map((h) => `${esc(you(h.bounty.userId, h.bounty.name))} ${F(h.bounty.total)} (hand #${h.handNumber})`).join(', '), bounties[0].handNumber]);
+  if (multi) hl.push(['Run more than once', String(multi), `hand${multi === 1 ? '' : 's'} all in and run more than once`, null]);
+
+  const bigRow = (h) => {
+    const [wid, wnet] = Object.entries(h.nets || {}).sort((a, b) => b[1] - a[1])[0] || [];
+    const flags = [h.isBomb ? 'bomb pot' : '', h.doubleBoard ? 'two boards' : '', h.runCount > 1 ? `ran ${h.runCount} times` : '', h.allIn ? 'all in' : ''].filter(Boolean).join(', ');
+    return `<a class="bh-row" href="${replay(h.handNumber)}">
+      <span class="bh-n">#${h.handNumber}</span>
+      <span class="bh-pot">${F(h.pot)}</span>
+      <span class="bh-who">${wid && wnet > 0 ? `<b>${esc(you(wid, h.names?.[wid] || 'Someone'))}</b> ${signed(wnet)}` : '<span class="faint">Split</span>'}${h.best ? `<small>${esc(h.best.hand)}</small>` : ''}</span>
+      <span class="bh-sub">${esc((GAME_TYPES[h.gameType] || {}).short || h.gameType)}${flags ? `, ${esc(flags)}` : ''}</span>
+      <span class="bh-go">Replay</span>
+    </a>`;
+  };
+  const SHOW = 10;
+  const meta = [first ? when(first.at) : '', first && last && last !== first ? lasted(last.at - first.at) : '', `${hands.length} hand${hands.length === 1 ? '' : 's'}`, sum.games?.length ? sum.games.map((g) => (GAME_TYPES[g] || {}).short || g).join(' and ') : '', `${F(sum.smallBlind)}/${F(sum.bigBlind)}`].filter(Boolean);
+
+  main.innerHTML = `<article class="game-page">
+    <div class="gp-nav"><a class="btn small ghost" href="/">Back to the club</a><a class="btn small" href="/t/${q}">${ended ? 'Hand history' : 'Open the table'}</a></div>
+    <header class="gp-hero panel">
+      <h1>${esc(sum.name)}</h1>
+      <p class="gp-meta">${meta.map(esc).join(', ')}</p>
+      ${!ended ? '<p class="gp-live">This game is still going. The numbers below are so far.</p>' : top ? `<p class="gp-win"><b>${esc(you(top.userId, top.name))}</b> won the game, ${signed(top.net)}</p>` : ''}
+    </header>
+
+    <section class="panel">
+      <div class="sec-head"><h2>Results</h2><a class="btn small ghost" href="/api/tables/${q}/ledger.csv" data-csv-game>Download CSV</a></div>
+      ${rows.length ? `<div class="scroll-x"><table class="data results">
+        <thead><tr><th class="n">#</th><th>Player</th><th class="n">Net</th><th class="n hide-sm">Bought in</th><th class="n hide-sm">Took home</th><th class="n">Hands</th><th class="n">Pots won</th></tr></thead>
+        <tbody>${rows.map((r, i) => `<tr class="${r.userId === me.user.id ? 'mine' : ''}"><td class="n muted">${i + 1}</td><td class="who"><b>${esc(r.name)}</b>${r.userId === me.user.id ? ' <span class="faint">(you)</span>' : ''}</td>
+          <td class="n">${signed(r.net)}</td><td class="n hide-sm">${F(r.buyIn)}</td><td class="n hide-sm">${F(r.buyOut + (r.seated ? r.stack : 0))}</td>
+          <td class="n">${played.get(r.userId)?.hands || 0}</td><td class="n">${played.get(r.userId)?.won || 0}</td></tr>`).join('')}</tbody>
+      </table></div>` : '<p class="muted">Nobody bought in.</p>'}
+    </section>
+
+    ${hl.length ? `<section class="panel"><div class="sec-head"><h2>Highlights</h2></div>
+      <div class="hl-grid">${hl.map(([label, value, note, n]) => `<${n ? `a href="${replay(n)}"` : 'div'} class="hl"><span class="hl-l">${label}</span><span class="hl-v">${value}</span><span class="hl-n">${note}</span></${n ? 'a' : 'div'}>`).join('')}</div>
+    </section>` : ''}
+
+    <section class="panel">
+      <div class="sec-head"><h2>Biggest hands</h2><span class="muted">Largest pot first</span></div>
+      ${byPot.length ? `<div class="bh-list" data-bh>${byPot.slice(0, SHOW).map(bigRow).join('')}</div>
+        ${byPot.length > SHOW ? `<button type="button" class="btn small" data-bh-all>Show all ${byPot.length} hands</button>` : ''}` : '<p class="muted">No hands were played.</p>'}
+    </section>
+
+    ${st && st.players && st.players.length ? `<section class="panel"><div class="sec-head"><h2>Stats</h2><span class="muted">${st.hands} hand${st.hands === 1 ? '' : 's'} in this game</span></div>
+      ${statsTable(st, { me: me.user.id, fmt: (a) => fmtChips(a, 2), rowAttr: null })}
+      ${glossaryHTML()}</section>` : ''}
+  </article>`;
+  const all = main.querySelector('[data-bh-all]');
+  if (all) all.addEventListener('click', () => { main.querySelector('[data-bh]').innerHTML = byPot.map(bigRow).join(''); all.remove(); });
+  const csv = main.querySelector('[data-csv-game]');
+  if (csv) csv.addEventListener('click', async (e) => {
+    e.preventDefault();
+    try { await api.download(`/api/tables/${q}/ledger.csv`, `ledger-${id}.csv`); } catch (err) { toast(err.message, 'error'); }
+  });
 }
 
 // ---------- the period for results and stats ----------

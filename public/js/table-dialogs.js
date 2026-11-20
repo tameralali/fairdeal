@@ -133,8 +133,8 @@ export function playerDialog(userId) {
   const dlg = dialog({
     title: seat.name, className: 'narrow',
     body: `<div class="stack">
-      <p class="muted">Seat ${seat.seat + 1}, stack ${fmt(seat.stack)}${seat.sittingOut ? ', sitting out' : ''}${seat.connected ? '' : ', disconnected'}</p>
-      <div class="row"><button class="btn" data-p="away">Set to sitting out</button><button class="btn danger" data-p="kick">Remove from table</button></div>
+      <p class="muted">Seat ${seat.seat + 1}, stack ${fmt(seat.stack)}${seat.sittingOut ? ', away' : ''}${seat.connected ? '' : ', disconnected'}</p>
+      <div class="row"><button class="btn" data-p="away">Set to away</button><button class="btn danger" data-p="kick">Remove from table</button></div>
       ${club ? '<p class="hint">Stacks at club tables come from member balances. Credit the member in the club ledger, then they can add chips.</p>' : `
       <form class="stack" data-adjust>
         <label><span class="lbl">Adjust stack (recorded in the ledger)</span><input name="delta" type="number" step="${stepAttr()}" placeholder="e.g. 50 or -50"></label>
@@ -193,6 +193,11 @@ export function hostDialog({ tab = null } = {}) {
         <p class="hint" data-seat-hint></p>
         <p class="hint">${t.handNumber === 0 ? 'The first hand waits until the players to start are in. ' : ''}${esc(ratholeHint)}</p>
         <label class="check"><input type="checkbox" name="autoApprove" ${st.autoApprove ? 'checked' : ''}> Approve seat and chip requests automatically<small>Leave off to approve every buy-in and rebuy yourself.</small></label>
+        <label class="check"><input type="checkbox" name="straddle" ${st.straddle ? 'checked' : ''}> Allow a straddle<small>The player under the gun can post twice the big blind before the deal, and acts last before the flop. Each player turns it on for themselves.</small></label>
+        <div class="field-grid">
+          <label><span class="lbl">7-2 bounty from each player</span>${amountBox('sevenDeuce', st.sevenDeuce ? inp(st.sevenDeuce) : '', 'Off')}</label>
+        </div>
+        <p class="hint">Win a Hold’em hand holding 7-2 and show both cards, and everyone else dealt in pays you this. Leave it empty for no 7-2 game.</p>
       </div>
       <div data-panel="bomb" class="stack hidden">
         ${bombFieldsHTML(st.bombPot)}
@@ -210,7 +215,7 @@ export function hostDialog({ tab = null } = {}) {
           <label><span class="lbl">Time bank (seconds per player)</span><input name="timeBankSeconds" type="number" min="0" max="3600" value="${st.timeBankSeconds}"></label>
           <label><span class="lbl">Game length (minutes)</span><input name="sessionMinutes" type="number" min="0" max="1440" value="${st.sessionMinutes || ''}" placeholder="No limit"></label>
         </div>
-        <p class="hint">When the game length runs out, the hand in progress finishes and everyone is cashed out. Leave it empty for no limit.</p>
+        <p class="hint">The time bank is extra time once the seconds to act run out, used up as it goes and refilled 5 seconds for every 10 hands. When the game length runs out, the hand in progress finishes and everyone is cashed out. Leave it empty for no limit.</p>
         ${ends && t.status === 'running' ? `<p>This game ends at <b>${new Date(ends).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</b>.</p>` : ''}
         ${t.status === 'running' ? (ends
           ? `<div class="row"><button type="button" class="btn small" data-now="extend" data-min="15">Add 15 min</button><button type="button" class="btn small" data-now="extend" data-min="30">Add 30 min</button><button type="button" class="btn small" data-now="extend" data-min="60">Add 1 hour</button><button type="button" class="btn small ghost" data-now="cleartime">Remove the limit</button></div>`
@@ -293,7 +298,7 @@ export function hostDialog({ tab = null } = {}) {
       <h3 class="section-title">At the table</h3>
       ${seated.length ? `<table class="data"><thead><tr><th>Seat</th><th>Player</th><th class="n">Stack</th><th>Status</th><th></th></tr></thead><tbody>
       ${seated.map((p) => `<tr><td>${p.seat + 1}</td><td>${esc(p.name)}${p.isHost ? ' <span class="host-mark">&#9733;</span>' : ''}</td><td class="n">${fmt(p.stack)}</td>
-        <td class="muted">${[p.sittingOut ? 'Sitting out' : '', p.leaving ? 'Leaving' : '', p.connected ? '' : 'Disconnected'].filter(Boolean).join(', ') || 'Playing'}</td>
+        <td class="muted">${[p.sittingOut ? 'Away' : '', p.leaving ? 'Leaving' : '', p.connected ? '' : 'Disconnected'].filter(Boolean).join(', ') || 'Playing'}</td>
         <td style="text-align:right">${p.userId !== s2.me.userId ? `<button type="button" class="btn tiny" data-manage="${esc(p.userId)}">Manage</button>` : ''}</td></tr>`).join('')}
       </tbody></table>` : '<p class="muted">Nobody is seated yet.</p>'}`;
   };
@@ -318,6 +323,8 @@ export function hostDialog({ tab = null } = {}) {
       ...(val(form, 'minPlayers') ? { minPlayers: num('minPlayers') } : {}),
       ratholeMinutes: num('rathole'),
       autoApprove: val(form, 'autoApprove').checked,
+      straddle: val(form, 'straddle').checked,
+      sevenDeuce: val(form, 'sevenDeuce').value.trim() ? parse(val(form, 'sevenDeuce').value) : 0,
       bombPot: readBomb(form),
       rit: { enabled: val(form, 'ritEnabled').checked, maxRuns: num('ritMax') },
       decisionSeconds: num('decisionSeconds'),
@@ -457,7 +464,7 @@ async function showHand(dlg, n, back, backLabel = 'All hands', { inline = false,
       <td>${rec.dealt.holes[p.seat] ? mini(rec.dealt.holes[p.seat]) : '<span class="faint">Hidden</span>'}</td>
       <td class="n">${fmtC(p.startStack)}</td><td class="n">${fmtC(p.endStack)}</td><td class="n"><span class="${p.net > 0 ? 'pos' : p.net < 0 ? 'neg' : ''}">${p.net > 0 ? '+' : ''}${fmtC(p.net)}</span></td></tr>`).join('')}
     </tbody></table>
-    <p style="margin-top:.6rem">${lines.join('<br>')}</p>
+    <p style="margin-top:.6rem">${lines.join('<br>')}${rec.bounty ? `<br><b>${esc(rec.bounty.name)}</b> won with 7-2 and collected ${fmtC(rec.bounty.total)} in bounties: ${rec.bounty.payers.map((x) => `${esc(x.name)} ${fmtC(x.amount)}`).join(', ')}` : ''}</p>
     <h3 class="section-title">Deck check</h3>
     <div class="seal-pair">
       <figure>${sealSVG(obs.commitment || f.commitment, 64)}<figcaption>Seal ${obs.commitment ? 'your browser saw before the deal' : 'published before the deal'}</figcaption></figure>
@@ -534,7 +541,7 @@ export function menuDialog() {
   const items = [
     s.me.isHost && ['options', 'Game options'],
     s.me.isHost && t.status === 'running' && ['clock', t.session?.endsAt ? 'Game clock' : 'Start a clock'],
-    ['ledger', 'Ledger'], ['stats', 'Stats'], ['hands', 'Hand history'], ['fair', 'Sealed deck'], ['look', 'Look and feel'], ['log', 'Log and chat'],
+    ['ledger', 'Ledger'], ['stats', 'Stats'], ['hands', 'Hand history'], ['fair', 'Sealed deck'], ['look', 'Look and feel'], ['log', 'Chat and log'],
   ].filter(Boolean);
   const dlg = dialog({
     title: 'Menu', className: 'narrow',

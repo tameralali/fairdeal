@@ -60,7 +60,7 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'] }));
   const page = (f) => (req, res) => res.sendFile(path.join(ROOT, 'public', f));
   app.get('/t/:id', page('table.html'));
-  app.get(['/club/:id', '/join/:code', '/invite/:token', '/reset/:token', '/admin', '/fair'], page('index.html'));
+  app.get(['/club/:id', '/join/:code', '/invite/:token', '/reset/:token', '/admin', '/fair', '/g/:id'], page('index.html'));
   app.get('/verify', page('verify.html'));
   app.get('/healthz', (req, res) => res.json({ ok: true }));
   // Which code is running, for the fair dealing page: Render sets RENDER_GIT_COMMIT to the deployed commit.
@@ -197,6 +197,15 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     return { name: presetName(body.name), tableName: String(body.tableName ?? '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 40), settings };
   };
   const listPresets = () => Object.values(presets()).sort((a, b) => a.name.localeCompare(b.name));
+  // the time bank used to be 60 seconds by default, which was too long: presets saved with it move to 20
+  {
+    const meta = (store.data.meta ||= {});
+    if (!meta.bank20) {
+      for (const x of Object.values(presets())) if (x.settings && x.settings.timeBankSeconds === 60) x.settings.timeBankSeconds = 20;
+      meta.bank20 = true;
+      store.save();
+    }
+  }
   const adminOnly = (user) => { if (!clubs.isManager(clubs.mainId(), user.id)) { const e = new Error('Only admins can save game presets'); e.status = 403; throw e; } };
   app.get('/api/presets', api((req, user) => { adminOnly(user); return { presets: listPresets() }; }));
   app.post('/api/presets', api((req, user) => {
@@ -351,6 +360,7 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     on('action', (p) => T().playerAction(u, p));
     on('rit', (p) => T().chooseRuns(u, p.runs));
     on('sitout', (p) => T().setSitOut(u, !!p.value));
+    on('straddle', (p) => T().setStraddle(u, !!p.value));
     on('standup', () => T().standUp(u));
     on('call30', () => T().callThirty(u));
     on('call30:cancel', () => T().stayAfterAll(u));

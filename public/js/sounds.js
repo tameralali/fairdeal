@@ -161,6 +161,13 @@ const SOUNDS = {
     burst(t, { dur: 0.5, freq: 2100, q: 0.6, gain: 0.15, to: 760, attack: 0.06 });
     chips(t + 0.06, 11, 0.035);
   },
+  // someone called 30: three soft notes going down, like a clock chiming
+  call30(t) {
+    [[0, 987.77], [0.17, 783.99], [0.34, 659.25]].forEach(([d, f]) => {
+      tone(t + d, { freq: f, dur: 0.55, gain: 0.13 });
+      tone(t + d, { freq: f * 2, dur: 0.18, gain: 0.025 });
+    });
+  },
   // someone asks the host for a seat or chips
   request(t) {
     tone(t, { freq: 523.25, dur: 0.32, gain: 0.12, type: 'triangle' });

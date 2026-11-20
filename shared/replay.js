@@ -68,7 +68,8 @@ export function buildReplay(rec, fmt = (a) => String(a)) {
   } else {
     const sb = posts.find((x) => x.a === 'sb');
     const bb = posts.find((x) => x.a === 'bb');
-    snap([sb && `${name(sb.id)} posts the small blind ${fmt(sb.amt)}`, bb && `${name(bb.id)} posts the big blind ${fmt(bb.amt)}`].filter(Boolean).join(', '));
+    const st = posts.find((x) => x.a === 'st');
+    snap([sb && `${name(sb.id)} posts the small blind ${fmt(sb.amt)}`, bb && `${name(bb.id)} posts the big blind ${fmt(bb.amt)}`, st && `${name(st.id)} straddles ${fmt(st.amt)}`].filter(Boolean).join(', '));
   }
 
   for (const x of rec.actions || []) {

@@ -76,11 +76,11 @@ if (typeof document !== 'undefined' && document.body && !document.getElementById
 const pip = (s, cls) => `<svg class="${cls}" aria-hidden="true" focusable="false"><use href="#su-${s}"/></svg>`;
 
 // style: extra inline style, e.g. the place of a card in a fanned hand
-export function cardHTML(card, cls = '', style = '') {
+export function cardHTML(card, cls = '', style = '', attrs = '') {
   const r = rankLabel(card);
   const s = card[1];
   const word = `${RANK_WORD[card[0]] || r} of ${SUIT_WORD[s]}`;
-  return `<span class="card face s-${s} ${cls}" role="img" aria-label="${word}"${style ? ` style="${style}"` : ''}><span class="ci"><b class="${r === '10' ? 'r10' : ''}">${r}</b>${pip(s, 'su')}</span>${pip(s, 'cp')}</span>`;
+  return `<span class="card face s-${s} ${cls}" role="img" aria-label="${word}"${style ? ` style="${style}"` : ''}${attrs ? ` ${attrs}` : ''}><span class="ci"><b class="${r === '10' ? 'r10' : ''}">${r}</b>${pip(s, 'su')}</span>${pip(s, 'cp')}</span>`;
 }
 
 export function backHTML(cls = '', style = '') {

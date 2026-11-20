@@ -55,8 +55,10 @@ export class Hand {
   constructor(opts) {
     const {
       number, gameType, players, buttonSeat, smallBlind, bigBlind, deck,
-      bombAnte = 0, ritMax = 1, fmt = String, doubleBoard = false,
+      bombAnte = 0, ritMax = 1, fmt = String, doubleBoard = false, straddleIds = [],
     } = opts;
+    this.straddleIds = straddleIds;
+    this.straddleIdx = null;
     this.number = number;
     this.game = gameInfo(gameType);
     this.gameType = this.game.id;
@@ -164,6 +166,18 @@ export class Hand {
       this.postBlind(this.bbIdx, this.bb, 'big blind', 'bb');
       this.currentBet = this.bb;
       this.minRaise = this.bb;
+      // A straddle: the player under the gun, if they asked to, posts twice the big blind before the deal.
+      // It is a live blind: action starts after them, and they act last before the flop, with the option
+      // to raise when nobody else has. Three players at least, and only with more than the straddle behind.
+      const utg = (this.bbIdx + 1) % this.n;
+      const sp = this.players[utg];
+      if (this.n >= 3 && this.straddleIds.includes(sp.id) && sp.stack > 2 * this.bb) {
+        this.postBlind(utg, 2 * this.bb, 'straddle', 'st');
+        sp.lastAction = 'Straddle';
+        this.straddleIdx = utg;
+        this.currentBet = 2 * this.bb;
+        this.minRaise = 2 * this.bb;
+      }
     }
     this.dealHoles();
     if (this.isBomb) {
@@ -171,7 +185,7 @@ export class Hand {
       this.startBettingRound();
     } else {
       this.street = 'preflop';
-      this.beginRound(this.bbIdx);
+      this.beginRound(this.straddleIdx ?? this.bbIdx);
     }
     this.version++;
   }
@@ -644,6 +658,7 @@ export class Hand {
       buttonSeat: this.players[this.btnIdx].seat,
       sbSeat: this.isBomb ? null : this.players[this.sbIdx].seat,
       bbSeat: this.isBomb ? null : this.players[this.bbIdx].seat,
+      straddleSeat: this.straddleIdx === null ? null : this.players[this.straddleIdx].seat,
       street: this.street,
       phase: this.phase,
       board: this.boards[0].slice(),

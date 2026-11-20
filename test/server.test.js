@@ -824,6 +824,34 @@ test('calling 30: a countdown on the seat, a big pot starts it again, and when i
 });
 
 // Runs last: it clears every game on the test server.
+test('the straddle: a player who turns it on straddles twice the big blind when under the gun', { timeout: 60000 }, async () => {
+  const a = await admin('Straddler', { fund: 100000 });
+  const b = await member('Second', null, { fund: 100000 });
+  const c = await member('Third', null, { fund: 100000 });
+  const { id } = await call('POST', '/api/tables', { settings: { autoStart: true, autoApprove: true, straddle: true, sevenDeuce: 100 } }, a.token);
+  const bots = [new Bot('Straddler', a, 51), new Bot('Second', b, 52), new Bot('Third', c, 53)];
+  try {
+    for (const x of bots) await x.connect(id);
+    for (const [i, x] of bots.entries()) await x.emit('seat:request', { seat: i, buyIn: 1000 });
+    assert.ok((await bots[0].emit('straddle', { value: true })).ok);
+    await until(() => bots[1].state?.seats[0]?.straddle, 5000, 'the choice showing on the seat');
+    const t = srv.tables.get(id);
+    assert.equal(t.settings.sevenDeuce, 100);
+    await until(() => t.getRecords().some((r) => r.posts.some((x) => x.a === 'st')), 40000, 'a straddled hand');
+    const rec = t.getRecords().find((r) => r.posts.some((x) => x.a === 'st'));
+    const st = rec.posts.find((x) => x.a === 'st');
+    assert.equal(st.id, a.user.id, 'the player who asked for it straddles');
+    assert.equal(st.amt, 2 * rec.bigBlind);
+    assert.ok((await bots[0].emit('straddle', { value: false })).ok);
+    assert.equal(t.players.get(a.user.id).straddle, false, 'and can turn it off');
+    const ack = await bots[1].emit('straddle', { value: true });
+    assert.ok(ack.ok);
+    await call('POST', `/api/tables/${id}/end`, {}, a.token).catch(() => {});
+  } finally {
+    bots.forEach((x) => x.close());
+  }
+});
+
 test('settling one player against another, results over a period, and the owner clearing all history', { timeout: 90000 }, async () => {
   const a = await admin('Banker', { fund: 100000 });
   const b = await member('Owes', null, { fund: 100000 });
