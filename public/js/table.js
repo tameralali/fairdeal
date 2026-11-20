@@ -141,7 +141,7 @@ function tableSounds(prev, s) {
   if (!prefs.tableSounds) { app.dealt = []; return; }
   const dealt = app.dealt || [];
   app.dealt = [];
-  dealt.slice(0, 30).forEach((ms) => playSound('deal', ms / 1000));
+  dealt.slice(0, 30).forEach((d) => playSound(d.kind, d.ms / 1000));
   const h = s.hand;
   const was = prev && prev.hand;
   if (!h || !was || was.number !== h.number) return;
@@ -150,8 +150,10 @@ function tableSounds(prev, s) {
   for (const p of h.players) {
     const b = before.get(p.seat);
     if (!b || !p.lastAction) continue;
-    if (p.lastAction === b.lastAction && p.bet === b.bet && p.folded === b.folded) continue;
-    const kind = p.lastAction === 'Fold' ? 'fold' : p.lastAction === 'Check' ? 'check' : p.lastAction === 'Call' || p.lastAction === 'Bet' ? 'chips' : 'bigchips';
+    // a new action, or more chips in on the same one (a bet swept into the pot at the end of a street is not)
+    if (p.lastAction === b.lastAction && !(p.bet > b.bet) && p.folded === b.folded) continue;
+    const a = p.lastAction;
+    const kind = a === 'Fold' ? 'fold' : a === 'Check' ? 'check' : a === 'All-in' ? 'allin' : a === 'Call' ? 'call' : a === 'Bet' ? 'bet' : 'raise';
     playSound(kind, delay);
     delay += 0.09;
   }
@@ -512,7 +514,7 @@ function renderTable(s) {
         if (!fresh(key)) return ['', ''];
         if (app.seen.has(back) && back !== key) return ['flip', ''];
         const ms = dealAt(seat, i);
-        app.dealt.push(ms);
+        app.dealt.push({ ms, kind: 'deal' });
         return ['deal', `;--dd:${ms}ms`];
       };
       if (faces) {
@@ -606,7 +608,7 @@ function centerHTML(s, R) {
   // A double board with one run is stacked, board 1 above board 2, so the cards stay big.
   const stacked = bpr > 1 && runs === 1;
   // a board dealt with the hands (a bomb pot's flop) waits until the hands are out
-  const boardStart = app.dealt && app.dealt.length ? Math.max(...app.dealt) + 350 : 0;
+  const boardStart = app.dealt && app.dealt.length ? Math.max(...app.dealt.map((d) => d.ms)) + 350 : 0;
   let turned = 0;
   let grid = '';
   if (bpr > 1 && !stacked) grid += `${runs > 1 ? '<span></span>' : ''}${Array.from({ length: bpr }, (_, i) => `<span class="bhead">Board ${i + 1}</span>`).join('')}`;
@@ -625,7 +627,7 @@ function centerHTML(s, R) {
         const shared = r > 0 && j < (h.sharedCount ?? 0);
         const isNew = fresh(`r${i}${j}${c}`) && !shared;
         let style = '';
-        if (isNew) { const ms = boardStart + turned * 240; turned++; app.dealt.push(ms); style = `--dd:${ms}ms`; }
+        if (isNew) { const ms = boardStart + turned * 240; turned++; app.dealt.push({ ms, kind: 'board' }); style = `--dd:${ms}ms`; }
         const cls = [isNew ? 'flip' : '', shared ? 'shared' : '', used ? (used.has(c) ? 'win' : 'dim') : ''].join(' ');
         slots += cardHTML(c, cls, style);
       }

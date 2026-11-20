@@ -204,5 +204,11 @@
 .fair-page h2 { font-size: 19px; margin: 0 0 .5rem; }
 .fair-page p { line-height: 1.55; max-width: 68ch; }
 .fair-page .fair-steps { padding-left: 1.3em; line-height: 1.55; }
+.fair-page .fair-steps li { max-width: 68ch; }
 .fair-page .fair-steps li + li { margin-top: .55rem; }
 .fair-links { margin-top: 1.8rem; gap: 8px; }
+.fair-page .fair-steps code, .fair-page .hint code { font: 13.5px/1.4 var(--mono); padding: 1px 5px; border-radius: 4px; background: var(--panel-2, rgba(255,255,255,.05)); overflow-wrap: anywhere; }
+.fair-cmd { display: flex; align-items: center; gap: 10px; margin: .6rem 0; padding: 9px 10px 9px 14px; border: 1px solid var(--line-soft); border-radius: var(--r-md); background: rgba(0,0,0,.28); }
+.fair-page .fair-cmd code { flex: 1; min-width: 0; padding: 0; border-radius: 0; background: none; font: 13.5px/1.45 var(--mono); color: var(--text); white-space: normal; overflow-wrap: anywhere; }
+.fair-cmd code span { white-space: nowrap; }
+.fair-cmd .btn { flex: none; }

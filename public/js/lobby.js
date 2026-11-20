@@ -217,7 +217,7 @@ async function clubHome(id) {
       ${c.isManager ? '<div class="cb-start"><button class="btn primary big" data-start>Start a game</button><div class="quick-start hidden" data-quick></div></div>' : ''}
     </section>
     ${c.announcement ? `<div class="announce">${esc(c.announcement)}</div>` : ''}
-    <a class="fair-band" href="/fair">${sealSVG(BRAND_HEX, 22, '')}<span><b>Every shuffle can be checked.</b> The code is public, every player's browser adds to the shuffle, and your browser checks each hand you play. See how it works.</span></a>
+    <a class="fair-band" href="/fair">${sealSVG(BRAND_HEX, 22, '')}<span><b>Every shuffle can be checked.</b> The code is public, every player's browser adds to the shuffle, and your browser checks each hand you play. See how to check a hand yourself.</span></a>
     ${c.isManager && ((c.pending && c.pending.length) || (c.requests && c.requests.length)) ? `<section class="panel waitlist"><h2>Waiting to join</h2>
       ${requestRows(c.requests || [])}
       ${(c.pending || []).map((p) => `<div class="row" style="padding:6px 0"><b class="grow">${esc(p.name)}</b><span class="muted">${timeAgo(p.requestedAt)}</span><button class="btn small ghost" data-decide="${esc(p.userId)}" data-ok="0">Decline</button><button class="btn small primary" data-decide="${esc(p.userId)}" data-ok="1">Approve</button></div>`).join('')}</section>` : ''}
@@ -620,21 +620,44 @@ async function fairPage() {
   try { v = await api.get('/api/version'); } catch { /* the page still explains everything */ }
   const repo = esc(v.source);
   const commit = v.commit ? esc(v.commit.slice(0, 7)) : null;
+  const zip = v.commit ? `${repo}/archive/${esc(v.commit)}.zip` : `${repo}/archive/refs/heads/main.zip`;
   main.innerHTML = `<article class="panel fair-page">
     <h1>Fair dealing</h1>
-    <p class="lead">You do not have to take anyone's word that the cards are random, the host's included. Every deal is sealed before anyone acts, every player's browser adds its own randomness to the shuffle, and every browser checks the hands it played on its own, against the seal it saw before the deal.</p>
+    <p class="lead">You do not have to take anyone's word that the cards are random, the host's included. Every deck is sealed before the deal, every player's browser adds its own randomness to the shuffle, and any hand can be checked afterwards: by your browser on its own, or on your own computer with nothing from this site.</p>
 
     <section>
-      <h2>The code is public</h2>
-      <p>Everything that runs this site, the server that deals and the page in your browser, is public on GitHub: <a href="${repo}" target="_blank" rel="noopener">${repo.replace(/^https?:\/\//, '')}</a>. Anyone can read how the deck is shuffled and sealed, and what the checks below do.</p>
-      ${commit ? `<p>This site is running <a href="${repo}/commit/${esc(v.commit)}" target="_blank" rel="noopener">commit ${commit}</a>, so you can read the exact version that is dealing right now.</p>` : ''}
-      <p class="hint">You cannot look inside a server, so nothing here asks you to trust it. The checks below would catch a server that changed the deck, whatever code it ran.</p>
+      <h2>Check a hand at the table</h2>
+      <ol class="fair-steps">
+        <li><b>Before the deal, look at the seal</b> at the top of the table. It is always for the next hand: while hand 12 is played it reads "Hand #13 sealed", so the deck for hand 13 is fixed before anyone sees a card of it. Tap it to see the deck's fingerprint and whether your browser's input is in. On a phone it is Sealed deck in the menu.</li>
+        <li><b>After the hand, tap the seal again.</b> It says how many hands your browser has checked at this table and whether every one passed. Your browser runs these checks by itself after every hand, against the seal it saw before the deal.</li>
+        <li><b>To see the checks for one hand,</b> open Hands (Hand history in the phone menu), pick the hand and choose Details. Under Deck check, the seal your browser saw before the deal and the seal rebuilt after the hand should be the same picture, and every check below them should have a tick. A cross says which check failed.</li>
+      </ol>
+      <p class="hint">If the host set the game to reveal the deck only when the game ends, the checks run then.</p>
+    </section>
+
+    <section>
+      <h2>Check a hand without this site</h2>
+      <p>The checks above run in your browser, but the page that runs them comes from this site. To take the site out of it completely, check the hand on your own computer, with your own copy of the code.</p>
+      <ol class="fair-steps">
+        <li><b>Before the deal,</b> tap the seal and choose Copy fingerprint. Paste it somewhere this site cannot change, such as your notes or the group chat. Posted in the group chat, it holds everyone to the same deck.</li>
+        <li><b>After the hand,</b> open it in Hands, choose Details, then Download this hand. You get a file named like hand-ab12cd-13.json.</li>
+        <li><b>Get the code</b> this site is running: <a href="${zip}" rel="noopener">download it from GitHub as a ZIP</a> and unzip it. You also need Node.js 20 or newer, free from <a href="https://nodejs.org" target="_blank" rel="noopener">nodejs.org</a>. There is nothing else to install.</li>
+        <li><b>Run the check.</b> Open a terminal in the unzipped folder. On a Mac, open Terminal, type cd and a space, drag the folder onto the window and press Return. On Windows, open the folder, type cmd in its address bar and press Enter. Then run this, with your hand file and the fingerprint you copied:
+          <div class="fair-cmd"><code>${'node scripts/verify-hand.js hand-ab12cd-13.json --seal YOUR-FINGERPRINT'.split(' ').map((w) => `<span>${w}</span>`).join(' ')}</code><button type="button" class="btn small ghost" data-copy-cmd>Copy</button></div>
+          You can drag the hand file onto the window instead of typing its name. The check lists every test with a tick or a cross, shows who was dealt which card, and ends with "The hand passed every check". Folded cards stay sealed and show as ??, but their seals are part of the check, so they could not have been swapped either.</li>
+      </ol>
+      <p class="hint">In a game set to reveal the whole deck, the seal is the SHA-256 of the revealed server seed, so any SHA-256 tool can check it as well. Copy the seed from Raw data in Details, and on a Mac run <code>printf '%s' SEED | shasum -a 256</code> with the seed in place of SEED.</p>
+    </section>
+
+    <section>
+      <h2>Check a whole game</h2>
+      <p>The <a href="/verify">shuffle verifier</a> checks every hand of a game at once: enter the table ID, which is the part after /t/ in the table's link, and choose Check every hand. Opened in the browser you played from, it also checks the seals your browser saw before each deal and your own cards.</p>
     </section>
 
     <section>
       <h2>How each hand is sealed</h2>
       <ol class="fair-steps">
-        <li><b>Before the deal,</b> the server shuffles a deck with a secret and publishes a seal: a SHA-256 fingerprint of the whole deck. It shows at the top of the table as the round seal and "Hand sealed". Changing even one card afterwards would change the seal.</li>
+        <li><b>Before the deal,</b> the server shuffles a deck with a secret and publishes a seal: a SHA-256 fingerprint of the whole deck. Changing even one card afterwards would change the seal.</li>
         <li><b>Then every seated player's browser adds its own random number.</b> The final order of the deck depends on all of them. The server committed to its part before seeing yours, so it cannot steer any card to anyone.</li>
         <li><b>After the hand,</b> the server opens the seal: the boards, the cards that were shown, and every card nobody was dealt. Your own cards are opened to you. Folded cards can stay sealed for good, if the game is set that way.</li>
         <li><b>Your browser rebuilds the seal</b> from what was opened and checks that it matches the one it saw before the deal, that its own random number was used, and that your cards and every board came off that deck in order.</li>
@@ -642,13 +665,10 @@ async function fairPage() {
     </section>
 
     <section>
-      <h2>Checked for you, every hand</h2>
-      <p>Your browser runs these checks by itself after every hand you play, and keeps count. At a table, open the seal at the top to see how many hands this browser has checked and whether any failed. Hand history, then Details, lists every check for one hand with a tick or a cross.</p>
-    </section>
-
-    <section>
-      <h2>Check any hand yourself</h2>
-      <p>The <a href="/verify">shuffle verifier</a> rebuilds a hand from its opened data using your browser's built-in cryptography, one hand or a whole game at a time. You can also download a hand from Hand history and check it with any SHA-256 tool, without this site at all.</p>
+      <h2>The code is public</h2>
+      <p>Everything that runs this site, the server that deals and the page in your browser, is public on GitHub: <a href="${repo}" target="_blank" rel="noopener">${repo.replace(/^https?:\/\//, '')}</a>. Anyone can read how the deck is shuffled and sealed, and what the checks do. The checks themselves are one file, shared/fairness.js.</p>
+      ${commit ? `<p>This site is running <a href="${repo}/commit/${esc(v.commit)}" target="_blank" rel="noopener">commit ${commit}</a>, so you can read the exact version that is dealing right now.</p>` : ''}
+      <p class="hint">You cannot look inside a server, so nothing here asks you to trust it. The checks would catch a server that changed the deck, whatever code it ran.</p>
     </section>
 
     <section>
@@ -657,8 +677,10 @@ async function fairPage() {
       <p><b>It does not prove</b> that whoever runs the server cannot read the cards in its memory during a hand. That is true of every online poker site, PokerNow included. Closing that gap takes a much slower kind of protocol, where no single computer ever knows the deck.</p>
     </section>
 
-    <div class="row fair-links"><a class="btn primary" href="/verify">Open the shuffle verifier</a><a class="btn" href="${repo}" target="_blank" rel="noopener">Read the code on GitHub</a></div>
+    <div class="row fair-links"><a class="btn primary" href="/verify">Open the shuffle verifier</a><a class="btn" href="${zip}" rel="noopener">Download the code</a><a class="btn" href="${repo}" target="_blank" rel="noopener">Read the code on GitHub</a></div>
   </article>`;
+  // copies the start of the command: the file and the fingerprint are the reader's own
+  main.querySelector('[data-copy-cmd]').addEventListener('click', () => copyText('node scripts/verify-hand.js '));
 }
 
 // ---------- the period for results and stats ----------

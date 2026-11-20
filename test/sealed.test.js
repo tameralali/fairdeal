@@ -5,6 +5,10 @@ import assert from 'node:assert/strict';
 import { Hand } from '../server/engine/hand.js';
 import { newCommitment, settleCommitment, openV2 } from '../server/fair-node.js';
 import { verifyHandRecord, webCryptoAdapter, FAIRNESS_V2 } from '../shared/fairness.js';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 const wc = webCryptoAdapter();
 
@@ -91,4 +95,32 @@ test('a moved card, a swapped seal or a changed key fails the check; partial sho
   const fake = structuredClone(partial);
   fake.dealt.holes[0][1] = hand.holes[0][0];
   assert.equal((await verifyHandRecord(fake, wc)).ok, false, 'a shown card has to be the one dealt there');
+});
+
+test('the command-line checker passes a downloaded hand and fails a changed one or a wrong seal', () => {
+  const hand = playSealed();
+  const rec = viewFor(hand, 1);
+  const dir = mkdtempSync(path.join(tmpdir(), 'aq-verify-'));
+  const run = (file, ...extra) => spawnSync(process.execPath, ['scripts/verify-hand.js', file, ...extra], { encoding: 'utf8' });
+  const good = path.join(dir, 'hand.json');
+  writeFileSync(good, JSON.stringify(rec));
+  let r = run(good);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /The hand passed every check/);
+  assert.match(r.stdout, /\?\? \?\? \?\? \?\?/, 'the folded cards show as sealed');
+  r = run(good, '--seal', hand.pend.commitment.toUpperCase());
+  assert.equal(r.status, 0, r.stdout);
+  assert.match(r.stdout, /\u2713 Commitment matches the fingerprint you copied before the deal/);
+  r = run(good, '--seal', 'ab'.repeat(32));
+  assert.equal(r.status, 1, 'a different seal fails');
+  // the same cards opened in different places
+  const moved = structuredClone(rec);
+  const [a, b] = moved.fairness.openings;
+  [a.c, b.c] = [b.c, a.c];
+  const bad = path.join(dir, 'moved.json');
+  writeFileSync(bad, JSON.stringify({ record: moved }));
+  r = run(bad);
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stdout, /\u2717 The opened cards and sealed cards rebuild the commitment/);
+  assert.equal(run(path.join(dir, 'missing.json')).status, 2);
 });
