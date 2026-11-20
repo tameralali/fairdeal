@@ -160,7 +160,8 @@ export function playerDialog(userId) {
   });
 }
 
-export function hostDialog() {
+// tab: the tab to open on (game, bomb, run, time, fair, players, table).
+export function hostDialog({ tab = null } = {}) {
   const s = app.state;
   const t = s.table;
   const st = t.settings;
@@ -211,7 +212,9 @@ export function hostDialog() {
         </div>
         <p class="hint">When the game length runs out, the hand in progress finishes and everyone is cashed out. Leave it empty for no limit.</p>
         ${ends && t.status === 'running' ? `<p>This game ends at <b>${new Date(ends).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</b>.</p>` : ''}
-        ${t.status === 'running' ? `<div class="row"><button type="button" class="btn small" data-now="extend" data-min="15">Add 15 min</button><button type="button" class="btn small" data-now="extend" data-min="30">Add 30 min</button><button type="button" class="btn small" data-now="extend" data-min="60">Add 1 hour</button>${ends ? '<button type="button" class="btn small ghost" data-now="cleartime">Remove the limit</button>' : ''}</div>` : ''}
+        ${t.status === 'running' ? (ends
+          ? `<div class="row"><button type="button" class="btn small" data-now="extend" data-min="15">Add 15 min</button><button type="button" class="btn small" data-now="extend" data-min="30">Add 30 min</button><button type="button" class="btn small" data-now="extend" data-min="60">Add 1 hour</button><button type="button" class="btn small ghost" data-now="cleartime">Remove the limit</button></div>`
+          : `<div class="clock-start"><span class="lbl">Start a clock now</span><div class="row"><button type="button" class="btn small" data-now="extend" data-min="30">30 minutes</button><button type="button" class="btn small" data-now="extend" data-min="60">1 hour</button><button type="button" class="btn small" data-now="extend" data-min="90">1½ hours</button><button type="button" class="btn small" data-now="extend" data-min="120">2 hours</button></div><p class="hint">When it runs out, the hand in progress finishes and everyone is cashed out. You can add time or remove it later.</p></div>`) : ''}
       </div>
       <div data-panel="fair" class="stack hidden">
         <span class="lbl">Folded cards</span>
@@ -237,6 +240,7 @@ export function hostDialog() {
     foot: `${t.status !== 'ended' ? `<button type="button" class="btn danger" data-now="end">${t.endAfterHand ? 'Ending after this hand' : 'End game'}</button><span class="grow"></span>` : ''}<button class="btn ghost" data-close>Close</button><button class="btn primary" data-save>Save settings</button>`,
     onClose: () => { delete open.players; },
   });
+  if (tab) dlg.$(`[data-tab="${tab}"]`)?.click();
   const form = dlg.$('#hostform');
   bindSegs(dlg.el);
   bindBombFields(form);
@@ -256,7 +260,11 @@ export function hostDialog() {
     if (!now) return;
     const k = now.dataset.now;
     if (k === 'bomb') { const a = await emit('host:bomb', { value: !app.state.table.bombNext }); if (a.ok) now.textContent = app.state.table.bombNext ? 'Bomb pot next hand' : 'Cancel next hand’s bomb pot'; }
-    if (k === 'extend') { const a = await emit('host:extend', { minutes: Number(now.dataset.min) }); if (a.ok) toast('Time added'); }
+    if (k === 'extend') {
+      const had = !!app.state.table.session?.endsAt;
+      const a = await emit('host:extend', { minutes: Number(now.dataset.min) });
+      if (a.ok) { toast(had ? 'Time added' : 'Clock started'); dlg.close(); }
+    }
     if (k === 'cleartime') { const a = await emit('host:clearTime'); if (a.ok) toast('Time limit removed'); }
     if (k === 'reveal') {
       if (await confirmDialog('Every finished hand’s seed is revealed, including folded cards.', { title: 'Reveal seeds now?', ok: 'Reveal' })) {
@@ -522,8 +530,10 @@ export function lookDialog() {
 // ---------- small-screen menu ----------
 export function menuDialog() {
   const s = app.state;
+  const t = s.table;
   const items = [
     s.me.isHost && ['options', 'Game options'],
+    s.me.isHost && t.status === 'running' && ['clock', t.session?.endsAt ? 'Game clock' : 'Start a clock'],
     ['ledger', 'Ledger'], ['stats', 'Stats'], ['hands', 'Hand history'], ['fair', 'Sealed deck'], ['look', 'Look and feel'], ['log', 'Log and chat'],
   ].filter(Boolean);
   const dlg = dialog({
@@ -536,6 +546,7 @@ export function menuDialog() {
     dlg.close();
     const k = b.dataset.go;
     if (k === 'log') { document.querySelector('[data-open="log"]')?.click(); return; }
+    if (k === 'clock') { hostDialog({ tab: 'time' }); return; }
     ({ options: hostDialog, ledger: ledgerDialog, stats: statsDialog, hands: handsDialog, fair: fairDialog, look: lookDialog })[k]?.();
   });
 }
@@ -568,7 +579,7 @@ export function fairDialog() {
       </ol>`}
       <p style="margin-top:1rem">${verified + failed ? `This browser has checked <b>${verified + failed}</b> hand${verified + failed === 1 ? '' : 's'} at this table${failed ? `: <b>${verified}</b> passed and <b class="bad">${failed}</b> failed. Open Hands to see which check failed.` : verified === 1 ? ', and it passed.' : ', and every one passed.'}` : 'This browser has not checked a hand at this table yet.'}</p>
       <p class="hint">What this does not cover: whoever runs the server can see cards in memory during a hand, as with any online poker site. The check proves the deck was fixed before the deal and never changed.</p>`,
-    foot: `<button class="btn ghost" data-copy>Copy fingerprint</button><a class="btn" href="/verify" target="_blank" rel="noopener">Open the verifier</a><button class="btn primary" data-close>Done</button>`,
+    foot: `<button class="btn ghost" data-copy>Copy fingerprint</button><a class="btn ghost" href="/fair" target="_blank" rel="noopener">How it works</a><a class="btn" href="/verify" target="_blank" rel="noopener">Open the verifier</a><button class="btn primary" data-close>Done</button>`,
   });
   dlg.$('[data-copy]').addEventListener('click', () => copyText(f.commitment));
 }

@@ -779,3 +779,13 @@ audio.voice-out { position: fixed; width: 0; height: 0; opacity: 0; pointer-even
   body.my-turn .mybar .vgroup.on > :not([data-voice="mute"]) { display: none; }
 }
 body.my-turn .vgroup .vwho { display: none; }
+
+button.tb-clock { font: inherit; color: inherit; cursor: pointer; border: 1px solid transparent; }
+button.tb-clock:hover { border-color: var(--line); }
+.clock-start { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: var(--r-md); background: var(--room-2); }
+.clock-start .lbl, .clock-start .hint { margin: 0; }
+
+/* called 30: a countdown by the name */
+.plate .c30 { position: absolute; z-index: 3; top: 0; right: calc(var(--u) * 1.2); transform: translateY(-58%); font: 800 max(10px, calc(var(--u) * 1.1))/1 var(--num); font-variant-numeric: tabular-nums; color: #1d1d1d; background: #f0c36b; border-radius: 999px; padding: .3em .6em .28em; white-space: nowrap; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); }
+.plate .c30 i { font-style: normal; }
+.status-line.call30 b { font-variant-numeric: tabular-nums; color: #f0c36b; }

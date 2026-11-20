@@ -374,11 +374,12 @@ function renderTop(s) {
       ${rot ? `<span class="tb-note">${esc(rot)}</span>` : ''}
       ${bomb}${status}
     </div>
-    ${ends && t.status === 'running' ? `<div class="tb-clock" data-ends="${ends}" title="Time left in this game"><b>--:--</b><small>left</small></div>` : ''}
+    ${ends && t.status === 'running' ? `<${s.me.isHost ? 'button type="button" data-open="clock"' : 'div'} class="tb-clock" data-ends="${ends}" title="Time left in this game${s.me.isHost ? '. Add time or remove the clock' : ''}"><b>--:--</b><small>left</small></${s.me.isHost ? 'button' : 'div'}>` : ''}
     ${t.session && t.session.clockAtFirstHand && st.sessionMinutes ? `<span class="pill soft tb-wait" title="The time limit starts with the first hand">${st.sessionMinutes} min game, clock starts with the first hand</span>` : ''}
     <div class="tb-actions">
       <button class="seal-btn" data-open="fair" title="Deck seal for the next hand">${sealSVG(f.commitment, 30)}<span class="txt"><b>Hand #${f.handNumber} sealed</b>${f.contributions} player input${f.contributions === 1 ? '' : 's'}</span></button>
       ${reqs ? `<button class="btn primary small" data-open="requests">Requests <span class="count">${reqs}</span></button>` : ''}
+      ${s.me.isHost && t.status === 'running' && !ends && !t.session?.clockAtFirstHand ? '<button class="btn small sm-hide" data-open="clock" title="Start a clock for this game">Clock</button>' : ''}
       ${s.me.isHost ? '<button class="btn small sm-hide" data-open="options">Options</button>' : ''}
       <button class="btn small sm-hide" data-open="ledger">Ledger</button>
       <button class="btn small sm-hide" data-open="stats">Stats</button>
@@ -571,6 +572,7 @@ function renderTable(s) {
           ${S.hudHTML(s, info.userId)}
         </div>
         ${timer}
+        ${info.leaveAt && !info.leaving ? `<span class="c30" title="${esc(info.name)} called 30: they leave when this runs out"><i data-leave-at="${info.leaveAt}">--:--</i> left</span>` : ''}
         ${h && h.buttonSeat === seat ? '<span class="dbtn" title="Dealer" aria-label="Dealer button">D</span>' : ''}
         ${tag ? `<div class="tag ${tagCls}">${esc(tag)}</div>` : ''}
       </div>
@@ -738,6 +740,8 @@ function renderBottom(s) {
       ? `<button class="btn ${s.me.sittingOut ? 'primary' : ''}" data-my="back">I’m back</button>`
       : '<button class="btn" data-my="sitout">Sit out next hand</button>';
     if (s.table.status !== 'ended') my += '<button class="btn" data-my="chips">Add chips</button>';
+    if (s.me.leaveAt && !s.me.leaving) my += `<span class="status-line call30">Leaving in <b data-leave-at="${s.me.leaveAt}">--:--</b></span><button class="btn ghost" data-my="stay" title="Take back calling it">Stay</button>`;
+    else if (!s.me.leaving && s.table.status !== 'ended') my += '<button class="btn" data-my="call30" title="Tell the table you are leaving in 30 minutes. A pot over $1,000 starts the 30 minutes again.">Call 30</button>';
     if (!s.me.leaving) my += '<button class="btn ghost" data-my="stand">Stand up</button>';
     if (s.hand && s.hand.canShow) {
       const mine = s.hand.players.find((p) => p.id === s.me.userId);
@@ -892,6 +896,10 @@ function tick() {
   for (const rc of document.querySelectorAll('[data-ritclock]')) {
     if (h && h.ritDeadline) rc.textContent = `${Math.max(0, Math.ceil((h.ritDeadline - t) / 1000))}s left`;
   }
+  for (const el of document.querySelectorAll('[data-leave-at]')) {
+    const left = Number(el.dataset.leaveAt) - t;
+    el.textContent = left > 0 ? clock(left) : '0:00';
+  }
   const clk = document.querySelector('[data-ends]');
   if (clk) {
     const left = Number(clk.dataset.ends) - t;
@@ -941,6 +949,8 @@ function bindEvents() {
       else if (k === 'back') emit('sitout', { value: false });
       else if (k === 'chips') D.chipsDialog();
       else if (k === 'stand') D.standDialog();
+      else if (k === 'call30') emit('call30');
+      else if (k === 'stay') emit('call30:cancel');
       else if (k === 'show') emit('show', {});
       else if (k === 'cancel') emit('seat:cancel');
       return;
@@ -961,6 +971,7 @@ function bindEvents() {
         render();
         return;
       }
+      if (k === 'clock') return D.hostDialog({ tab: 'time' });
       ({ options: D.hostDialog, ledger: D.ledgerDialog, stats: S.statsDialog, hands: D.handsDialog, look: D.lookDialog, fair: D.fairDialog, requests: D.requestsDialog, menu: D.menuDialog })[k]?.();
       return;
     }

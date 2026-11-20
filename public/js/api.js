@@ -66,6 +66,7 @@ export function gate() {
         <button class="btn primary big" type="submit">Sign in</button>
       </form>
       <p class="hint">Forgot your password? Ask an admin to email you a reset link.</p>
+      <p class="hint"><a href="/fair">How the deal is kept fair</a></p>
     </main>`;
     document.body.appendChild(el);
     const form = el.querySelector('[data-login]');

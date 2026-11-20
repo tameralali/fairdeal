@@ -784,6 +784,45 @@ test('accounts: invite only, login, rename', async () => {
   assert.equal(me.user.name, 'Renamed');
 });
 
+test('calling 30: a countdown on the seat, a big pot starts it again, and when it runs out they stand up', { timeout: 60000 }, async () => {
+  const a = await admin('Caller', { fund: 100000 });
+  const b = await member('Opponent', null, { fund: 100000 });
+  const { id } = await call('POST', '/api/tables', { settings: { autoStart: true, autoApprove: true, decisionSeconds: 5, timeBankSeconds: 0 } }, a.token);
+  const bots = [new Bot('Caller', a, 41), new Bot('Opponent', b, 42)];
+  for (const x of bots) await x.connect(id);
+  await bots[0].emit('seat:request', { seat: 0, buyIn: 1000 });
+  await bots[1].emit('seat:request', { seat: 1, buyIn: 1000 });
+  const t = srv.tables.get(id);
+  await until(() => t.handNumber >= 1, 10000, 'a hand');
+  const keep = DELAYS.call;
+  try {
+    DELAYS.call = 60000;
+    assert.ok((await bots[0].emit('call30', {})).ok);
+    assert.equal((await bots[0].emit('call30', {})).ok, false, 'once is enough');
+    await until(() => bots[1].state?.seats.some((x) => x && x.userId === a.user.id && x.leaveAt), 5000, 'the countdown on the seat, for everyone');
+    assert.ok(t.loadLog().some((e) => /Caller called/.test(e.text)));
+    assert.ok((await bots[0].emit('call30:cancel', {})).ok);
+    assert.equal(t.players.get(a.user.id).leaveAt, null, 'staying takes it back');
+    // a pot over the line starts the 30 minutes again
+    const real = t.callResetAt;
+    t.callResetAt = () => 0;
+    await bots[0].emit('call30', {});
+    const first = t.players.get(a.user.id).leaveAt;
+    await until(() => t.players.get(a.user.id).leaveAt > first, 20000, 'a pot won to start it again');
+    assert.ok(t.loadLog().some((e) => /Caller won a pot over/.test(e.text)));
+    t.callResetAt = real;
+    // when the time is up they stand up after the hand, and their chips go back to their balance
+    await bots[0].emit('call30:cancel', {});
+    DELAYS.call = 300;
+    await bots[0].emit('call30', {});
+    await until(() => !t.players.has(a.user.id), 20000, 'the caller to stand up');
+    assert.ok(t.loadLog().some((e) => /Caller's time is up/.test(e.text)));
+  } finally {
+    DELAYS.call = keep;
+    bots.forEach((x) => x.close());
+  }
+});
+
 // Runs last: it clears every game on the test server.
 test('settling one player against another, results over a period, and the owner clearing all history', { timeout: 90000 }, async () => {
   const a = await admin('Banker', { fund: 100000 });

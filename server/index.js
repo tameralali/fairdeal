@@ -60,9 +60,14 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'] }));
   const page = (f) => (req, res) => res.sendFile(path.join(ROOT, 'public', f));
   app.get('/t/:id', page('table.html'));
-  app.get(['/club/:id', '/join/:code', '/invite/:token', '/reset/:token', '/admin'], page('index.html'));
+  app.get(['/club/:id', '/join/:code', '/invite/:token', '/reset/:token', '/admin', '/fair'], page('index.html'));
   app.get('/verify', page('verify.html'));
   app.get('/healthz', (req, res) => res.json({ ok: true }));
+  // Which code is running, for the fair dealing page: Render sets RENDER_GIT_COMMIT to the deployed commit.
+  app.get('/api/version', (req, res) => res.json({
+    commit: process.env.RENDER_GIT_COMMIT || process.env.SOURCE_COMMIT || null,
+    source: process.env.SOURCE_URL || 'https://github.com/tameralali/fairdeal',
+  }));
   app.get('/favicon.ico', (req, res) => res.redirect(301, '/favicon.svg'));
 
   const tokenOf = (req) => (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
@@ -347,6 +352,8 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     on('rit', (p) => T().chooseRuns(u, p.runs));
     on('sitout', (p) => T().setSitOut(u, !!p.value));
     on('standup', () => T().standUp(u));
+    on('call30', () => T().callThirty(u));
+    on('call30:cancel', () => T().stayAfterAll(u));
     on('show', (p) => T().showCards(u, Array.isArray(p.cards) ? p.cards : null));
     on('fair:contribute', (p) => T().contribute(u, p));
     on('chat', (p) => T().chat(u, p.text));

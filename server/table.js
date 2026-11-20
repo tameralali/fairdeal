@@ -15,7 +15,7 @@ const VOICE_MAX = 10; // each person in voice sends to each other one, so it sta
 export const DELAYS = {
   street: 1400, runoutFirst: 2400, runout: 2200, showdown: 1400,
   afterUncontested: 3000, afterShowdown: 5500, perExtraRun: 1500, perExtraBoard: 1000,
-  rit: 20000, ritSettle: 8000, autoAct: 400, away: 5000,
+  rit: 20000, ritSettle: 8000, autoAct: 400, away: 5000, call: 30 * 60000,
 };
 
 // The format is a list of steps played in order, then repeated from the top. Each step is one game
@@ -255,6 +255,7 @@ export class Table {
     this.endAfterHand = false;
     this.broadcastQueued = false;
     this.fair = { pending: this.restorePending(data.fairPending, data.status !== undefined) };
+    if (this.status !== 'ended') this.scheduleCalls();
   }
 
   // The next hand's seal after a restart. Browsers have already seen it and may have added their
@@ -360,7 +361,7 @@ export class Table {
       fairPending: this.fair ? savedCommitment(this.fair.pending) : undefined,
       players: [...this.players.values()].map((p) => ({
         userId: p.userId, name: p.name, seat: p.seat, stack: p.stack, sittingOut: p.sittingOut,
-        timeBank: p.timeBank, joinedAt: p.joinedAt,
+        timeBank: p.timeBank, joinedAt: p.joinedAt, leaveAt: p.leaveAt || null,
       })),
     };
     this.store.save();
@@ -418,7 +419,7 @@ export class Table {
 
   // Stops everything this table has running and tells every page on it that the game is gone.
   dispose() {
-    for (const k of ['action', 'advance', 'next', 'rit']) { clearTimeout(this.timers[k]); this.timers[k] = null; }
+    for (const k of ['action', 'advance', 'next', 'rit', 'call']) { clearTimeout(this.timers[k]); this.timers[k] = null; }
     for (const t of this.timers.session || []) clearTimeout(t);
     this.timers.session = [];
     for (const t of this.awayTimers.values()) clearTimeout(t);
@@ -601,6 +602,57 @@ export class Table {
     this.broadcast();
   }
 
+  // ---------- calling 30 ----------
+  // A player tells the table they are leaving in 30 minutes. The countdown shows on their seat; a pot
+  // won over $1,000 starts it again (so nobody wins big and walks), and when it runs out they stand up
+  // after the hand in progress. They can change their mind and stay.
+  callResetAt() { return this.decimals ? 100000 : 1000; }
+
+  callThirty(user) {
+    const p = this.players.get(user.id);
+    if (!p) fail('You are not seated');
+    this.assertOpen();
+    if (p.leaveAfterHand) fail('You are standing up after this hand already');
+    if (p.leaveAt) fail('You have called it already');
+    p.leaveAt = Date.now() + DELAYS.call;
+    const min = Math.round(DELAYS.call / 60000);
+    this.log(`${p.name} called ${min}: they leave in ${min} minutes (a pot over ${this.fmt(this.callResetAt())} starts it again)`, 'seat');
+    this.scheduleCalls();
+    this.snapshot();
+    this.broadcast();
+  }
+
+  stayAfterAll(user) {
+    const p = this.players.get(user.id);
+    if (!p || !p.leaveAt) fail('You have not called it');
+    p.leaveAt = null;
+    this.log(`${p.name} is staying after all`, 'seat');
+    this.scheduleCalls();
+    this.snapshot();
+    this.broadcast();
+  }
+
+  scheduleCalls() {
+    clearTimeout(this.timers.call);
+    this.timers.call = null;
+    const next = Math.min(...[...this.players.values()].map((p) => p.leaveAt || Infinity));
+    if (next === Infinity) return;
+    this.timers.call = setTimeout(this.safe(() => this.callsDue()), Math.max(0, next - Date.now()) + 50);
+  }
+
+  callsDue() {
+    const now = Date.now();
+    for (const p of [...this.players.values()]) {
+      if (!p.leaveAt || p.leaveAt > now) continue;
+      p.leaveAt = null;
+      this.log(`${p.name}'s time is up`, 'seat');
+      this.standUp({ id: p.userId });
+    }
+    this.scheduleCalls();
+    this.snapshot();
+    this.broadcast();
+  }
+
   standUp(user) {
     const p = this.players.get(user.id);
     if (!p) fail('You are not seated');
@@ -760,12 +812,14 @@ export class Table {
       this.session.clockAtFirstHand = false;
       this.session.endsAt = Date.now() + this.settings.sessionMinutes * 60000;
     }
+    const had = !!this.session.endsAt;
+    if (!had && minutes <= 0) fail('Pick how long the game goes on for');
     const base = this.session.endsAt || Date.now();
     this.session.endsAt = Math.max(Date.now() + 60000, base + minutes * 60000);
     this.endAfterHand = false;
     this.scheduleSession();
     const left = Math.round((this.session.endsAt - Date.now()) / 60000);
-    this.log(`The host changed the time limit: ${left} minute${left === 1 ? '' : 's'} left`, 'game');
+    this.log(had ? `The host changed the time limit: ${left} minute${left === 1 ? '' : 's'} left` : `The host started the clock: the game ends in ${left} minutes, once the hand being played then is over`, 'game');
     this.snapshot();
     this.broadcast();
   }
@@ -873,7 +927,7 @@ export class Table {
       if (this.clubId) this.clubs.changed(this.clubId);
       return;
     }
-    for (const k of ['action', 'advance', 'next', 'rit']) { clearTimeout(this.timers[k]); this.timers[k] = null; }
+    for (const k of ['action', 'advance', 'next', 'rit', 'call']) { clearTimeout(this.timers[k]); this.timers[k] = null; }
     for (const t of this.timers.session) clearTimeout(t);
     this.timers.session = [];
     this.status = 'ended';
@@ -1343,6 +1397,17 @@ export class Table {
     this.lastHand = hand;
     // sealed hands open their seen cards straight away; the folded ones stay sealed
     if (this.settings.revealPolicy !== 'session' || rec.fairness.version === FAIRNESS_V2) this.reveal(hand.number);
+    // calling 30: a player who wins a pot over the line starts their 30 minutes again
+    const won = new Map();
+    for (const w of hand.results?.payouts || []) won.set(w.id, (won.get(w.id) || 0) + w.amount);
+    for (const [id, amount] of won) {
+      const p = this.players.get(id);
+      if (p && p.leaveAt && !p.leaveAfterHand && amount > this.callResetAt()) {
+        p.leaveAt = Date.now() + DELAYS.call;
+        this.log(`${p.name} won a pot over ${this.fmt(this.callResetAt())}, so their ${Math.round(DELAYS.call / 60000)} minutes start again`, 'seat');
+      }
+    }
+    this.scheduleCalls();
     for (const p of [...this.players.values()]) {
       if (p.leaveAfterHand) { this.removePlayer(p, p.kicked ? 'kicked' : 'stood up'); continue; }
       if (p.pendingChips > 0) {
@@ -1512,7 +1577,7 @@ export class Table {
       const p = uid && this.players.get(uid);
       seats.push(p ? {
         seat: i, userId: p.userId, name: p.name, stack: p.stack, sittingOut: p.sittingOut, sitOutNext: p.sitOutNext,
-        leaving: p.leaveAfterHand, connected: this.isConnected(uid), timeBank: Math.floor(p.timeBank),
+        leaving: p.leaveAfterHand, leaveAt: p.leaveAt || null, connected: this.isConnected(uid), timeBank: Math.floor(p.timeBank),
         isHost: this.isHost(uid), pendingChips: p.pendingChips, away: p.away,
       } : null);
     }
@@ -1534,7 +1599,7 @@ export class Table {
       hud: this.hudData(),
       me: {
         userId, isHost, seat: me ? me.seat : null, seated: !!me,
-        sittingOut: me ? me.sittingOut : false, sitOutNext: me ? me.sitOutNext : false, leaving: me ? me.leaveAfterHand : false,
+        sittingOut: me ? me.sittingOut : false, sitOutNext: me ? me.sitOutNext : false, leaving: me ? me.leaveAfterHand : false, leaveAt: me ? me.leaveAt || null : null,
         pendingChips: me ? me.pendingChips : 0, requests: this.requests.filter((r) => r.userId === userId), clubAvailable,
         rathole: me ? null : this.ratholeFor(userId),
       },

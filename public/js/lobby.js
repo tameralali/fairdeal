@@ -23,6 +23,7 @@ async function boot() {
   if (link) return linkPage(link[2]);
   const join = location.pathname.match(/^\/join\/([A-Za-z0-9_-]{16})$/);
   if (join) return joinPage(join[1]);
+  if (location.pathname === '/fair') return fairPage();
   try { me = await ensureIdentity(); }
   catch (e) { main.innerHTML = `<p class="bad">${esc(e.message)}</p>`; return; }
   const next = new URLSearchParams(location.search).get('next');
@@ -216,6 +217,7 @@ async function clubHome(id) {
       ${c.isManager ? '<div class="cb-start"><button class="btn primary big" data-start>Start a game</button><div class="quick-start hidden" data-quick></div></div>' : ''}
     </section>
     ${c.announcement ? `<div class="announce">${esc(c.announcement)}</div>` : ''}
+    <a class="fair-band" href="/fair">${sealSVG(BRAND_HEX, 22, '')}<span><b>Every shuffle can be checked.</b> The code is public, every player's browser adds to the shuffle, and your browser checks each hand you play. See how it works.</span></a>
     ${c.isManager && ((c.pending && c.pending.length) || (c.requests && c.requests.length)) ? `<section class="panel waitlist"><h2>Waiting to join</h2>
       ${requestRows(c.requests || [])}
       ${(c.pending || []).map((p) => `<div class="row" style="padding:6px 0"><b class="grow">${esc(p.name)}</b><span class="muted">${timeAgo(p.requestedAt)}</span><button class="btn small ghost" data-decide="${esc(p.userId)}" data-ok="0">Decline</button><button class="btn small primary" data-decide="${esc(p.userId)}" data-ok="1">Approve</button></div>`).join('')}</section>` : ''}
@@ -284,6 +286,7 @@ async function clubHome(id) {
     <div class="club-foot">
       ${c.isManager ? '<button class="btn small" data-settings>Club settings</button>' : ''}
       ${c.settings.allowTransfers ? '<button class="btn small" data-transfer>Send money to a member</button>' : ''}
+      <a class="btn small ghost" href="/fair">Fair dealing</a>
       <a class="btn small ghost" href="/verify">Shuffle verifier</a>
     </div>`;
   loadClubStats(id, c);
@@ -607,6 +610,55 @@ async function loadClubStats(id, c) {
     ${statsTable(st, { me: me.user.id, fmt: F, rowAttr: null })}
     ${st.players.some((p) => p.net === null) ? '<p class="hint">Results of other members are shown to admins, or to everyone when the club settings allow it.</p>' : ''}
     ${glossaryHTML()}`;
+}
+
+// ---------- fair dealing: how anyone can check the shuffle ----------
+async function fairPage() {
+  document.title = 'Fair dealing | The Aquarium';
+  head.innerHTML = `<a class="wordmark" href="/">${sealSVG(BRAND_HEX, 30, 'The Aquarium')}<span>The <b>Aquarium</b></span></a><a class="btn small ghost" href="/">${api.token ? 'Back to the club' : 'Sign in'}</a>`;
+  let v = { commit: null, source: 'https://github.com/tameralali/fairdeal' };
+  try { v = await api.get('/api/version'); } catch { /* the page still explains everything */ }
+  const repo = esc(v.source);
+  const commit = v.commit ? esc(v.commit.slice(0, 7)) : null;
+  main.innerHTML = `<article class="panel fair-page">
+    <h1>Fair dealing</h1>
+    <p class="lead">You do not have to take anyone's word that the cards are random, the host's included. Every deal is sealed before anyone acts, every player's browser adds its own randomness to the shuffle, and every browser checks the hands it played on its own, against the seal it saw before the deal.</p>
+
+    <section>
+      <h2>The code is public</h2>
+      <p>Everything that runs this site, the server that deals and the page in your browser, is public on GitHub: <a href="${repo}" target="_blank" rel="noopener">${repo.replace(/^https?:\/\//, '')}</a>. Anyone can read how the deck is shuffled and sealed, and what the checks below do.</p>
+      ${commit ? `<p>This site is running <a href="${repo}/commit/${esc(v.commit)}" target="_blank" rel="noopener">commit ${commit}</a>, so you can read the exact version that is dealing right now.</p>` : ''}
+      <p class="hint">You cannot look inside a server, so nothing here asks you to trust it. The checks below would catch a server that changed the deck, whatever code it ran.</p>
+    </section>
+
+    <section>
+      <h2>How each hand is sealed</h2>
+      <ol class="fair-steps">
+        <li><b>Before the deal,</b> the server shuffles a deck with a secret and publishes a seal: a SHA-256 fingerprint of the whole deck. It shows at the top of the table as the round seal and "Hand sealed". Changing even one card afterwards would change the seal.</li>
+        <li><b>Then every seated player's browser adds its own random number.</b> The final order of the deck depends on all of them. The server committed to its part before seeing yours, so it cannot steer any card to anyone.</li>
+        <li><b>After the hand,</b> the server opens the seal: the boards, the cards that were shown, and every card nobody was dealt. Your own cards are opened to you. Folded cards can stay sealed for good, if the game is set that way.</li>
+        <li><b>Your browser rebuilds the seal</b> from what was opened and checks that it matches the one it saw before the deal, that its own random number was used, and that your cards and every board came off that deck in order.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Checked for you, every hand</h2>
+      <p>Your browser runs these checks by itself after every hand you play, and keeps count. At a table, open the seal at the top to see how many hands this browser has checked and whether any failed. Hand history, then Details, lists every check for one hand with a tick or a cross.</p>
+    </section>
+
+    <section>
+      <h2>Check any hand yourself</h2>
+      <p>The <a href="/verify">shuffle verifier</a> rebuilds a hand from its opened data using your browser's built-in cryptography, one hand or a whole game at a time. You can also download a hand from Hand history and check it with any SHA-256 tool, without this site at all.</p>
+    </section>
+
+    <section>
+      <h2>What this proves, and what it does not</h2>
+      <p><b>It proves</b> the deck was fixed before anyone acted, nobody could change or pick cards once the deal started (not the host, not the server), every card came off that deck in order, and every player's randomness was part of the shuffle. If the server dropped a player's random number or swapped the deck, that player's browser would show the check as failed.</p>
+      <p><b>It does not prove</b> that whoever runs the server cannot read the cards in its memory during a hand. That is true of every online poker site, PokerNow included. Closing that gap takes a much slower kind of protocol, where no single computer ever knows the deck.</p>
+    </section>
+
+    <div class="row fair-links"><a class="btn primary" href="/verify">Open the shuffle verifier</a><a class="btn" href="${repo}" target="_blank" rel="noopener">Read the code on GitHub</a></div>
+  </article>`;
 }
 
 // ---------- the period for results and stats ----------
