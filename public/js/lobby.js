@@ -15,7 +15,7 @@ let me = null;
 let clubSocket = null;
 let watching = null;
 // view state that survives live refreshes of the club page
-const ui = { sort: 'name', member: '', ledgerLimit: 15, statsGame: 'all' };
+const ui = { sort: 'name', member: '', ledgerLimit: 15, statsGame: 'all', period: 'all', from: '', to: '' };
 const isAdmin = () => me && (me.user.role === 'owner' || me.user.role === 'admin');
 
 async function boot() {
@@ -271,8 +271,13 @@ async function clubHome(id) {
       ${txs.length > shown.length ? `<div class="more"><button class="btn small ghost" data-more>Show ${Math.min(50, txs.length - shown.length)} more of ${txs.length - shown.length}</button></div>` : ''}` : '<p class="muted">No entries yet. Money added, buy-ins, cash-outs and settlements show up here.</p>'}
     </section>
 
+    <section class="panel" id="results">
+      <div class="sec-head"><h2>Results</h2><span class="muted" data-results-count></span>${periodPicker()}</div>
+      <div data-results-body><p class="muted">Loading…</p></div>
+    </section>
+
     <section class="panel" id="stats">
-      <div class="sec-head"><h2>Stats</h2><span class="muted" data-stats-count></span></div>
+      <div class="sec-head"><h2>Stats</h2><span class="muted" data-stats-count></span>${periodPicker()}</div>
       <div data-stats-body><p class="muted">Loading…</p></div>
     </section>
 
@@ -282,6 +287,7 @@ async function clubHome(id) {
       <a class="btn small ghost" href="/verify">Shuffle verifier</a>
     </div>`;
   loadClubStats(id, c);
+  loadResults(id, c);
 
   async function endGame(btn) {
     const t = data.tables.find((x) => x.id === btn.dataset.end);
@@ -303,6 +309,21 @@ async function clubHome(id) {
   main.querySelector('[data-start]')?.addEventListener('click', () => openStart());
   if (c.isManager) loadQuickStart();
   main.querySelector('[data-filter]')?.addEventListener('change', (e) => { ui.member = e.target.value; ui.ledgerLimit = 15; clubHome(id); });
+  main.addEventListener('change', (e) => {
+    const k = e.target.dataset.period;
+    if (!k) return;
+    ui[k] = e.target.value;
+    if (k === 'period' && ui.period === 'custom' && !ui.from) {
+      const d = new Date();
+      ui.to = d.toISOString().slice(0, 10);
+      d.setDate(d.getDate() - 30);
+      ui.from = d.toISOString().slice(0, 10);
+    }
+    // both panels show the same period
+    for (const box of main.querySelectorAll('[data-period-box]')) box.outerHTML = periodPicker();
+    loadClubStats(id, c);
+    loadResults(id, c);
+  });
   main.querySelector('[data-csv]').addEventListener('click', () => api.download(`/api/clubs/${id}/transactions.csv`, `club-ledger-${c.name.replace(/[^\w-]+/g, '-')}.csv`).catch((x) => toast(x.message, 'error')));
 
   main.addEventListener('click', onClick);
@@ -324,6 +345,8 @@ async function clubHome(id) {
     if (e.target.closest('[data-transfer]')) return transferDialog();
     const sg = e.target.closest('#stats [data-game] button');
     if (sg) { ui.statsGame = sg.dataset.v; loadClubStats(id, c); return; }
+    const rg = e.target.closest('[data-result-game]');
+    if (rg) { window.open(`/t/${encodeURIComponent(rg.dataset.resultGame)}`, '_blank', 'noopener'); return; }
     const b = e.target.closest('[data-m]');
     if (!b) return;
     const m = c.members.find((x) => x.userId === b.dataset.u);
@@ -430,13 +453,55 @@ async function clubHome(id) {
     });
   }
 
+  // Settling: with the player they paid, or who paid them (one entry each, naming each other), or with
+  // the club in cash.
   function memberSettle(m) {
+    const owes = m.balance < 0;
+    const others = c.members.filter((x) => x.userId !== m.userId && x.balance !== undefined)
+      .sort((a, b) => (owes ? b.balance - a.balance : a.balance - b.balance));
+    const fits = (x) => (owes ? x.balance > 0 : x.balance < 0);
+    const label = (x) => `${x.name}${x.balance > 0 ? `, is owed ${F(x.balance)}` : x.balance < 0 ? `, owes ${F(-x.balance)}` : ', settled'}`;
+    const first = others.find(fits);
+    const suggest = (x) => (x && fits(x) ? Math.min(Math.abs(m.balance), Math.abs(x.balance)) : Math.abs(m.balance));
     const dlg = dialog({
       title: `Settle ${m.name}`, className: 'narrow',
-      body: `<form class="stack"><p>${m.balance < 0 ? `${esc(m.name)} owes the club ${F(-m.balance)}.` : `The club owes ${esc(m.name)} ${F(m.balance)}.`} Settling records the payment and sets the balance to zero.</p>
-        <label><span class="lbl">How it was paid</span><input name="note" placeholder="e.g. Cash, bank transfer"></label><button class="btn primary" type="submit">Record settlement</button></form>`,
+      body: `<form class="stack" novalidate>
+        <p>${owes ? `${esc(m.name)} owes ${F(-m.balance)}.` : `${esc(m.name)} is owed ${F(m.balance)}.`}</p>
+        <label><span class="lbl">${owes ? 'Who did they pay?' : 'Who paid them?'}</span><select name="with">
+          ${others.filter(fits).map((x) => `<option value="${esc(x.userId)}">${esc(label(x))}</option>`).join('')}
+          ${others.filter((x) => !fits(x)).length ? `<optgroup label="Others">${others.filter((x) => !fits(x)).map((x) => `<option value="${esc(x.userId)}">${esc(label(x))}</option>`).join('')}</optgroup>` : ''}
+          <option value="" ${first ? '' : 'selected'}>${owes ? 'The club (paid in cash)' : 'The club (paid out in cash)'}</option>
+        </select></label>
+        <label data-amt><span class="lbl">Amount</span>${moneyBox('amount', toInput(suggest(first), dec))}</label>
+        <label><span class="lbl">How it was paid</span><input name="note" maxlength="60" placeholder="e.g. Cash, bank transfer"></label>
+        <p class="hint" data-explain></p>
+        <p class="bad hidden" data-err role="alert"></p>
+        <button class="btn primary" type="submit">Record settlement</button></form>`,
     });
-    dlg.$('form').addEventListener('submit', async (ev) => { ev.preventDefault(); if (await post(`/members/${m.userId}/settle`, { note: ev.target.elements.note.value }, 'Settlement recorded')) dlg.close(); });
+    const f = dlg.$('form');
+    const pick = () => others.find((x) => x.userId === f.elements.with.value) || null;
+    const explain = () => {
+      const x = pick();
+      dlg.$('[data-amt]').classList.toggle('hidden', !x);
+      dlg.$('[data-explain]').textContent = x
+        ? `${owes ? `${m.name}'s balance goes up and ${x.name}'s goes down` : `${m.name}'s balance goes down and ${x.name}'s goes up`} by the amount: one entry each in the ledger, naming the other.`
+        : `Records the cash ${owes ? 'paid in' : 'paid out'} and sets ${m.name}'s balance to zero.`;
+    };
+    f.elements.with.addEventListener('change', () => { f.elements.amount.value = toInput(suggest(pick()), dec); explain(); });
+    explain();
+    f.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const x = pick();
+      const err = dlg.$('[data-err]');
+      err.classList.add('hidden');
+      const body = { note: f.elements.note.value };
+      if (x) {
+        const amount = P(f.elements.amount.value);
+        if (!(amount > 0) || amount > Math.abs(m.balance)) { err.textContent = `Enter an amount up to ${F(Math.abs(m.balance))}.`; err.classList.remove('hidden'); return; }
+        Object.assign(body, { withUserId: x.userId, amount });
+      }
+      if (await post(`/members/${m.userId}/settle`, body, x ? `Settled ${m.name} with ${x.name}` : 'Settlement recorded')) dlg.close();
+    });
   }
 
   function transferDialog() {
@@ -470,9 +535,13 @@ async function clubHome(id) {
         <label class="check"><input type="checkbox" name="membersSeeLedger" ${st.membersSeeLedger ? 'checked' : ''}> Members can see everyone's balance, the full ledger and everyone's results<small>Off: each member sees only their own balance, entries and results. Everyone sees how others play in Stats.</small></label>
         <label class="check"><input type="checkbox" name="allowTransfers" ${st.allowTransfers ? 'checked' : ''}> Members can send money to each other<small>Only from a positive balance; credit cannot be passed on.</small></label>
         <p class="hint">Amounts are in dollars and cents. New people join with an invite from an admin.</p>
-      </form>`,
+      </form>
+      ${me.user.role === 'owner' ? `<div class="danger-zone"><h3 class="section-title">Clear history</h3>
+        <p class="hint">For a fresh start, for example after testing: deletes every game with its hands, the club ledger and all stats, and sets every balance to zero. Accounts, roles, credit limits, presets, invites and the join link stay.</p>
+        <button type="button" class="btn danger small" data-clear>Clear history</button></div>` : ''}`,
       foot: '<button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-save>Save settings</button>',
     });
+    dlg.$('[data-clear]')?.addEventListener('click', () => clearHistoryDialog(dlg));
     dlg.$('[data-save]').addEventListener('click', async () => {
       const f = dlg.$('#clubset').elements;
       try {
@@ -489,20 +558,109 @@ async function clubHome(id) {
   }
 }
 
+// The owner's fresh start: everything played and every ledger entry goes, after typing CLEAR.
+function clearHistoryDialog(parent) {
+  const d = dialog({
+    title: 'Clear all history?', className: 'narrow',
+    body: `<form class="stack" novalidate>
+      <p>This deletes, for good:</p>
+      <ul class="plain-list"><li>every game, running or finished, with its hands, log and replays</li><li>the club ledger: buy-ins, cash-outs, adjustments and settlements</li><li>all stats and results</li></ul>
+      <p>Every balance is set to $0.00. Accounts, roles, credit limits, presets, invites and the join link stay. <b>This cannot be undone.</b></p>
+      <label><span class="lbl">Type CLEAR to confirm</span><input name="confirm" autocomplete="off" autocapitalize="characters" spellcheck="false"></label>
+      <p class="bad hidden" data-err role="alert"></p>
+    </form>`,
+    foot: '<button class="btn ghost" data-close>Cancel</button><button class="btn danger" data-go disabled>Clear history</button>',
+  });
+  const input = d.$('input[name=confirm]');
+  const go = d.$('[data-go]');
+  input.addEventListener('input', () => { go.disabled = input.value.trim() !== 'CLEAR'; });
+  d.$('form').addEventListener('submit', (e) => { e.preventDefault(); if (!go.disabled) go.click(); });
+  go.addEventListener('click', async () => {
+    go.disabled = true;
+    try {
+      await api.post('/api/admin/clear-history', { confirm: 'CLEAR' });
+      d.close();
+      parent.close();
+      toast('History cleared');
+      route();
+    } catch (x) {
+      const err = d.$('[data-err]');
+      err.textContent = x.message;
+      err.classList.remove('hidden');
+      go.disabled = false;
+    }
+  });
+  input.focus();
+}
+
 // All-time stats on the club page, for one game type or all of them.
 async function loadClubStats(id, c) {
   const body = main.querySelector('[data-stats-body]');
   if (!body) return;
   let st;
-  try { st = (await api.get(`/api/clubs/${encodeURIComponent(id)}/stats?game=${encodeURIComponent(ui.statsGame)}`)).stats; }
+  try { st = (await api.get(`/api/clubs/${encodeURIComponent(id)}/stats?game=${encodeURIComponent(ui.statsGame)}${periodQuery()}`)).stats; }
   catch (e) { body.innerHTML = `<p class="muted">${esc(e.message)}</p>`; return; }
   const count = main.querySelector('[data-stats-count]');
-  if (count) count.textContent = `${st.hands} hand${st.hands === 1 ? '' : 's'}, every game`;
+  if (count) count.textContent = `${st.hands} hand${st.hands === 1 ? '' : 's'}, ${periodLabel()}`;
   const F = (a) => fmtChips(a, c.settings.decimals);
   body.innerHTML = `${st.games.length > 1 || ui.statsGame !== 'all' ? `<div class="stats-bar">${gameSeg(st.games, ui.statsGame)}</div>` : ''}
     ${statsTable(st, { me: me.user.id, fmt: F, rowAttr: null })}
     ${st.players.some((p) => p.net === null) ? '<p class="hint">Results of other members are shown to admins, or to everyone when the club settings allow it.</p>' : ''}
     ${glossaryHTML()}`;
+}
+
+// ---------- the period for results and stats ----------
+const PERIODS = [['all', 'All time'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days'], ['90d', 'Last 90 days'], ['ytd', 'This year'], ['custom', 'Dates…']];
+
+function periodPicker() {
+  return `<span class="period" data-period-box><select data-period="period" aria-label="Period">${PERIODS.map(([k, l]) => `<option value="${k}" ${k === ui.period ? 'selected' : ''}>${l}</option>`).join('')}</select>${ui.period === 'custom'
+    ? `<input type="date" data-period="from" value="${esc(ui.from)}" aria-label="From"><span class="muted">to</span><input type="date" data-period="to" value="${esc(ui.to)}" aria-label="To">` : ''}</span>`;
+}
+
+// The period as a range in ms: from its first moment up to (not including) the moment after it.
+function periodRange() {
+  const day = 864e5;
+  const now = Date.now();
+  if (ui.period === '7d' || ui.period === '30d' || ui.period === '90d') return { from: now - parseInt(ui.period, 10) * day, to: null };
+  if (ui.period === 'ytd') return { from: new Date(new Date().getFullYear(), 0, 1).getTime(), to: null };
+  if (ui.period === 'custom') {
+    const at = (v, end) => { if (!v) return null; const [y, m, d] = v.split('-').map(Number); return new Date(y, m - 1, d + (end ? 1 : 0)).getTime(); };
+    return { from: at(ui.from, false), to: at(ui.to, true) };
+  }
+  return { from: null, to: null };
+}
+const periodQuery = () => { const r = periodRange(); return `${r.from ? `&from=${r.from}` : ''}${r.to ? `&to=${r.to}` : ''}`; };
+function periodLabel() {
+  if (ui.period === 'custom') {
+    const f = (v) => (v ? new Date(v + 'T00:00').toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : '');
+    return ui.from || ui.to ? `${f(ui.from) || 'the start'} to ${f(ui.to) || 'today'}` : 'all time';
+  }
+  return (PERIODS.find(([k]) => k === ui.period) || PERIODS[0])[1].toLowerCase();
+}
+
+// Profit and loss over the period, every game added up, the biggest winner first.
+async function loadResults(id, c) {
+  const body = main.querySelector('[data-results-body]');
+  if (!body) return;
+  let r;
+  try { r = (await api.get(`/api/clubs/${encodeURIComponent(id)}/results?x=1${periodQuery()}`)).results; }
+  catch (e) { body.innerHTML = `<p class="muted">${esc(e.message)}</p>`; return; }
+  const count = main.querySelector('[data-results-count]');
+  if (count) count.textContent = `${r.games} game${r.games === 1 ? '' : 's'}, ${r.hands} hand${r.hands === 1 ? '' : 's'}, ${periodLabel()}`;
+  const F = (a) => fmtChips(a, c.settings.decimals);
+  const signed = (n) => (n === null || n === undefined ? '<span class="faint">-</span>' : `<span class="${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}">${n > 0 ? '+' : ''}${F(n)}</span>`);
+  const game = (g) => (g ? `<button type="button" class="linkish" data-result-game="${esc(g.tableId)}" title="${esc(g.name)}${g.at ? `, ${new Date(g.at).toLocaleDateString()}` : ''}">${signed(g.net)}<small> ${esc(g.name)}</small></button>` : '<span class="faint">-</span>');
+  if (!r.players.length) { body.innerHTML = `<p class="muted">No hands ${ui.period === 'all' ? 'yet' : 'in this period'}.</p>`; return; }
+  let rank = 0;
+  body.innerHTML = `<div class="scroll-x"><table class="data results">
+    <thead><tr><th class="n">#</th><th>Player</th><th class="n">Net</th><th class="n">Games</th><th class="n hide-sm">Won</th><th class="n hide-sm">Hands</th><th class="hide-sm">Best game</th><th class="hide-sm">Worst game</th><th class="hide-sm">Last played</th></tr></thead>
+    <tbody>${r.players.map((p) => `<tr class="${p.userId === me.user.id ? 'mine' : ''}">
+      <td class="n muted">${p.net === null ? '' : ++rank}</td>
+      <td class="who"><b>${esc(p.name)}</b>${p.userId === me.user.id ? ' <span class="faint">(you)</span>' : ''}</td>
+      <td class="n big">${signed(p.net)}</td><td class="n">${p.games}</td><td class="n hide-sm">${p.gamesWon ?? '<span class="faint">-</span>'}</td><td class="n hide-sm">${p.hands}</td>
+      <td class="hide-sm">${game(p.best)}</td><td class="hide-sm">${game(p.worst)}</td><td class="hide-sm muted">${p.lastAt ? new Date(p.lastAt).toLocaleDateString([], { month: 'short', day: 'numeric' }) : ''}</td>
+    </tr>`).join('')}</tbody></table></div>
+    ${r.players.some((p) => p.net === null) ? '<p class="hint">Results of other members are shown to admins, or to everyone when the club settings allow it.</p>' : ''}`;
 }
 
 // ---------- invites (admins) ----------

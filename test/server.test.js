@@ -783,3 +783,80 @@ test('accounts: invite only, login, rename', async () => {
   const me = await call('PATCH', '/api/me', { name: 'Renamed' }, li.token);
   assert.equal(me.user.name, 'Renamed');
 });
+
+// Runs last: it clears every game on the test server.
+test('settling one player against another, results over a period, and the owner clearing all history', { timeout: 90000 }, async () => {
+  const a = await admin('Banker', { fund: 100000 });
+  const b = await member('Owes', null, { fund: 100000 });
+  const d = await member('Owed', null, { fund: 100000 });
+  const { clubs: [{ id: clubId }] } = await call('GET', '/api/me', null, a.token);
+  const bal = async (uid) => (await call('GET', `/api/clubs/${clubId}`, null, a.token)).club.members.find((m) => m.userId === uid).balance;
+  // Owes is down 400 and Owed is up 300; Owes pays Owed 250 in cash
+  await call('POST', `/api/clubs/${clubId}/members/${b.user.id}/chips`, { amount: -100400, note: 'Lost' }, siteOwner.token);
+  await call('POST', `/api/clubs/${clubId}/members/${d.user.id}/chips`, { amount: 300, note: 'Won' }, siteOwner.token);
+  assert.equal(await bal(b.user.id), -400);
+  await assert.rejects(call('POST', `/api/clubs/${clubId}/members/${b.user.id}/settle`, { withUserId: d.user.id, amount: 250 }, d.token), /owner or a manager/);
+  await assert.rejects(call('POST', `/api/clubs/${clubId}/members/${b.user.id}/settle`, { withUserId: d.user.id, amount: 401 }, a.token), /only has/);
+  await assert.rejects(call('POST', `/api/clubs/${clubId}/members/${b.user.id}/settle`, { withUserId: b.user.id, amount: 10 }, a.token), /someone else/);
+  const before = await bal(d.user.id);
+  const v = await call('POST', `/api/clubs/${clubId}/members/${b.user.id}/settle`, { withUserId: d.user.id, amount: 250, note: 'cash' }, a.token);
+  assert.equal(await bal(b.user.id), -150);
+  assert.equal(await bal(d.user.id), before - 250);
+  const pairId = v.club.transactions.find((t) => t.type === 'settlement' && t.pairId && t.userId === b.user.id)?.pairId;
+  const pair = v.club.transactions.filter((t) => t.pairId === pairId);
+  assert.ok(pairId);
+  assert.equal(pair.length, 2, 'one entry for each of them');
+  assert.deepEqual(pair.map((t) => t.amount).sort((x, y) => x - y), [-250, 250]);
+  assert.ok(pair.some((t) => t.userId === b.user.id && /Paid Owed \(cash\)/.test(t.note)));
+  assert.ok(pair.some((t) => t.userId === d.user.id && /Paid by Owes \(cash\)/.test(t.note)));
+  // settling with the club still sets the balance to zero
+  await call('POST', `/api/clubs/${clubId}/members/${b.user.id}/settle`, {}, a.token);
+  assert.equal(await bal(b.user.id), 0);
+
+  // a few hands, then the results over all time and over a period that ends before them
+  await call('POST', `/api/clubs/${clubId}/members/${b.user.id}/chips`, { amount: 100000, note: 'Back in' }, siteOwner.token);
+  const { id } = await call('POST', '/api/tables', { name: 'Results game', settings: { autoStart: true, autoApprove: true, decisionSeconds: 5, timeBankSeconds: 0 } }, a.token);
+  const bots = [new Bot('Banker', a, 31), new Bot('Owes', b, 32)];
+  for (const x of bots) await x.connect(id);
+  await bots[0].emit('seat:request', { seat: 0, buyIn: 1000 });
+  await bots[1].emit('seat:request', { seat: 1, buyIn: 1000 });
+  await until(() => (bots[0].state?.table.handNumber || 0) >= 6, 30000, 'six hands');
+  const watcher = new Bot('Owed', d, 33);
+  await watcher.connect(id);
+  let removed = null;
+  watcher.socket.on('table:removed', (p) => { removed = p; });
+  const all = (await call('GET', `/api/clubs/${clubId}/results`, null, a.token)).results;
+  const mine = all.players.filter((p) => [a.user.id, b.user.id].includes(p.userId));
+  assert.equal(mine.length, 2);
+  const recs = srv.tables.get(id).getRecords();
+  for (const p of mine) {
+    const net = recs.reduce((s, r) => s + (r.players.find((x) => x.userId === p.userId)?.net || 0), 0);
+    assert.equal(p.net, net, `${p.name}'s result adds up their hands`);
+    assert.ok(p.games >= 1 && p.hands >= recs.length);
+  }
+  assert.ok(all.players[0].net >= all.players[all.players.length - 1].net, 'biggest winner first');
+  const early = (await call('GET', `/api/clubs/${clubId}/results?to=${recs[0].startedAt - 1}`, null, a.token)).results;
+  assert.ok(!early.players.some((p) => p.userId === b.user.id && p.hands >= recs.length), 'a period before the game leaves it out');
+  const stats = (await call('GET', `/api/clubs/${clubId}/stats?from=${Date.now() + 60000}`, null, a.token)).stats;
+  assert.equal(stats.hands, 0, 'stats follow the period too');
+  // a member who may not see the ledger sees only their own result
+  await call('PATCH', `/api/clubs/${clubId}`, { membersSeeLedger: false }, a.token);
+  const theirs = (await call('GET', `/api/clubs/${clubId}/results`, null, b.token)).results;
+  assert.ok(theirs.players.filter((p) => p.userId !== b.user.id).every((p) => p.net === null));
+
+  // only the owner clears, after typing CLEAR; games, hands, ledger and balances go, accounts stay
+  await assert.rejects(call('POST', '/api/admin/clear-history', { confirm: 'CLEAR' }, a.token), /Only the owner/);
+  await assert.rejects(call('POST', '/api/admin/clear-history', { confirm: 'yes' }, siteOwner.token), /Type CLEAR/);
+  await call('POST', '/api/admin/clear-history', { confirm: 'CLEAR' }, siteOwner.token);
+  await until(() => removed, 5000, 'pages at the game to hear it is gone');
+  assert.equal(srv.tables.tables.size, 0);
+  assert.ok(!fs.existsSync(path.join(dataDir, 'hands', id + '.jsonl')));
+  const after = (await call('GET', `/api/clubs/${clubId}`, null, a.token)).club;
+  assert.equal(after.transactions.length, 0);
+  assert.ok(after.members.every((m) => m.balance === 0));
+  assert.equal((await call('GET', `/api/clubs/${clubId}`, null, a.token)).tables.length, 0);
+  assert.equal((await call('GET', `/api/clubs/${clubId}/results`, null, a.token)).results.players.length, 0);
+  assert.ok((await call('POST', '/api/auth/login', { username: b.user.username, password: 'secret123' })).token, 'accounts stay');
+  bots.forEach((x) => x.close());
+  watcher.close();
+});

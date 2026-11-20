@@ -55,6 +55,7 @@ function connect() {
     socket.emit('table:join', { tableId: app.tableId }, (ack) => { if (!ack || !ack.ok) fatal(ack?.error || 'Could not open this table'); });
   });
   socket.on('disconnect', () => setConn(false));
+  socket.on('table:removed', (p) => { socket.close(); fatal(p?.reason || 'This game was removed.'); });
   socket.on('connect_error', (e) => {
     setConn(false);
     if (e.message === 'auth') { api.token = null; location.reload(); }
@@ -171,18 +172,19 @@ function onVerified(n, res) {
 // Sizes in units of --u (a hundredth of the table's width, or a 64th when it stands upright): the
 // player boxes and how far a fanned hand reaches past the left edge of its box.
 const SIZES = {
-  land: { box: 21, me: 23, card: 5, myCard: 6.4, reach: 7.4, myReach: 9.1, perU: 1 },
-  port: { box: 20, me: 24, card: 5, myCard: 7.6, reach: 6.9, myReach: 9.9, perU: 100 / 64 },
+  land: { box: 22, me: 26, card: 5.8, myCard: 7.4, reach: 8.4, myReach: 10.6, perU: 1 },
+  port: { box: 20, me: 24.5, card: 5.5, myCard: 8.2, reach: 7.5, myReach: 10.6, perU: 100 / 64 },
 };
-const STEP = { 2: 0.5, 4: 0.34, 5: 0.29 };
+const STEP = { 2: 0.5, 4: 0.32, 5: 0.27 };
 
 // How far a fanned hand of n cards sticks out to the left of its box, in units, the tilt of the
 // outside card included.
-const TILT = { 2: 4.5, 4: 12, 5: 13 };
+const TILT = { 2: 6.5, 4: 19.5, 5: 21 };
+const PIVOT = 1.5; // the cards turn about a point this many card heights below their top (transform-origin 50% 150%)
 function overhang(z, n, me) {
   const w = me ? z.myCard : z.card;
   const reach = me ? z.myReach : z.reach;
-  const tilt = w * 1.2 * 1.35 * Math.sin(((TILT[n] || 7) * Math.PI) / 180);
+  const tilt = w * 1.2 * PIVOT * Math.sin(((TILT[n] || 7) * Math.PI) / 180);
   return Math.max(0, w * (1 + (n - 1) * (STEP[n] || 0.4)) - reach + tilt);
 }
 

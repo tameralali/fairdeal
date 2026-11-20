@@ -162,15 +162,15 @@ html, body { overflow: hidden; }
 /* ---------- players ---------- */
 /* a dark box with the name and stack, and the cards fanned over its left end */
 .seat {
-  --boxw: calc(var(--u) * 21); --boxh: calc(var(--u) * 6.4);
-  --cw: calc(var(--u) * 5); --reach: calc(var(--u) * 7.4); --textx: calc(var(--reach) + var(--u) * 2.5); --ratio: 1.2;
+  --boxw: calc(var(--u) * 22); --boxh: calc(var(--u) * 6.4);
+  --cw: calc(var(--u) * 5.8); --reach: calc(var(--u) * 8.4); --textx: calc(var(--reach) + var(--u) * 3.5); --ratio: 1.2;
   position: absolute; transform: translate(-50%, -50%); width: var(--boxw); z-index: 2;
 }
 /* while someone's chat shows, their seat comes forward so the bubble is not hidden by a neighbour */
 .seat.talking { z-index: 3; }
-.seat.me { --boxw: calc(var(--u) * 23); --boxh: calc(var(--u) * 6.8); --cw: calc(var(--u) * 6.4); --reach: calc(var(--u) * 9.1); --textx: calc(var(--reach) + var(--u) * 2.9); z-index: 3; }
-.table-area.portrait .seat { --boxw: calc(var(--u) * 20); --boxh: calc(var(--u) * 7.2); --cw: calc(var(--u) * 5); --reach: calc(var(--u) * 6.9); --textx: calc(var(--reach) + var(--u) * 2.1); }
-.table-area.portrait .seat.me { --boxw: calc(var(--u) * 24); --boxh: calc(var(--u) * 7.8); --cw: calc(var(--u) * 7.6); --reach: calc(var(--u) * 9.9); --textx: calc(var(--reach) + var(--u) * 2.4); }
+.seat.me { --boxw: calc(var(--u) * 26); --boxh: calc(var(--u) * 6.8); --cw: calc(var(--u) * 7.4); --reach: calc(var(--u) * 10.6); --textx: calc(var(--reach) + var(--u) * 4.2); z-index: 3; }
+.table-area.portrait .seat { --boxw: calc(var(--u) * 20); --boxh: calc(var(--u) * 7.2); --cw: calc(var(--u) * 5.5); --reach: calc(var(--u) * 7.5); --textx: calc(var(--reach) + var(--u) * 3.1); }
+.table-area.portrait .seat.me { --boxw: calc(var(--u) * 24.5); --boxh: calc(var(--u) * 7.8); --cw: calc(var(--u) * 8.2); --reach: calc(var(--u) * 10.6); --textx: calc(var(--reach) + var(--u) * 3.6); }
 .plate {
   position: relative; height: var(--boxh); display: flex; align-items: center;
   background: rgba(51, 51, 51, .97); border-radius: calc(var(--u) * .55);
@@ -189,9 +189,9 @@ html, body { overflow: hidden; }
 .host-mark { color: var(--brass-hi); font-size: .85em; flex: none; }
 
 /* the fan: --n cards, each a --step further right and turned a little more */
-.seat .n2 { --n: 2; --step: calc(var(--cw) * .5); --rot: 9deg; }
-.seat .n4 { --n: 4; --step: calc(var(--cw) * .34); --rot: 8deg; }
-.seat .n5 { --n: 5; --step: calc(var(--cw) * .29); --rot: 6.5deg; }
+.seat .n2 { --n: 2; --step: calc(var(--cw) * .5); --rot: 13deg; }
+.seat .n4 { --n: 4; --step: calc(var(--cw) * .32); --rot: 13deg; }
+.seat .n5 { --n: 5; --step: calc(var(--cw) * .27); --rot: 10.5deg; }
 .fan { position: absolute; left: 0; top: 50%; width: 0; height: 0; z-index: 1; }
 .fan .card {
   --w: var(--cw);
@@ -199,7 +199,7 @@ html, body { overflow: hidden; }
   left: calc(var(--reach) - var(--w) - (var(--n) - 1 - var(--i)) * var(--step));
   top: calc(var(--w) * var(--ratio) * -.5 - var(--u) * .35);
   rotate: calc((var(--i) - (var(--n) - 1) / 2) * var(--rot));
-  transform-origin: 50% 135%;
+  transform-origin: 50% 150%;
 }
 .seat.me.folded .fan .card { filter: brightness(.5) saturate(.6); }
 .seat.out .plate { opacity: .6; }
@@ -323,18 +323,18 @@ html, body { overflow: hidden; }
 /* boards: one column per board of a run (two on a double board), one row per run */
 .boards { display: grid; gap: calc(var(--u) * .7) calc(var(--u) * 1.6); align-items: center; justify-items: center; }
 .board { display: flex; gap: calc(var(--u) * .75); align-items: center; }
-.board .card { --w: calc(var(--u) * 7.4); }
-.boards.k2 .board .card { --w: calc(var(--u) * 5.5); }
-.boards.k3 .board .card { --w: calc(var(--u) * 4.3); }
-.boards.k4 .board .card { --w: calc(var(--u) * 3.4); }
+.board .card { --w: calc(var(--u) * 8.6); }
+.boards.k2 .board .card { --w: calc(var(--u) * 6.4); }
+.boards.k3 .board .card { --w: calc(var(--u) * 5); }
+.boards.k4 .board .card { --w: calc(var(--u) * 3.9); }
 .boards.k3 .board, .boards.k4 .board { gap: calc(var(--u) * .5); }
-.boards.stacked .board .card { --w: calc(var(--u) * 5.7); }
+.boards.stacked .board .card { --w: calc(var(--u) * 6.6); }
 .boards.b2:not(.stacked) .board { gap: calc(var(--u) * .4); }
-.boards.b2.k2:not(.stacked) .board .card { --w: calc(var(--u) * 4.3); }
-.boards.b2.k3:not(.stacked) .board .card { --w: calc(var(--u) * 3.4); }
-.boards.b2.k4:not(.stacked) .board .card { --w: calc(var(--u) * 2.8); }
+.boards.b2.k2:not(.stacked) .board .card { --w: calc(var(--u) * 5); }
+.boards.b2.k3:not(.stacked) .board .card { --w: calc(var(--u) * 3.9); }
+.boards.b2.k4:not(.stacked) .board .card { --w: calc(var(--u) * 3.2); }
 .table-area.portrait .board { gap: calc(var(--u) * .55); }
-.table-area.portrait .board .card { --w: calc(var(--u) * 7.4); }
+.table-area.portrait .board .card { --w: calc(var(--u) * 7.8); }
 .table-area.portrait .boards.k2 .board .card { --w: calc(var(--u) * 5.6); }
 .table-area.portrait .boards.k3 .board .card { --w: calc(var(--u) * 4.5); }
 .table-area.portrait .boards.k4 .board .card { --w: calc(var(--u) * 3.6); }

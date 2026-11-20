@@ -203,7 +203,7 @@ export class StatsBook {
     if (!c || c.count > list.length) c = { count: 0, lines: [] };
     for (let i = c.count; i < list.length; i++) {
       const r = list[i];
-      c.lines.push(handLines(r, (r.decimals ?? table.decimals) ? 1 : 100));
+      c.lines.push({ ...handLines(r, (r.decimals ?? table.decimals) ? 1 : 100), tableId: table.id });
     }
     c.count = list.length;
     this.byTable.set(table.id, c);
@@ -211,6 +211,8 @@ export class StatsBook {
   }
 
   added() { this.version++; }
+
+  clear() { this.byTable.clear(); this.version++; }
 }
 
 // Stats rows for everyone in the given hands. nameOf(userId) gives the display name.

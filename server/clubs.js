@@ -306,6 +306,38 @@ export class Clubs {
     return t;
   }
 
+  // One player paid another directly: the one who owed goes up by the amount and the one who was owed
+  // goes down by it, written as a pair of entries that name each other.
+  settleBetween(actor, clubId, userId, otherId, amount, note) {
+    const c = this.club(clubId);
+    this.requireManager(c, actor);
+    const m = this.activeMember(c, userId);
+    const o = this.activeMember(c, otherId);
+    if (!m || !o) throw new Error('Both players must be active members');
+    if (userId === otherId) throw new Error('Pick someone else to settle with');
+    if (m.balance === 0) throw new Error('Balance is already zero');
+    amount = toInt(amount, 'Amount');
+    if (amount <= 0) throw new Error('Amount must be positive');
+    if (amount > Math.abs(m.balance)) throw new Error(`${this.nameOf(userId)} only has ${Math.abs(m.balance)} to settle`);
+    const owed = m.balance < 0; // this player owed, so they paid the other one
+    const how = cleanNote(note);
+    const pairId = randomId(6);
+    const mine = this.tx(c, { type: 'settlement', userId, amount: owed ? amount : -amount, by: actor, note: `${owed ? 'Paid' : 'Paid by'} ${this.nameOf(otherId)}${how ? ` (${how})` : ''}` });
+    const theirs = this.tx(c, { type: 'settlement', userId: otherId, amount: owed ? -amount : amount, by: actor, note: `${owed ? 'Paid by' : 'Paid'} ${this.nameOf(userId)}${how ? ` (${how})` : ''}` });
+    for (const [t, w] of [[mine, otherId], [theirs, userId]]) { t.pairId = pairId; t.withId = w; }
+    this.changed(clubId);
+    return [mine, theirs];
+  }
+
+  // Wipes the club's ledger and sets every balance to zero (credit limits stay), for a fresh start.
+  clearHistory(actor, clubId) {
+    const c = this.club(clubId);
+    if (!this.auth.isOwner(actor)) throw new Error('Only the owner can clear the history');
+    c.transactions = [];
+    for (const m of Object.values(c.members)) m.balance = 0;
+    this.changed(clubId);
+  }
+
   transfer(actor, clubId, toUserId, amount, note) {
     const c = this.club(clubId);
     if (!c.settings.allowTransfers) throw new Error('Transfers between members are turned off in this club');

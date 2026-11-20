@@ -184,3 +184,12 @@
 .jl-off .hint, .jl-actions { margin: 0; }
 .jl-actions { margin-top: 8px; gap: 6px; }
 .inv-join + .section-title, #invform + .inv-join { margin-top: 1.1rem; }
+
+.period { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.period select, .period input { width: auto; padding-top: 6px; padding-bottom: 6px; }
+.results td.big { font-weight: 700; font-size: 16px; }
+.results .linkish small { color: var(--muted); font-weight: 400; margin-left: .3em; }
+.danger-zone { margin-top: 1.2rem; padding-top: .9rem; border-top: 1px solid var(--line-soft); }
+.danger-zone .hint { margin: .2rem 0 .6rem; }
+.plain-list { margin: 0; padding-left: 1.2em; }
+.plain-list li + li { margin-top: .2rem; }

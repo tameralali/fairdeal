@@ -258,10 +258,29 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   app.get('/api/clubs/invite/:code', api((req) => { const c = clubs.lookupInvite(req.params.code); return { id: c.id, name: c.name }; }));
   app.post('/api/clubs/join', api((req, user) => { const r = clubs.joinByCode(user, req.body.code); return { id: r.club.id, status: r.status }; }));
   app.get('/api/clubs/:id', api((req, user) => clubView(req.params.id, user)));
+  // from and to: a period in ms since 1970, either one optional
+  const period = (q) => {
+    const n = (v) => (v === undefined || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null);
+    return { from: n(q.from), to: n(q.to) };
+  };
   app.get('/api/clubs/:id/stats', api((req, user) => {
     const v = clubs.view(req.params.id, user);
     if (!v.myStatus || v.myStatus !== 'active') throw new Error('Not a member');
-    return { stats: tables.clubStats(req.params.id, user, { game: String(req.query.game || 'all'), seeAll: v.seeAll }) };
+    return { stats: tables.clubStats(req.params.id, user, { game: String(req.query.game || 'all'), seeAll: v.seeAll, ...period(req.query) }) };
+  }));
+  app.get('/api/clubs/:id/results', api((req, user) => {
+    const v = clubs.view(req.params.id, user);
+    if (!v.myStatus || v.myStatus !== 'active') throw new Error('Not a member');
+    return { results: tables.clubResults(req.params.id, user, { seeAll: v.seeAll, ...period(req.query) }) };
+  }));
+  // The owner wipes every game, hand, log, ledger entry and stat, and sets every balance to zero.
+  app.post('/api/admin/clear-history', api((req, user) => {
+    if (!auth.isOwner(user)) throw Object.assign(new Error('Only the owner can clear the history'), { status: 403 });
+    if (req.body?.confirm !== 'CLEAR') throw new Error('Type CLEAR to confirm');
+    tables.clearAll();
+    clubs.clearHistory(user, clubs.mainId());
+    store.flush();
+    return { ok: true };
   }));
   app.get('/api/tables/:id/stats', api((req, user) => ({ stats: viewTable(req, user).statsView({ scope: String(req.query.scope || 'game'), game: String(req.query.game || 'all') }, user) })));
   app.patch('/api/clubs/:id', api((req, user) => { clubs.updateSettings(user, req.params.id, req.body || {}); return clubView(req.params.id, user); }));
@@ -280,7 +299,7 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   memberRoute('role', (u, c, m, b) => clubs.setRole(u, c, m, b.role));
   memberRoute('chips', (u, c, m, b) => clubs.adjustChips(u, c, m, b.amount, b.note));
   memberRoute('credit', (u, c, m, b) => clubs.setCreditLimit(u, c, m, b.limit));
-  memberRoute('settle', (u, c, m, b) => clubs.settle(u, c, m, b.note));
+  memberRoute('settle', (u, c, m, b) => (b.withUserId ? clubs.settleBetween(u, c, m, String(b.withUserId), b.amount, b.note) : clubs.settle(u, c, m, b.note)));
 
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 

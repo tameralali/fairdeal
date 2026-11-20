@@ -416,6 +416,19 @@ export class Table {
     else this.broadcast();
   }
 
+  // Stops everything this table has running and tells every page on it that the game is gone.
+  dispose() {
+    for (const k of ['action', 'advance', 'next', 'rit']) { clearTimeout(this.timers[k]); this.timers[k] = null; }
+    for (const t of this.timers.session || []) clearTimeout(t);
+    this.timers.session = [];
+    for (const t of this.awayTimers.values()) clearTimeout(t);
+    this.awayTimers.clear();
+    this.hand = null;
+    for (const s of this.sockets) s.emit('table:removed', { reason: 'This game was cleared from the history.' });
+    this.sockets.clear();
+    this.voice.clear();
+  }
+
   // ---------- voice chat ----------
   // Audio goes straight between browsers. The server keeps who is in (one page per person, so a second
   // tab takes over from the first) and passes on the messages that set up each pair's connection.
@@ -1571,6 +1584,12 @@ function describeChanges(a, b, fmt) {
   return out;
 }
 
+// The hands played between from and to (ms, either can be left out).
+function inPeriod(lines, from, to) {
+  if (!from && !to) return lines;
+  return lines.filter((l) => (!from || l.at >= from) && (!to || l.at < to));
+}
+
 export class TableManager {
   constructor({ store, auth, clubs }) {
     this.store = store;
@@ -1649,13 +1668,56 @@ export class TableManager {
     return out;
   }
 
-  // All-time stats for the club page. Results of other players are only shown to people who can see
-  // the whole club ledger.
-  clubStats(clubId, viewer, { game = 'all', seeAll = false } = {}) {
-    const lines = this.clubLines(clubId);
+  // Stats for the club page over a period (from and to in ms; either can be left out). Results of other
+  // players are only shown to people who can see the whole club ledger.
+  clubStats(clubId, viewer, { game = 'all', seeAll = false, from = null, to = null } = {}) {
+    const lines = inPeriod(this.clubLines(clubId), from, to);
     const g = game === 'all' || GAME_TYPES[game] ? game : 'all';
     const players = statsRows(lines, g, (id) => this.nameOf(id)).map((r) => (seeAll || r.userId === viewer.id ? r : { ...r, net: null, bb100: null, best: null }));
     return { game: g, decimals: 2, games: gamesIn(lines), hands: lines.filter((l) => g === 'all' || l.gameType === g).length, players };
+  }
+
+  // Profit and loss over a period, every game added up: each player's net, games played and won,
+  // hands, and their best and worst game. Sorted by net, the biggest winner first.
+  clubResults(clubId, viewer, { seeAll = false, from = null, to = null } = {}) {
+    const lines = inPeriod(this.clubLines(clubId), from, to);
+    const byPlayer = new Map();
+    for (const line of lines) {
+      for (const [id, l] of Object.entries(line.players)) {
+        let r = byPlayer.get(id);
+        if (!r) { r = { userId: id, net: 0, hands: 0, games: new Map(), last: 0 }; byPlayer.set(id, r); }
+        r.net += l.net;
+        r.hands += l.h;
+        r.last = Math.max(r.last, line.at);
+        r.games.set(line.tableId, (r.games.get(line.tableId) || 0) + l.net);
+      }
+    }
+    const game = (tableId, net) => {
+      const t = this.tables.get(tableId);
+      return { tableId, name: t ? t.name : 'Game', at: t ? t.createdAt : null, net };
+    };
+    const rows = [...byPlayer.values()].map((r) => {
+      const games = [...r.games.entries()].sort((a, b) => b[1] - a[1]);
+      const row = {
+        userId: r.userId, name: this.nameOf(r.userId), net: r.net, hands: r.hands, games: games.length,
+        gamesWon: games.filter(([, n]) => n > 0).length, best: game(...games[0]), worst: game(...games[games.length - 1]), lastAt: r.last,
+      };
+      return seeAll || r.userId === viewer.id ? row : { ...row, net: null, best: null, worst: null, gamesWon: null };
+    }).sort((a, b) => (b.net ?? -Infinity) - (a.net ?? -Infinity) || b.hands - a.hands || a.name.localeCompare(b.name));
+    const tables = new Set(lines.map((l) => l.tableId));
+    return { decimals: 2, hands: lines.length, games: tables.size, players: rows, from, to };
+  }
+
+  // Deletes every game: running ones stop, everyone at them is told, and their hands and logs go.
+  clearAll() {
+    for (const t of this.tables.values()) {
+      t.dispose();
+      this.store.removeTableFiles(t.id);
+    }
+    this.tables.clear();
+    this.store.data.tables = {};
+    this.stats.clear();
+    this.store.save();
   }
 
   forClub(clubId, viewerId) {

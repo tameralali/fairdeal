@@ -45,6 +45,12 @@ export class Store {
     fs.appendFileSync(path.join(this.handsDir, tableId + '.jsonl'), JSON.stringify({ patchOf: handNumber, ...patch }) + '\n');
   }
 
+  // Deletes a table's hands and log for good.
+  removeTableFiles(tableId) {
+    for (const dir of [this.handsDir, this.logsDir]) fs.rmSync(path.join(dir, tableId + '.jsonl'), { force: true });
+    this.logBuffers.delete(tableId);
+  }
+
   readHands(tableId) {
     const f = path.join(this.handsDir, tableId + '.jsonl');
     if (!fs.existsSync(f)) return [];
