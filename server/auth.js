@@ -32,6 +32,7 @@ export class Auth {
   constructor(store) {
     this.store = store;
     this.attempts = new Map();
+    this.requestTimes = new Map(); // ip -> times of join requests, to slow down floods
     store.data.invites ||= {};
     store.data.emails ||= {};
     for (const u of Object.values(this.users)) if (u.email) store.data.emails[u.email] = u.id;
@@ -62,7 +63,7 @@ export class Auth {
     if (!token || typeof token !== 'string') return null;
     const s = this.store.data.sessions[sha256Hex(token)];
     const u = s && this.users[s.userId];
-    if (!u || !u.username || u.disabled) return null;
+    if (!u || !u.username || u.disabled || u.pending) return null;
     if (!u.lastSeenAt || Date.now() - u.lastSeenAt > 60000) { u.lastSeenAt = Date.now(); this.store.save(); }
     return u;
   }
@@ -105,6 +106,7 @@ export class Auth {
       fail('Wrong username or password', 401);
     }
     this.attempts.delete(k);
+    if (user.pending) fail('Your request to join is waiting for an admin to approve it. Sign in again once they have.', 403);
     if (user.disabled) fail('This account has been turned off. Ask the owner of The Aquarium.', 403);
     return { user, token: this.issueToken(user) };
   }
@@ -257,6 +259,75 @@ export class Auth {
     return { user, invite: inv, token: this.issueToken(user) };
   }
 
+  // ---------- the join link ----------
+  // One reusable link anyone can open to ask for an account, for when invites cannot be emailed. The
+  // account waits for an admin to approve it and cannot sign in until then; declining removes it.
+  joinLink() { const j = this.store.data.joinLink; return j && j.token ? j : null; }
+
+  setJoinLink(admin, on) {
+    this.requireAdmin(admin);
+    this.store.data.joinLink = on ? { token: randomBytes(12).toString('base64url'), createdBy: admin.id, createdAt: Date.now() } : null;
+    this.store.save();
+    return this.joinLink();
+  }
+
+  usableJoinLink(token) {
+    const j = this.joinLink();
+    const t = String(token || '');
+    if (!j || t.length !== j.token.length || !timingSafeEqual(Buffer.from(t), Buffer.from(j.token))) {
+      fail('This join link has been turned off or replaced. Ask an admin of The Aquarium for the new one.', 404);
+    }
+    return j;
+  }
+
+  requestAccount(token, body = {}, ip = '') {
+    const j = this.usableJoinLink(token);
+    const now = Date.now();
+    const tries = (this.requestTimes.get(ip) || []).filter((t) => now - t < 10 * 60 * 1000);
+    if (tries.length >= 5) fail('Too many requests from here. Try again in a few minutes.', 429);
+    if (Object.values(this.users).filter((u) => u.pending).length >= 50) fail('Too many people are waiting to be approved. Try again later.', 429);
+    this.checkUsername(body.username);
+    this.checkPassword(body.password);
+    const email = body.email ? cleanEmail(body.email) : null;
+    if (email && this.store.data.emails[email]) fail('Someone already has an account with that email');
+    const user = {
+      id: randomId(), name: cleanName(body.name || body.username), username: body.username, email, createdAt: now,
+      pending: true, requestedAt: now, invitedBy: j.createdBy,
+    };
+    this.setPassword(user, body.password);
+    this.users[user.id] = user;
+    this.store.data.usernames[body.username.toLowerCase()] = user.id;
+    if (email) this.store.data.emails[email] = user.id;
+    tries.push(now);
+    this.requestTimes.set(ip, tries);
+    this.store.save();
+    return user;
+  }
+
+  requests(admin) {
+    this.requireAdmin(admin);
+    return Object.values(this.users).filter((u) => u.pending).sort((a, b) => a.requestedAt - b.requestedAt)
+      .map((u) => ({ id: u.id, name: u.name, username: u.username, email: u.email || null, requestedAt: u.requestedAt }));
+  }
+
+  // Approving turns the account on; declining deletes it, so its username and email are free again.
+  decideRequest(admin, userId, approve) {
+    this.requireAdmin(admin);
+    const u = this.users[userId];
+    if (!u || !u.pending) fail('That request has already been answered', 409);
+    if (approve) {
+      delete u.pending;
+      u.approvedBy = admin.id;
+      u.approvedAt = Date.now();
+    } else {
+      delete this.users[userId];
+      delete this.store.data.usernames[u.username.toLowerCase()];
+      if (u.email) delete this.store.data.emails[u.email];
+    }
+    this.store.save();
+    return approve ? u : null;
+  }
+
   // ---------- people ----------
   setRole(owner, userId, role) {
     this.requireOwner(owner);
@@ -284,7 +355,7 @@ export class Auth {
     this.requireAdmin(viewer);
     const nameOf = (id) => (id && this.users[id] ? this.users[id].name : null);
     const users = Object.values(this.users)
-      .filter((u) => u.username)
+      .filter((u) => u.username && !u.pending)
       .map((u) => ({
         id: u.id, name: u.name, username: u.username, email: u.email || null, role: this.roleOf(u), disabled: !!u.disabled,
         createdAt: u.createdAt, lastSeenAt: u.lastSeenAt || null, invitedBy: nameOf(u.invitedBy),
@@ -299,6 +370,6 @@ export class Auth {
         createdBy: nameOf(i.createdBy), usedBy: nameOf(i.usedBy), usedAt: i.usedAt || null, club: i.clubId ? clubName(i.clubId) : null,
         sentAt: i.sentAt || null, sendError: i.sendError || null,
       }));
-    return { users, invites };
+    return { users, invites, requests: this.requests(viewer), joinLink: this.joinLink() ? { token: this.joinLink().token, createdAt: this.joinLink().createdAt, createdBy: nameOf(this.joinLink().createdBy) } : null };
   }
 }

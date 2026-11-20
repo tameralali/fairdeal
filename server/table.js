@@ -13,7 +13,7 @@ import { fmtMoney } from '../shared/money.js';
 export const DELAYS = {
   street: 1400, runoutFirst: 2400, runout: 2200, showdown: 1400,
   afterUncontested: 3000, afterShowdown: 5500, perExtraRun: 1500, perExtraBoard: 1000,
-  rit: 20000, ritSettle: 8000, autoAct: 400,
+  rit: 20000, ritSettle: 8000, autoAct: 400, away: 5000,
 };
 
 // The format is a list of steps played in order, then repeated from the top. Each step is one game
@@ -241,6 +241,7 @@ export class Table {
     this.turn = null;
     this.ritDeadline = null;
     this.timers = { session: [] };
+    this.awayTimers = new Map(); // userId -> timer: seated players whose page closed, until they count as gone
     this.sockets = new Set();
     this.logEntries = null;
     this.logSeq = data.logSeq || 0;
@@ -371,6 +372,8 @@ export class Table {
   join(socket) {
     if (!this.canView(socket.data.user)) fail('This table is only open to club members');
     this.sockets.add(socket);
+    const back = this.awayTimers.get(socket.data.user.id);
+    if (back) { clearTimeout(back); this.awayTimers.delete(socket.data.user.id); }
     socket.emit('log:reset', this.loadLog().slice(-400));
     socket.emit('state', this.stateFor(socket.data.user.id));
     this.broadcast();
@@ -380,6 +383,33 @@ export class Table {
     this.broadcast();
     // a run-it vote goes ahead without players who disconnect: only votes that came in count
     if (this.hand && this.hand.phase === 'rit') this.afterHandChange();
+    const id = socket.data.user.id;
+    if (this.players.has(id) && !this.isConnected(id)) {
+      clearTimeout(this.awayTimers.get(id));
+      const t = setTimeout(this.safe(() => this.goneAway(id)), DELAYS.away);
+      t.unref?.();
+      this.awayTimers.set(id, t);
+    }
+  }
+
+  // A seated player who left the page (closed it, went to another page, lost the connection) and is
+  // not back a few seconds later: they check when it costs nothing and fold otherwise, without waiting
+  // out their clock, and sit out from the next hand until they come back and say so. Switching to
+  // another tab keeps the page connected, so it does not count.
+  goneAway(userId) {
+    this.awayTimers.delete(userId);
+    const p = this.players.get(userId);
+    if (!p || this.isConnected(userId)) return;
+    if (!p.sittingOut && !p.sitOutNext && !p.leaveAfterHand) {
+      if (this.inHand(userId)) p.sitOutNext = true;
+      else p.sittingOut = true;
+      p.away = true;
+      this.log(`${p.name} left the table and sits out until they are back`, 'seat');
+      this.snapshot();
+    }
+    const actor = this.hand && this.hand.phase !== 'done' ? this.hand.actor() : null;
+    if (actor && actor.id === userId) this.autoAct(userId, false);
+    else this.broadcast();
   }
 
   // ---------- seats and chips ----------
@@ -853,19 +883,35 @@ export class Table {
   }
 
   // Every hand of this game, newest first, with each player's result so the list can be sorted by
-  // pot size or by anyone's biggest wins and losses.
+  // pot size or by anyone's biggest wins and losses, and the hole cards this viewer may see.
   handList(viewerId) {
     return this.getRecords().slice().reverse().map((r) => {
       const me = r.players.find((p) => p.userId === viewerId);
       const pot = (r.results?.pots || []).reduce((s, p) => s + p.amount, 0);
       const nets = {};
-      for (const p of r.players) nets[p.userId] = p.net;
+      const names = {};
+      for (const p of r.players) { nets[p.userId] = p.net; names[p.userId] = p.name; }
       return {
         handNumber: r.handNumber, at: r.startedAt, gameType: r.gameType, isBomb: r.isBomb, runCount: r.runCount, doubleBoard: !!r.doubleBoard,
         pot, winners: [...new Set((r.results?.payouts || []).map((w) => w.name))], revealed: r.fairness.version === FAIRNESS_V2 || r.handNumber <= this.revealedThrough,
-        myNet: me ? me.net : null, nets, commitment: r.fairness.commitment, replay: Array.isArray(r.actions),
+        myNet: me ? me.net : null, nets, names, cards: this.visibleHoles(r, viewerId), showdown: !r.results?.uncontested,
+        allIn: (r.actions || []).some((a) => a.allIn), commitment: r.fairness.commitment, replay: Array.isArray(r.actions),
       };
     });
+  }
+
+  // The hole cards of a finished hand one viewer may see, by player: their own, cards a player showed
+  // (only those of a partial show), and every card once a seed that opens the whole deck is revealed.
+  visibleHoles(r, viewerId) {
+    const open = r.fairness.version !== FAIRNESS_V2 && r.handNumber <= this.revealedThrough;
+    const out = {};
+    for (const p of r.players) {
+      const all = r.dealt?.holes?.[p.seat];
+      if (!all) continue;
+      if (open || p.userId === viewerId || p.shown) out[p.userId] = all;
+      else if (p.showIdx && p.showIdx.length) out[p.userId] = all.map((c, i) => (p.showIdx.includes(i) ? c : null));
+    }
+    return out;
   }
 
   // ---------- stats ----------
@@ -1132,7 +1178,7 @@ export class Table {
     const p = this.players.get(actor.id);
     const now = Date.now();
     const hand = this.hand;
-    if (!p || p.leaveAfterHand) {
+    if (!p || p.leaveAfterHand || (p.away && !this.isConnected(actor.id) && !this.awayTimers.has(actor.id))) {
       this.turn = { seat: actor.seat, userId: actor.id, deadline: now + DELAYS.autoAct, usingBank: false, version: hand.version, auto: true };
       this.timers.action = setTimeout(this.safe(() => this.autoAct(actor.id, false)), DELAYS.autoAct);
       return;

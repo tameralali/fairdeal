@@ -1,11 +1,10 @@
 // Live stats at the table: the numbers on each seat, the stats table, each player's sheet (money,
 // stats and biggest hands) and the hand replayer.
 import { esc, dialog } from './ui.js';
-import { cardHTML, backHTML, slotHTML, prefs } from './cards.js';
+import { prefs } from './cards.js';
 import { app, emit, fmt, fmtC, gameShort, gameName } from './table-core.js';
-import { buildReplay, canReplay } from '/shared/replay.js';
+import { historyDialog } from './hand-history.js';
 import { fmtMoney } from '/shared/money.js';
-import { boardName } from './game-form.js';
 import { STATS, pct, afText, val, tip, signedMoney, gameSeg, statsTable, glossaryHTML } from './stats-view.js';
 
 export { afText };
@@ -109,7 +108,7 @@ export async function playerSheet(userId) {
       <h3 class="section-title">${scope === 'all' ? 'Biggest hands in this game' : 'Biggest hands'}</h3>
       <div class="ps-hands">
         <div><h4>Wins</h4>${wins.length ? `<ol class="hand-links">${top(wins, 'pos')}</ol>` : '<p class="muted">None yet.</p>'}</div>
-        <div><h4>Losses</h4>${losses.length ? `<ol class="hand-links">${top(losses, 'neg')}</ol>` : '<p class="muted">None yet.</p>'}</div>
+        <div><h4>Losses</h4>${losses.length ? `<ol class="hand-links" data-losses>${top(losses, 'neg')}</ol>` : '<p class="muted">None yet.</p>'}</div>
       </div>`);
   };
   dlg.el.addEventListener('click', (e) => {
@@ -118,144 +117,14 @@ export async function playerSheet(userId) {
     const g = e.target.closest('[data-game] button');
     if (g) { game = g.dataset.v; draw(); return; }
     const rp = e.target.closest('[data-replay]');
-    if (rp) {
-      const order = (e.target.closest('.hand-links') ? [...e.target.closest('.hand-links').querySelectorAll('[data-replay]')] : []).map((b) => Number(b.dataset.replay));
-      replayDialog(Number(rp.dataset.replay), { order });
-    }
+    if (rp) historyDialog({ start: Number(rp.dataset.replay), sort: rp.closest('[data-losses]') ? 'lost' : 'won', who: userId });
   });
   draw();
 }
 
 // ---------- replayer ----------
-// order: hand numbers to step through with Previous and Next hand (the list it was opened from).
-export async function replayDialog(n, { order = [], onDetails = null } = {}) {
-  const dlg = dialog({ title: `Hand #${n}`, className: 'wide replay-dlg', body: '<p class="muted">Loading…</p>' });
-  let timer = null;
-  let R = null;
-  let rec = null;
-  let i = 0;
-  const stop = () => { clearInterval(timer); timer = null; };
-  const load = async (num) => {
-    stop();
-    n = num;
-    dlg.$('h2').textContent = `Hand #${n}`;
-    const r = await emit('hand:get', { handNumber: n });
-    if (!r.ok) return;
-    rec = r.record;
-    if (!canReplay(rec)) {
-      R = null;
-      dlg.setBody(`<p class="muted">This hand was played before hands were recorded action by action, so it cannot be replayed.</p>${nav()}`);
-      return;
-    }
-    R = buildReplay(rec, fmt);
-    i = 0;
-    draw();
-  };
-  const nav = () => {
-    const pos = order.indexOf(n);
-    const prev = pos > 0 ? order[pos - 1] : pos < 0 && n > 1 ? n - 1 : null;
-    const next = pos >= 0 && pos < order.length - 1 ? order[pos + 1] : pos < 0 && n < (app.state?.table.hands || 0) ? n + 1 : null;
-    return `<div class="rp-nav"><button type="button" class="btn small ghost" data-hand-go="${prev ?? ''}" ${prev ? '' : 'disabled'}>Previous hand</button>
-      ${onDetails ? '<button type="button" class="btn small ghost" data-details>Hand details</button>' : ''}
-      <button type="button" class="btn small ghost" data-hand-go="${next ?? ''}" ${next ? '' : 'disabled'}>Next hand</button></div>`;
-  };
-  const draw = () => {
-    const step = R.steps[i];
-    const last = R.steps.length - 1;
-    dlg.setBody(`
-      <p class="rp-meta">${esc(gameName(rec.gameType))}${rec.isBomb ? ', bomb pot' : ''}${rec.doubleBoard ? ', double board' : ''}, blinds ${fmt(rec.smallBlind)}/${fmt(rec.bigBlind)}${rec.runCount > 1 ? `, ran ${rec.runCount} times` : ''}</p>
-      ${feltHTML(rec, R, step)}
-      <div class="rp-step" aria-live="polite"><span class="num">${i + 1}/${last + 1}</span><span>${esc(step.text)}</span></div>
-      <div class="rp-controls">
-        <button type="button" class="btn small" data-rp="first" ${i ? '' : 'disabled'} aria-label="First step">Start</button>
-        <button type="button" class="btn small" data-rp="prev" ${i ? '' : 'disabled'}>Back</button>
-        <button type="button" class="btn small primary" data-rp="play">${timer ? 'Pause' : i === last ? 'Play again' : 'Play'}</button>
-        <button type="button" class="btn small" data-rp="next" ${i < last ? '' : 'disabled'}>Next</button>
-        <button type="button" class="btn small" data-rp="street" ${i < last ? '' : 'disabled'} title="Jump to the next cards dealt">Next street</button>
-        <button type="button" class="btn small" data-rp="last" ${i < last ? '' : 'disabled'} aria-label="Last step">End</button>
-        <input type="range" min="0" max="${last}" value="${i}" data-rp-range aria-label="Step">
-      </div>
-      ${nav()}`);
-  };
-  const go = (k) => {
-    if (!R) return;
-    i = Math.max(0, Math.min(R.steps.length - 1, k));
-    if (i === R.steps.length - 1) stop();
-    draw();
-  };
-  dlg.el.addEventListener('click', (e) => {
-    const b = e.target.closest('[data-rp]');
-    if (b && R) {
-      const k = b.dataset.rp;
-      if (k === 'play') {
-        if (timer) { stop(); draw(); return; }
-        if (i === R.steps.length - 1) i = 0;
-        timer = setInterval(() => go(i + 1), 1100);
-        go(i + 1);
-        return;
-      }
-      stop();
-      // the next street: the next step that deals cards, or the result
-      const street = () => { let j = i + 1; while (j < R.steps.length - 1 && !R.steps[j].dealt) j++; return j; };
-      go(k === 'first' ? 0 : k === 'prev' ? i - 1 : k === 'next' ? i + 1 : k === 'street' ? street() : R.steps.length - 1);
-    }
-    const h = e.target.closest('[data-hand-go]');
-    if (h && h.dataset.handGo) load(Number(h.dataset.handGo));
-    if (e.target.closest('[data-details]') && onDetails) { stop(); dlg.close(); onDetails(n); }
-  });
-  dlg.el.addEventListener('input', (e) => { if (e.target.matches('[data-rp-range]')) { stop(); i = Number(e.target.value); draw(); dlg.$('[data-rp-range]')?.focus(); } });
-  dlg.el.addEventListener('keydown', (e) => {
-    if (!R || e.target.matches('input[type=range]')) return;
-    if (e.key === 'ArrowRight') { e.preventDefault(); stop(); go(i + 1); }
-    if (e.key === 'ArrowLeft') { e.preventDefault(); stop(); go(i - 1); }
-    if (e.key === 'Home') { e.preventDefault(); stop(); go(0); }
-    if (e.key === 'End') { e.preventDefault(); stop(); go(R.steps.length - 1); }
-  });
-  dlg.el.addEventListener('close', stop);
-  await load(n);
-}
-
-// The table at one step: seats around the felt, the boards and the pot in the middle.
-function feltHTML(rec, R, step) {
-  const ps = step.players;
-  const n = ps.length;
-  const meIdx = ps.findIndex((p) => p.id === app.state?.me.userId);
-  const rot = meIdx >= 0 ? meIdx : 0;
-  const nb = R.boards.length;
-  const bpr = R.bpr;
-  const runs = R.runs;
-  let seats = '';
-  ps.forEach((p, k) => {
-    const a = ((90 + ((k - rot + n) % n) * 360 / n) * Math.PI) / 180;
-    const x = 50 + 41 * Math.cos(a);
-    const y = 50 + 40 * Math.sin(a);
-    const bx = 50 + 25 * Math.cos(a);
-    const by = 50 + 23 * Math.sin(a);
-    const upper = Math.sin(a) < -0.3;
-    const cards = p.cards
-      ? p.cards.map((c) => (c ? cardHTML(c, step.final && p.folded ? 'dim' : '') : backHTML())).join('')
-      : Array.from({ length: rec.dealt.holeCount || 2 }, () => backHTML()).join('');
-    const cls = ['rp-seat', upper ? 'up' : 'down', step.actor === p.seat ? 'actor' : '', p.folded ? 'folded' : '', step.final && p.won ? 'winner' : ''].filter(Boolean).join(' ');
-    const tagCls = p.won && step.final ? 'win' : p.tag === 'All-in' ? 'allin' : (p.tag || '').toLowerCase();
-    seats += `<div class="${cls}" style="left:${x.toFixed(1)}%;top:${y.toFixed(1)}%">
-      ${p.folded && !(p.cards || []).some(Boolean) ? '' : `<div class="rp-cards n${(p.cards || []).length || rec.dealt.holeCount || 2}">${cards}</div>`}
-      <div class="rp-plate"><b>${esc(p.name)}${p.seat === rec.buttonSeat ? ' <span class="rp-btn" title="Dealer">D</span>' : ''}</b><span class="num">${fmt(p.stack)}</span>${p.tag ? `<em class="${esc(tagCls)}">${esc(p.tag)}</em>` : ''}</div>
-    </div>`;
-    if (p.bet > 0) seats += `<div class="rp-bet" style="left:${bx.toFixed(1)}%;top:${by.toFixed(1)}%">${fmt(p.bet)}</div>`;
-  });
-  let boards = '';
-  const shownRuns = new Set(step.cuts.map((c, b) => (c > 0 ? Math.floor(b / bpr) : -1)).filter((r) => r >= 0));
-  for (let b = 0; b < nb; b++) {
-    const run = Math.floor(b / bpr);
-    if (run > 0 && !shownRuns.has(run)) continue;
-    const cut = step.cuts[b];
-    const cards = R.boards[b].map((c, j) => (j < cut ? cardHTML(c) : slotHTML())).join('') + Array.from({ length: Math.max(0, 5 - R.boards[b].length) }, () => slotHTML()).join('');
-    const label = boardName(b, bpr, nb);
-    boards += `<div class="rp-board">${label && (runs > 1 || bpr > 1) ? `<small>${esc(label)}</small>` : ''}<div>${cards}</div></div>`;
-  }
-  return `<div class="rp-felt" style="--felt:${esc(prefs.felt || app.state?.table.settings.feltColor || '#507a4e')}">
-    <div class="rp-oval"></div>
-    <div class="rp-center"><div class="rp-boards b${bpr} k${Math.min(4, shownRuns.size || 1)}">${boards}</div><div class="rp-pot num">Pot ${fmt(step.pot)}</div></div>
-    ${seats}
-  </div>`;
+// The replayer lives in the hand history now: the list of hands beside it, Next running on into the
+// following hand. Kept under this name for the links that open a hand.
+export function replayDialog(n, opts = {}) {
+  return historyDialog({ start: n, ...opts });
 }

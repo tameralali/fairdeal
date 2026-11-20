@@ -171,3 +171,16 @@
   .cb-start { align-items: stretch; }
   .quick-start { justify-content: flex-start; max-width: none; }
 }
+
+.role-pick { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; background: var(--room-2); border: 1px solid var(--line-soft); border-radius: var(--r-md); }
+.role-pick .lbl { margin: 0; }
+.role-pick .seg { align-self: flex-start; }
+.role-pick .hint { margin: 0; }
+
+.req-row { padding: 8px 0; border-bottom: 1px solid var(--line-soft); align-items: center; flex-wrap: wrap; }
+.req-row:last-child { border-bottom: 0; }
+.req-row small { display: block; margin-top: 2px; }
+.jl-off { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.jl-off .hint, .jl-actions { margin: 0; }
+.jl-actions { margin-top: 8px; gap: 6px; }
+.inv-join + .section-title, #invform + .inv-join { margin-top: 1.1rem; }

@@ -94,7 +94,7 @@ export class Clubs {
         if (u && u.username && m.status === 'active' && (m.role === 'manager' || m.role === 'owner') && !this.auth.isAdmin(u)) u.role = 'admin';
       }
     }
-    for (const u of Object.values(this.auth.users)) if (u.username) this.join(u.id, { save: false });
+    for (const u of Object.values(this.auth.users)) if (u.username && !u.pending) this.join(u.id, { save: false });
     this.changed(c.id);
     return c;
   }
@@ -103,7 +103,7 @@ export class Clubs {
   join(userId, { save = true } = {}) {
     const c = this.main();
     const u = this.auth.users[userId];
-    if (!c || !u) return null;
+    if (!c || !u || u.pending) return null;
     const role = this.auth.isOwner(u) ? 'owner' : this.auth.isAdmin(u) ? 'manager' : 'member';
     const m = c.members[userId];
     if (!m) {

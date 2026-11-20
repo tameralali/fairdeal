@@ -10,6 +10,7 @@ import { GAME_TYPES } from '/shared/cards.js';
 import { app, emit, fmt, inp, parse, gameShort, now } from './table-core.js';
 import * as D from './table-dialogs.js';
 import * as S from './table-stats.js';
+import * as H from './hand-history.js';
 import { boardName, stepLabel } from './game-form.js';
 
 import { BRAND_HEX } from './api.js';
@@ -122,6 +123,9 @@ function onState(s) {
   }
   if (first) app.fair.onRevealed(s.table.revealedThrough, fetchRecord);
   render();
+  // A finished game opens on its hand history; an open history picks up each hand as it ends.
+  if (first && s.table.status === 'ended' && s.table.hands > 0) H.historyDialog();
+  else if (prev && prev.table.hands !== s.table.hands) H.historyRefresh();
   tableSounds(prev, s);
   D.onState(s);
 }

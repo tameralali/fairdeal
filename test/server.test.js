@@ -10,7 +10,7 @@ import { DELAYS } from '../server/table.js';
 import { verifyHandRecord, webCryptoAdapter } from '../shared/fairness.js';
 import { buildReplay } from '../shared/replay.js';
 
-Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10 });
+Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10, away: 150 });
 
 let srv, url, dataDir, siteOwner;
 const wc = webCryptoAdapter();
@@ -379,6 +379,21 @@ test('folded cards stay hidden for good: every hand checks out, nobody sees anot
     }
   }
   assert.ok(hiddenSeen > 20, 'there were folded cards to hide');
+  // the hand list shows each viewer their own cards and shown cards, never anyone's folded cards
+  for (const b of bots) {
+    const { hands } = await call('GET', `/api/tables/${id}/hands`, null, b.token);
+    for (const h of hands) {
+      const r = recs.find((x) => x.handNumber === h.handNumber);
+      for (const p of r.players) {
+        const all = r.dealt.holes[p.seat];
+        const got = h.cards[p.userId];
+        if (p.userId === b.userId || p.shown) { assert.deepEqual(got, all, `hand ${h.handNumber}: ${b.name} sees ${p.name}'s cards`); continue; }
+        const shown = p.showIdx || [];
+        if (!shown.length) { assert.equal(got, undefined, `hand ${h.handNumber}: ${p.name}'s folded cards stay out of ${b.name}'s list`); continue; }
+        assert.deepEqual(got, all.map((c, k) => (shown.includes(k) ? c : null)));
+      }
+    }
+  }
   // Bea showed one card of a hand she folded: everyone sees that card and only that one
   const shownRec = recs.find((r) => r.handNumber === bots[1].shownIn);
   assert.ok(shownRec, 'Bea folded a hand and showed a card');
@@ -634,6 +649,81 @@ test('an admin ends a game from the home page; the hand in progress finishes fir
   for (const x of bots) { x.passive = false; x.onState(x.state); }
   await until(async () => (await call('GET', `/api/tables/${id}`, null, a.token)).status === 'ended', 30000, 'the game to end');
   bots.forEach((x) => x.close());
+});
+
+test('a player who leaves the page checks or folds at once, then sits out until they are back', { timeout: 60000 }, async () => {
+  const a = await admin('Stays', { fund: 100000 });
+  const b = await member('Leaves', null, { fund: 100000 });
+  const c = await member('Watches', null, { fund: 100000 });
+  const { id } = await call('POST', '/api/tables', { settings: { autoStart: true, autoApprove: true, decisionSeconds: 120, timeBankSeconds: 0, minPlayers: 3 } }, a.token);
+  const bots = [new Bot('Stays', a, 11), new Bot('Leaves', b, 12), new Bot('Watches', c, 13)];
+  for (const x of bots) await x.connect(id);
+  bots[1].passive = true;
+  for (let k = 0; k < 3; k++) await bots[k].emit('seat:request', { seat: k, buyIn: 1000 });
+  const t = srv.tables.get(id);
+  // Leaves stops acting; when it is their turn they close the page
+  await until(() => t.hand && t.hand.phase !== 'done' && t.hand.actor()?.id === b.user.id, 20000, 'the leaving player to be on the clock');
+  const n = t.hand.number;
+  const since = Date.now();
+  bots[1].close();
+  await until(() => !t.hand || t.hand.number !== n || t.hand.actor()?.id !== b.user.id, 5000, 'the hand to move on');
+  assert.ok(Date.now() - since < 3000, 'no waiting out a two-minute clock');
+  const p = t.players.get(b.user.id);
+  assert.ok(p.away && (p.sittingOut || p.sitOutNext), 'they sit out from the next hand');
+  assert.ok(t.loadLog().some((e) => /Leaves left the table/.test(e.text)));
+  await until(() => t.hand && t.hand.number > n && t.hand.phase !== 'done', 20000, 'the next hand');
+  assert.ok(!t.hand.byId(b.user.id), 'the next hand is dealt without them');
+  // a page reload inside the grace time changes nothing
+  bots[2].socket.close();
+  await wait(40);
+  await bots[2].connect(id);
+  await wait(400);
+  const w = t.players.get(c.user.id);
+  assert.ok(!w.away && !w.sittingOut && !w.sitOutNext, 'a quick reload is not leaving');
+  bots.forEach((x) => x.close());
+});
+
+test('the join link: anyone with it asks for an account, an admin approves or declines', async () => {
+  const boss = await admin('Gatekeeper');
+  const plain = await member('Plain');
+  await assert.rejects(call('POST', '/api/admin/join-link', { on: true }, plain.token), /Only admins/);
+  const { joinLink } = await call('POST', '/api/admin/join-link', { on: true }, boss.token);
+  assert.equal(joinLink.token.length, 16);
+  assert.deepEqual(await call('GET', `/api/join/${joinLink.token}`), { club: 'The Aquarium' });
+  await assert.rejects(call('GET', '/api/join/AAAAAAAAAAAAAAAA'), /turned off or replaced/);
+  const asked = await call('POST', `/api/join/${joinLink.token}`, { name: 'Newbie', username: 'newbie_1', password: 'secret123' });
+  assert.equal(asked.username, 'newbie_1');
+  await assert.rejects(call('POST', '/api/auth/login', { username: 'newbie_1', password: 'secret123' }), /waiting for an admin/);
+  await assert.rejects(call('POST', `/api/join/${joinLink.token}`, { name: 'Copy', username: 'newbie_1', password: 'secret123' }), /taken/);
+  // admins see the request on the club page, members do not; it is not an account yet
+  const { clubs } = await call('GET', '/api/me', null, boss.token);
+  const clubId = clubs[0].id;
+  const req = (await call('GET', `/api/clubs/${clubId}`, null, boss.token)).club.requests.find((r) => r.username === 'newbie_1');
+  assert.ok(req && req.name === 'Newbie');
+  assert.equal((await call('GET', `/api/clubs/${clubId}`, null, plain.token)).club.requests, undefined);
+  const people = await call('GET', '/api/admin/people', null, boss.token);
+  assert.ok(!people.users.some((u) => u.username === 'newbie_1'));
+  assert.ok(people.requests.some((r) => r.username === 'newbie_1'));
+  await assert.rejects(call('POST', `/api/admin/requests/${req.id}`, { approve: true }, plain.token), /Only admins/);
+  await call('POST', `/api/admin/requests/${req.id}`, { approve: true }, boss.token);
+  await assert.rejects(call('POST', `/api/admin/requests/${req.id}`, { approve: true }, boss.token), /already been answered/);
+  const inn = await call('POST', '/api/auth/login', { username: 'newbie_1', password: 'secret123' });
+  const club = (await call('GET', `/api/clubs/${clubId}`, null, inn.token)).club;
+  assert.equal(club.myStatus, 'active');
+  assert.equal(club.myRole, 'member');
+  // a declined request is gone, and its username can be asked for again
+  await call('POST', `/api/join/${joinLink.token}`, { name: 'Maybe', username: 'maybe_1', password: 'secret123', email: 'maybe@example.com' });
+  const r2 = (await call('GET', `/api/clubs/${clubId}`, null, boss.token)).club.requests.find((r) => r.username === 'maybe_1');
+  assert.equal(r2.email, 'maybe@example.com');
+  await call('POST', `/api/admin/requests/${r2.id}`, { approve: false }, boss.token);
+  await assert.rejects(call('POST', '/api/auth/login', { username: 'maybe_1', password: 'secret123' }), /Wrong username/);
+  await call('POST', `/api/join/${joinLink.token}`, { name: 'Maybe', username: 'maybe_1', password: 'secret123', email: 'maybe@example.com' });
+  // a new link replaces the old one, and a link turned off takes no requests
+  const fresh = (await call('POST', '/api/admin/join-link', { on: true }, boss.token)).joinLink;
+  assert.notEqual(fresh.token, joinLink.token);
+  await assert.rejects(call('POST', `/api/join/${joinLink.token}`, { name: 'Late', username: 'late_1', password: 'secret123' }), /turned off or replaced/);
+  assert.equal((await call('POST', '/api/admin/join-link', { on: false }, boss.token)).joinLink, null);
+  await assert.rejects(call('GET', `/api/join/${fresh.token}`), /turned off or replaced/);
 });
 
 test('accounts: invite only, login, rename', async () => {

@@ -21,6 +21,8 @@ const isAdmin = () => me && (me.user.role === 'owner' || me.user.role === 'admin
 async function boot() {
   const link = location.pathname.match(/^\/(invite|reset)\/([0-9a-f]{64})$/);
   if (link) return linkPage(link[2]);
+  const join = location.pathname.match(/^\/join\/([A-Za-z0-9_-]{16})$/);
+  if (join) return joinPage(join[1]);
   try { me = await ensureIdentity(); }
   catch (e) { main.innerHTML = `<p class="bad">${esc(e.message)}</p>`; return; }
   const next = new URLSearchParams(location.search).get('next');
@@ -214,8 +216,9 @@ async function clubHome(id) {
       ${c.isManager ? '<div class="cb-start"><button class="btn primary big" data-start>Start a game</button><div class="quick-start hidden" data-quick></div></div>' : ''}
     </section>
     ${c.announcement ? `<div class="announce">${esc(c.announcement)}</div>` : ''}
-    ${c.isManager && c.pending && c.pending.length ? `<section class="panel waitlist"><h2>Waiting to join</h2>
-      ${c.pending.map((p) => `<div class="row" style="padding:6px 0"><b class="grow">${esc(p.name)}</b><span class="muted">${timeAgo(p.requestedAt)}</span><button class="btn small ghost" data-decide="${esc(p.userId)}" data-ok="0">Decline</button><button class="btn small primary" data-decide="${esc(p.userId)}" data-ok="1">Approve</button></div>`).join('')}</section>` : ''}
+    ${c.isManager && ((c.pending && c.pending.length) || (c.requests && c.requests.length)) ? `<section class="panel waitlist"><h2>Waiting to join</h2>
+      ${requestRows(c.requests || [])}
+      ${(c.pending || []).map((p) => `<div class="row" style="padding:6px 0"><b class="grow">${esc(p.name)}</b><span class="muted">${timeAgo(p.requestedAt)}</span><button class="btn small ghost" data-decide="${esc(p.userId)}" data-ok="0">Decline</button><button class="btn small primary" data-decide="${esc(p.userId)}" data-ok="1">Approve</button></div>`).join('')}</section>` : ''}
 
     <section class="panel">
       <h2>Games</h2>
@@ -307,6 +310,8 @@ async function clubHome(id) {
     if (!main.contains(e.target)) return;
     const end = e.target.closest('[data-end]');
     if (end) { endGame(end); return; }
+    const rq = e.target.closest('[data-req]');
+    if (rq) { decideRequest(rq, (c.requests || []).find((x) => x.id === rq.dataset.req), route); return; }
     const d = e.target.closest('[data-decide]');
     if (d) { post(`/members/${d.dataset.decide}/decide`, { approve: d.dataset.ok === '1' }); return; }
     const mm = e.target.closest('[data-mm]');
@@ -341,7 +346,11 @@ async function clubHome(id) {
         ${m.balance === undefined ? '<p class="muted">Only managers see this member’s balance.</p>' : `<div class="totals sheet">
           ${stat('Balance', money(m.balance))}${stat('Credit limit', F(m.creditLimit))}${stat('Available', F(Math.max(0, m.available)))}${stat('On tables', F(m.onTables))}${stat('Net from play', signed(m.net))}
         </div>`}
-        <p class="muted">${m.role === 'owner' ? 'Owner' : m.role === 'manager' ? 'Admin' : 'Member'}${m.joinedAt ? `, joined ${new Date(m.joinedAt).toLocaleDateString()}` : ''}</p>
+        ${me.user.role === 'owner' && m.role !== 'owner' ? `<div class="role-pick"><span class="lbl">Role</span>
+          <div class="seg" data-role role="group" aria-label="Role for ${esc(m.name)}"><button type="button" data-v="member" class="${m.role === 'manager' ? '' : 'on'}">Member</button><button type="button" data-v="admin" class="${m.role === 'manager' ? 'on' : ''}">Admin</button></div>
+          <p class="hint">Members join and leave games with their balance and credit. Admins can also add to or take from balances, set credit limits, settle up, start and end games, approve people and send invites. Only you can change roles.</p>
+        </div>` : ''}
+        ${me.user.role === 'owner' && m.role !== 'owner' ? (m.joinedAt ? `<p class="muted">Joined ${new Date(m.joinedAt).toLocaleDateString()}</p>` : '') : `<p class="muted">${m.role === 'owner' ? 'Owner' : m.role === 'manager' ? 'Admin' : 'Member'}${m.joinedAt ? `, joined ${new Date(m.joinedAt).toLocaleDateString()}` : ''}</p>`}
         ${c.isManager ? `<div class="sheet-actions">
           <button class="btn" data-a="chips">Add to or take from balance</button>
           <button class="btn" data-a="credit">Credit limit</button>
@@ -351,6 +360,18 @@ async function clubHome(id) {
       foot: `<button class="btn ghost" data-a="entries">${mine ? 'Show my' : 'Show their'} ledger entries</button><button class="btn primary" data-close>Done</button>`,
     });
     dlg.el.addEventListener('click', async (ev) => {
+      const rb = ev.target.closest('[data-role] button');
+      if (rb && !rb.classList.contains('on')) {
+        const role = rb.dataset.v;
+        dlg.$$('[data-role] button').forEach((b) => { b.disabled = true; });
+        try {
+          await api.post(`/api/admin/users/${encodeURIComponent(m.userId)}/role`, { role });
+          toast(role === 'admin' ? `${m.name} is now an admin` : `${m.name} is now a member`);
+          dlg.close();
+          await clubHome(id);
+        } catch (x) { toast(x.message, 'error'); dlg.$$('[data-role] button').forEach((b) => { b.disabled = false; }); }
+        return;
+      }
       const a = ev.target.closest('[data-a]')?.dataset.a;
       if (!a) return;
       dlg.close();
@@ -486,6 +507,94 @@ async function loadClubStats(id, c) {
 
 // ---------- invites (admins) ----------
 const DAYS = [[1, '1 day'], [3, '3 days'], [7, '7 days'], [14, '14 days'], [30, '30 days']];
+
+// ---------- the join link and the requests it brings ----------
+const joinUrl = (j) => `${location.origin}/join/${j.token}`;
+
+function joinLinkBox(j) {
+  if (!j) {
+    return `<div class="jl-off"><button type="button" class="btn primary" data-jl="on">Make a join link</button>
+      <p class="hint">One link you can post in your group chat. Anyone who opens it can ask to join, and nobody gets in until you or an admin approve them.</p></div>`;
+  }
+  return `<div class="invite"><code>${esc(joinUrl(j))}</code><button type="button" class="btn small" data-jl="copy">Copy</button></div>
+    <p class="hint">Anyone who opens it can ask to join. Requests wait on the club page until you or an admin approve them.</p>
+    <div class="row jl-actions"><button type="button" class="btn small ghost" data-jl="new">Make a new link</button><button type="button" class="btn small ghost" data-jl="off">Turn it off</button></div>`;
+}
+
+// k: on, new, off or copy. done gets the link as it is now.
+async function joinLinkAction(k, j, done) {
+  if (k === 'copy') { if (j) copyText(joinUrl(j)); return; }
+  if (k === 'new' && !(await confirmDialog('The link you have shared stops working and a new one takes its place.', { title: 'Make a new join link?', ok: 'Make a new link' }))) return;
+  if (k === 'off' && !(await confirmDialog('Nobody can ask to join with it until you make a new one. People already waiting stay on the list.', { title: 'Turn off the join link?', ok: 'Turn it off', danger: true }))) return;
+  try {
+    const r = await api.post('/api/admin/join-link', { on: k !== 'off' });
+    toast(k === 'off' ? 'Join link turned off' : k === 'new' ? 'New join link made' : 'Join link made');
+    done(r.joinLink);
+  } catch (x) { toast(x.message, 'error'); }
+}
+
+function requestRows(list) {
+  return list.map((r) => `<div class="row req-row"><span class="grow"><b>${esc(r.name)}</b> <span class="faint">@${esc(r.username)}${r.email ? `, ${esc(r.email)}` : ''}</span><small class="muted"> asked ${timeAgo(r.requestedAt)} with the join link</small></span>
+    <button type="button" class="btn small ghost" data-req="${esc(r.id)}" data-ok="0">Decline</button><button type="button" class="btn small primary" data-req="${esc(r.id)}" data-ok="1">Approve</button></div>`).join('');
+}
+
+async function decideRequest(btn, r, after) {
+  const approve = btn.dataset.ok === '1';
+  if (!approve && !(await confirmDialog(`${r ? r.name : 'They'} can ask again with the join link while it is on.`, { title: `Decline ${r ? r.name : 'this request'}?`, ok: 'Decline', danger: true }))) return;
+  btn.disabled = true;
+  try {
+    await api.post(`/api/admin/requests/${encodeURIComponent(btn.dataset.req)}`, { approve });
+    toast(approve ? `${r ? r.name : 'They'} can sign in now` : 'Request declined');
+    after();
+  } catch (x) { toast(x.message, 'error'); btn.disabled = false; }
+}
+
+// The page the join link opens: ask for an account, then wait for an admin.
+async function joinPage(token) {
+  head.innerHTML = `<a class="wordmark" href="/">${sealSVG(BRAND_HEX, 30, 'The Aquarium')}<span>The <b>Aquarium</b></span></a>`;
+  document.title = 'Ask to join | The Aquarium';
+  try { await api.get('/api/join/' + token); }
+  catch (e) {
+    main.innerHTML = `<section class="panel link-panel"><h1>This join link no longer works</h1><p class="muted">${esc(e.message)}</p><a class="btn" href="/">Sign in</a></section>`;
+    return;
+  }
+  const field = (label, name, attrs = '') => `<label><span class="lbl">${label}</span><input name="${name}" ${attrs}></label>`;
+  main.innerHTML = `<section class="panel link-panel">
+    <h1>Ask to join The Aquarium</h1>
+    <p class="lead">A private poker game. Choose your name at the table, a username and a password. An admin approves each new player, and then you sign in with your username and password on any device.</p>
+    ${api.token ? '<p class="hint">This browser is signed in to an account already. Asking here does not change it.</p>' : ''}
+    <form class="stack" data-join novalidate>
+      ${field('Your name at the table', 'name', 'type="text" maxlength="24" required')}
+      ${field('Username', 'username', 'type="text" autocomplete="username" autocapitalize="none" spellcheck="false" minlength="3" maxlength="20" required')}
+      <p class="hint field-hint">3 to 20 letters, numbers, dots, dashes or underscores. You sign in with it.</p>
+      ${field('Password', 'password', 'type="password" autocomplete="new-password" minlength="8" required')}
+      <p class="hint field-hint">At least 8 characters.</p>
+      ${field('Email (optional)', 'email', 'type="email" inputmode="email" autocomplete="email" autocapitalize="none" spellcheck="false"')}
+      <p class="hint field-hint">Only used to send you a password reset link.</p>
+      <p class="bad hidden" data-err role="alert"></p>
+      <button class="btn primary big" type="submit">Ask to join</button>
+    </form>
+  </section>`;
+  const f = main.querySelector('[data-join]');
+  const err = main.querySelector('[data-err]');
+  f.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    err.classList.add('hidden');
+    const v = (n) => f.elements[n].value.trim();
+    const btn = f.querySelector('button[type=submit]');
+    btn.disabled = true;
+    try {
+      const r = await api.post('/api/join/' + token, { name: v('name'), username: v('username'), password: f.elements.password.value, email: v('email') || undefined });
+      main.innerHTML = `<section class="panel link-panel"><h1>Request sent</h1>
+        <p class="lead">An admin of The Aquarium will look at it. Once they approve it, sign in as <b>${esc(r.username)}</b> with the password you chose.</p>
+        <a class="btn primary" href="/">Go to sign in</a></section>`;
+    } catch (x) {
+      err.textContent = x.message;
+      err.classList.remove('hidden');
+      btn.disabled = false;
+    }
+  });
+}
 const longDay = (t) => new Date(t).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
 
 // After an invite or reset link is made: say whether it was emailed, and offer the link either way.
@@ -507,18 +616,29 @@ function linkResult(dlg, r, { what = 'Invite', again = null } = {}) {
   dlg.$('[data-again]')?.addEventListener('click', () => { dlg.close(); again(); });
 }
 
-function inviteDialog({ onDone = null } = {}) {
+async function inviteDialog({ onDone = null } = {}) {
+  let jl = { joinLink: null, mail: true };
+  try { jl = await api.get('/api/admin/join-link'); } catch { /* the email invite still works */ }
+  const joinSec = `<section class="inv-join"><h3 class="section-title">Share a join link</h3><div data-jlbox>${joinLinkBox(jl.joinLink)}</div></section>`;
   const dlg = dialog({
-    title: 'Invite someone', className: 'narrow',
-    body: `<form class="stack" id="invform" novalidate>
+    title: 'Invite people', className: 'narrow',
+    body: `${jl.mail ? '' : joinSec}
+    <h3 class="section-title">${jl.mail ? 'Invite someone by email' : 'Or invite one person'}</h3>
+    ${jl.mail ? '' : '<p class="hint">Email is not set up, so this makes a link you send yourself. It works once, for that email address.</p>'}
+    <form class="stack" id="invform" novalidate>
       <label><span class="lbl">Their email</span><input name="email" type="email" inputmode="email" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
       <label><span class="lbl">Their name (optional)</span><input name="name" type="text" maxlength="24" placeholder="Shown in the email"></label>
       <label><span class="lbl">The link works for</span><select name="days">${DAYS.map(([d, l]) => `<option value="${d}" ${d === 7 ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <p class="hint">The link works once, only for this email address. They choose their own username and password, and join the club straight away.</p>
       <p class="bad hidden" data-err role="alert"></p>
-    </form>`,
+    </form>
+    ${jl.mail ? joinSec : ''}`,
     foot: '<button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-send>Send invite</button>',
     onClose: () => onDone && onDone(),
+  });
+  dlg.el.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-jl]');
+    if (b) joinLinkAction(b.dataset.jl, jl.joinLink, (j) => { jl.joinLink = j; dlg.$('[data-jlbox]').innerHTML = joinLinkBox(j); });
   });
   const f = dlg.$('#invform');
   const send = async () => {
@@ -645,13 +765,18 @@ async function adminPage() {
   const waiting = data.invites.filter((i) => i.status === 'pending').length;
   main.innerHTML = `
     <section class="club-band admin-band">
-      <div class="cb-name"><h1>People</h1><span class="muted">Only people with an account can open The Aquarium. Accounts come from invites.</span></div>
+      <div class="cb-name"><h1>People</h1><span class="muted">Only people with an account can open The Aquarium. Accounts come from invites and approved join requests.</span></div>
       <div class="cb-bal"><div><small>Accounts</small><b>${data.users.length}</b></div><div><small>Invites waiting</small><b>${waiting}</b></div></div>
       <button class="btn primary big" data-inv>Invite someone</button>
     </section>
+    ${data.requests.length ? `<section class="panel waitlist"><div class="sec-head"><h2>Waiting for approval</h2><span class="muted">Asked to join with the join link</span></div>${requestRows(data.requests)}</section>` : ''}
     <div class="announce ${data.mail.on ? '' : 'warn'}">${data.mail.on
       ? `Invites and password reset links are emailed from ${esc(data.mail.from)}.`
       : 'Email is not set up yet, so after you invite someone you copy the link and send it yourself. To have the site send it from your Gmail, add SMTP_USER and SMTP_PASS on Render.'}</div>
+    <section class="panel">
+      <div class="sec-head"><h2>Join link</h2></div>
+      <div data-jlbox>${joinLinkBox(data.joinLink)}</div>
+    </section>
     <section class="panel">
       <div class="sec-head"><h2>Accounts</h2>${owner ? '<span class="muted">Open someone to make them an admin, reset their password or turn their access off.</span>' : '<span class="muted">Admins invite people and send members password reset links.</span>'}</div>
       <div class="scroll-x"><table class="data people"><thead><tr><th>Name</th><th class="hide-sm">Email</th><th>Role</th><th class="hide-sm">Joined</th><th class="hide-sm">Last seen</th><th><span class="sr">Actions</span></th></tr></thead><tbody>
@@ -672,6 +797,10 @@ async function adminPage() {
 
   main.onclick = async (e) => {
     if (e.target.closest('[data-inv]')) return inviteDialog({ onDone: () => location.pathname === '/admin' && adminPage() });
+    const jb = e.target.closest('[data-jl]');
+    if (jb) return joinLinkAction(jb.dataset.jl, data.joinLink, () => adminPage());
+    const rq = e.target.closest('[data-req]');
+    if (rq) return decideRequest(rq, data.requests.find((x) => x.id === rq.dataset.req), () => adminPage());
     const p = e.target.closest('[data-person]');
     if (p) return personSheet(data.users.find((u) => u.id === p.dataset.person), owner);
     const rn = e.target.closest('[data-renew]');

@@ -8,7 +8,8 @@ import { webCryptoAdapter } from '/shared/fairness.js';
 import { GAME_TYPES } from '/shared/cards.js';
 import { app, emit, fmt, fmtC, parse, inp, gameShort, gameName } from './table-core.js';
 import { seg, bindSegs, formatEditorHTML, bindFormatEditor, readFormat, formatProblem, bombFieldsHTML, bindBombFields, readBomb, fitSeats, fitMinPlayers, ritText, boardName, RATHOLE, ratholeHint, FOLDED, foldedHint, endGameText } from './game-form.js';
-import { statsDialog, playerSheet, replayDialog, afText } from './table-stats.js';
+import { statsDialog, playerSheet, afText } from './table-stats.js';
+import { historyDialog } from './hand-history.js';
 import { canReplay } from '/shared/replay.js';
 import { fmtMoney } from '/shared/money.js';
 
@@ -384,80 +385,17 @@ export async function ledgerDialog() {
 }
 
 // ---------- hand history ----------
-function badge(n, revealed) {
+// Whether this browser has checked a hand against its sealed deck.
+export function checkBadge(n, revealed) {
   const r = app.fair.result(n);
   if (r) return r.ok ? '<span class="vbadge ok">&#10003; Verified</span>' : '<span class="vbadge bad">&#10007; Failed</span>';
   if (!revealed) return '<span class="vbadge wait">Sealed until the game ends</span>';
   return '<span class="vbadge wait">Not checked</span>';
 }
 
-const SORTS = [['new', 'Newest'], ['pot', 'Biggest pots'], ['won', 'Biggest wins'], ['lost', 'Biggest losses']];
-const PAGE = 150;
-
-// sort: new | pot | won | lost. player: whose wins and losses (defaults to you if you played).
-export async function handsDialog({ sort = 'new', player = null } = {}) {
-  const r = await emit('hands:list');
-  if (!r.ok) return;
-  const all = r.hands;
-  const me = app.state.me.userId;
-  const names = new Map();
-  for (const st of app.state.seats) if (st) names.set(st.userId, st.name);
-  const sr = await emit('stats:get', { scope: 'game', game: 'all' }, { quiet: true });
-  for (const x of sr.ok ? sr.stats.players : []) if (!names.has(x.userId)) names.set(x.userId, x.name);
-  const played = (id) => all.some((h) => h.nets[id] !== undefined);
-  let who = player || (played(me) ? me : [...names.keys()].find(played) || me);
-  let shown = PAGE;
-  const dlg = dialog({ title: 'Hand history', className: 'wide', body: '' });
-  const ordered = () => {
-    let list = all.slice();
-    if (sort === 'pot') list.sort((a, b) => b.pot - a.pot || b.handNumber - a.handNumber);
-    if (sort === 'won' || sort === 'lost') {
-      list = list.filter((h) => (sort === 'won' ? h.nets[who] > 0 : h.nets[who] < 0));
-      list.sort((a, b) => (sort === 'won' ? b.nets[who] - a.nets[who] : a.nets[who] - b.nets[who]) || b.handNumber - a.handNumber);
-    }
-    return list;
-  };
-  const showList = () => {
-    dlg.$('h2').textContent = 'Hand history';
-    const list = ordered();
-    const whoName = who === me ? 'You' : names.get(who) || 'Player';
-    const people = [...names.entries()].filter(([id]) => played(id)).sort((a, b) => (a[0] === me ? -1 : b[0] === me ? 1 : a[1].localeCompare(b[1])));
-    dlg.setBody(`
-      <div class="stats-bar hands-bar">
-        <div class="seg" data-sort role="group" aria-label="Sort hands">${SORTS.map(([v, l]) => `<button type="button" data-v="${v}" class="${v === sort ? 'on' : ''}">${l}</button>`).join('')}</div>
-        ${people.length ? `<label class="inline"><span class="lbl">Player</span><select data-who>${people.map(([id, nm]) => `<option value="${esc(id)}" ${id === who ? 'selected' : ''}>${id === me ? 'You' : esc(nm)}</option>`).join('')}</select></label>` : ''}
-      </div>
-      ${list.length ? `<div class="stats-scroll"><table class="data hands-table"><thead><tr><th>Hand</th><th class="hide-sm">Time</th><th>Game</th><th class="hide-sm">Won by</th><th class="n">Pot</th><th class="n">${esc(whoName)}</th><th class="hide-sm">Deck check</th><th><span class="sr">Replay</span></th></tr></thead><tbody>
-      ${list.slice(0, shown).map((x) => {
-        const net = x.nets[who];
-        return `<tr class="hand-row" data-hand="${x.handNumber}" tabindex="0">
-        <td class="num">#${x.handNumber}</td><td class="muted hide-sm">${new Date(x.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-        <td>${esc(gameShort(x.gameType))}${x.isBomb ? ' bomb' : ''}${x.doubleBoard ? ', DB' : ''}${x.runCount > 1 ? `, ${x.runCount}×` : ''}</td>
-        <td class="hide-sm">${x.winners.map(esc).join(', ')}</td><td class="n">${fmtC(x.pot)}</td>
-        <td class="n">${net === undefined ? '<span class="faint">-</span>' : `<span class="${net > 0 ? 'pos' : net < 0 ? 'neg' : ''}">${net > 0 ? '+' : ''}${fmtC(net)}</span>`}</td>
-        <td class="hide-sm">${badge(x.handNumber, x.revealed)}</td>
-        <td>${x.replay ? `<button type="button" class="btn tiny" data-replay="${x.handNumber}">Replay</button>` : ''}</td></tr>`;
-      }).join('')}</tbody></table></div>
-      ${list.length > shown ? `<div class="row" style="justify-content:center;margin-top:.8rem"><button type="button" class="btn small" data-more>Show ${Math.min(PAGE, list.length - shown)} more</button></div>` : ''}`
-      : `<p class="muted">${all.length ? (sort === 'won' ? `${esc(whoName)} has not won a hand yet.` : `${esc(whoName)} has not lost a hand yet.`) : 'No finished hands yet.'}</p>`}`);
-  };
-  showList();
-  const order = () => ordered().map((h) => h.handNumber);
-  dlg.el.addEventListener('click', (e) => {
-    const so = e.target.closest('[data-sort] button');
-    if (so) { sort = so.dataset.v; shown = PAGE; showList(); return; }
-    if (e.target.closest('[data-more]')) { shown += PAGE; showList(); return; }
-    const rp = e.target.closest('[data-replay]');
-    if (rp) { replayDialog(Number(rp.dataset.replay), { order: order(), onDetails: (n) => handDetailDialog(n) }); return; }
-    const row = e.target.closest('[data-hand]');
-    if (row) showHand(dlg, Number(row.dataset.hand), showList);
-    if (e.target.closest('[data-back]')) showList();
-  });
-  dlg.el.addEventListener('change', (e) => { if (e.target.matches('[data-who]')) { who = e.target.value; shown = PAGE; showList(); } });
-  dlg.el.addEventListener('keydown', (e) => {
-    const row = e.target.closest('[data-hand]');
-    if (row && e.key === 'Enter' && !e.target.closest('button')) showHand(dlg, Number(row.dataset.hand), showList);
-  });
+// Hand history: the list of hands beside the replayer (hand-history.js).
+export function handsDialog({ sort = null, player = null, start = null } = {}) {
+  return historyDialog({ sort, who: player, start });
 }
 
 // The full record of one hand (cards, results, deck check) in its own dialog.
@@ -467,16 +405,22 @@ export function handDetailDialog(n) {
   dlg.el.addEventListener('click', (e) => {
     if (e.target.closest('[data-back]')) dlg.close();
     const rp = e.target.closest('[data-replay]');
-    if (rp) { dlg.close(); replayDialog(Number(rp.dataset.replay), { onDetails: (k) => handDetailDialog(k) }); }
+    if (rp) { dlg.close(); historyDialog({ start: Number(rp.dataset.replay) }); }
   });
 }
 
 const mini = (cards) => `<span class="mini-cards">${(cards || []).map((c) => (c ? cardHTML(c) : backHTML())).join('')}</span>`;
 
-async function showHand(dlg, n, back, backLabel = 'All hands') {
-  dlg.$('h2').textContent = `Hand #${n}`;
-  dlg.setBody('<p class="muted">Loading…</p>');
-  const r = await emit('hand:get', { handNumber: n });
+// The details of one hand inside another view (the hand history), from a record it already has.
+export function handDetailsInto(el, rec) {
+  const box = { $: (q) => el.querySelector(q), setBody: (html) => { el.innerHTML = html; } };
+  return showHand(box, rec.handNumber, () => {}, '', { inline: true, record: rec });
+}
+
+async function showHand(dlg, n, back, backLabel = 'All hands', { inline = false, record = null } = {}) {
+  if (!inline) dlg.$('h2').textContent = `Hand #${n}`;
+  if (!record) dlg.setBody('<p class="muted">Loading…</p>');
+  const r = record ? { ok: true, record } : await emit('hand:get', { handNumber: n });
   if (!r.ok) return back();
   const rec = r.record;
   const f = rec.fairness;
@@ -495,8 +439,8 @@ async function showHand(dlg, n, back, backLabel = 'All hands') {
     lines.push(`${run.winners.map((w) => esc(w.name)).join(' and ')} ${run.winners.length > 1 ? 'split' : 'won'} ${fmt(run.amount)}${run.winners[0]?.hand ? ` with ${esc(run.winners[0].hand)}` : ''}${where(run)}${rec.results.pots.length > 1 ? (pi ? ` (side pot ${pi})` : ' (main pot)') : ''}`);
   }));
   dlg.setBody(`
-    <div class="row" style="justify-content:space-between"><span class="row"><button class="btn small ghost" data-back>${esc(backLabel)}</button>${canReplay(rec) ? `<button class="btn small" data-replay="${rec.handNumber}">Replay</button>` : ''}</span>
-      <span class="muted">${esc(gameName(rec.gameType))}${rec.isBomb ? ', bomb pot' : ''}${rec.doubleBoard ? ', double board' : ''}, blinds ${F(rec.smallBlind)}/${F(rec.bigBlind)}, ${new Date(rec.startedAt).toLocaleString()}</span></div>
+    ${inline ? '' : `<div class="row" style="justify-content:space-between"><span class="row"><button class="btn small ghost" data-back>${esc(backLabel)}</button>${canReplay(rec) ? `<button class="btn small" data-replay="${rec.handNumber}">Replay</button>` : ''}</span>
+      <span class="muted">${esc(gameName(rec.gameType))}${rec.isBomb ? ', bomb pot' : ''}${rec.doubleBoard ? ', double board' : ''}, blinds ${F(rec.smallBlind)}/${F(rec.bigBlind)}, ${new Date(rec.startedAt).toLocaleString()}</span></div>`}
     <h3 class="section-title">Board${nb > 1 ? 's' : ''}</h3>
     <div class="stack-sm">${rec.dealt.boards.map((b, i) => `<div>${nb > 1 ? `<span class="muted blabel">${esc(boardName(i, bpr, nb))}</span>` : ''}${b.length ? mini(b) : '<span class="faint">No board dealt</span>'}</div>`).join('')}</div>
     <h3 class="section-title">Players</h3>

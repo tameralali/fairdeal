@@ -106,6 +106,29 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     return { token: r.token, user: auth.publicUser(r.user), kind: r.invite.kind, clubId: clubs.mainId() };
   }, { needUser: false }));
 
+  // ----- the join link: anyone with it asks for an account, an admin approves -----
+  app.get('/api/join/:token', api((req) => { auth.usableJoinLink(req.params.token); return { club: 'The Aquarium' }; }, { needUser: false }));
+  app.post('/api/join/:token', api((req) => {
+    const u = auth.requestAccount(req.params.token, req.body || {}, req.ip);
+    clubs.changed(clubs.mainId()); // admins on the club page see the request come in
+    return { name: u.name, username: u.username };
+  }, { needUser: false }));
+  app.get('/api/admin/join-link', api((req, user) => {
+    auth.requireAdmin(user);
+    const j = auth.joinLink();
+    return { joinLink: j ? { token: j.token, createdAt: j.createdAt } : null, mail: !!mailer };
+  }));
+  app.post('/api/admin/join-link', api((req, user) => {
+    const j = auth.setJoinLink(user, req.body?.on !== false);
+    return { joinLink: j ? { token: j.token, createdAt: j.createdAt } : null };
+  }));
+  app.post('/api/admin/requests/:id', api((req, user) => {
+    const u = auth.decideRequest(user, req.params.id, !!req.body?.approve);
+    if (u) clubs.join(u.id);
+    clubs.changed(clubs.mainId());
+    return { ok: true };
+  }));
+
   // ----- admin: people, invites, roles -----
   const linkUrl = (req, kind, token) => `${req.protocol}://${req.get('host')}/${kind === 'reset' ? 'reset' : 'invite'}/${token}`;
   async function deliver(inv, to, message) {
@@ -226,7 +249,11 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   }));
 
   // ----- clubs -----
-  const clubView = (id, user) => ({ club: clubs.view(id, user), tables: clubs.role(id, user.id) ? tables.forClub(id, user.id) : [] });
+  const clubView = (id, user) => {
+    const club = clubs.view(id, user);
+    if (auth.isAdmin(user)) club.requests = auth.requests(user); // people asking to join through the join link
+    return { club, tables: clubs.role(id, user.id) ? tables.forClub(id, user.id) : [] };
+  };
   app.post('/api/clubs', api((req, user) => ({ id: clubs.create(user, req.body || {}).id })));
   app.get('/api/clubs/invite/:code', api((req) => { const c = clubs.lookupInvite(req.params.code); return { id: c.id, name: c.name }; }));
   app.post('/api/clubs/join', api((req, user) => { const r = clubs.joinByCode(user, req.body.code); return { id: r.club.id, status: r.status }; }));
