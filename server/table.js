@@ -19,6 +19,8 @@ export const DELAYS = {
   rit: 45000, ritSettle: 15000, autoAct: 400, away: 5000, call: 30 * 60000,
 };
 export const BANK_REFILL = { hands: 10, seconds: 5 };
+// extra time, asked for on your turn: at most this many seconds off the time bank each time
+export const EXTRA_CHUNK = 10;
 
 // The format is a list of steps played in order, then repeated from the top. Each step is one game
 // for one orbit or a set number of hands, dealt on one board or two (double board).
@@ -287,7 +289,7 @@ export class Table {
     return this.settings.decimals || 0;
   }
   fmt(a) {
-    return fmtMoney(a, this.decimals);
+    return fmtMoney(a, this.decimals, 'auto', ''); // the table's log, like its felt, has no dollar sign
   }
 
   isHost(userId) {
@@ -1338,17 +1340,27 @@ export class Table {
     if (!t || !hand) return;
     const actor = hand.actor();
     if (!actor || actor.id !== t.userId) return;
-    const p = this.players.get(t.userId);
-    if (!t.usingBank && p && this.settings.timeBankSeconds > 0 && p.timeBank >= 1) {
-      t.usingBank = true;
-      t.bankStartedAt = Date.now();
-      t.deadline = Date.now() + p.timeBank * 1000;
-      this.timers.action = setTimeout(this.safe(() => this.onTurnTimeout()), p.timeBank * 1000);
-      this.broadcast();
-      return;
-    }
-    if (t.usingBank && p) p.timeBank = 0;
+    // out of time: the time bank is only used when asked for (useTimeBank), as on PokerNow
     this.autoAct(t.userId, true);
+  }
+
+  // Extra time, as on PokerNow: on their turn a player asks for it (Activate extra time, or T), and up
+  // to EXTRA_CHUNK seconds come off their time bank onto the clock each time, until the bank is empty.
+  useTimeBank(user) {
+    const t = this.turn;
+    if (!t || !this.hand || t.userId !== user.id || t.auto) fail('It is not your turn');
+    const p = this.players.get(user.id);
+    const add = Math.min(EXTRA_CHUNK, Math.floor(p?.timeBank || 0));
+    if (!(add >= 1)) fail('Your time bank is empty');
+    p.timeBank -= add;
+    t.deadline += add * 1000;
+    t.extra = (t.extra || 0) + add * 1000;
+    t.usingBank = true;
+    clearTimeout(this.timers.action);
+    this.timers.action = setTimeout(this.safe(() => this.onTurnTimeout()), Math.max(0, t.deadline - Date.now()));
+    this.log(`${p.name} takes ${add} seconds of extra time`, 'seat');
+    this.snapshot();
+    this.broadcast();
   }
 
   autoAct(userId, timedOut) {
@@ -1372,9 +1384,6 @@ export class Table {
     if (!hand || hand.phase === 'done') fail('No hand in progress');
     const actor = hand.actor();
     if (!actor || actor.id !== user.id) fail('It is not your turn');
-    const t = this.turn;
-    const p = this.players.get(user.id);
-    if (t && t.usingBank && p) p.timeBank = Math.max(0, p.timeBank - (Date.now() - t.bankStartedAt) / 1000);
     const type = String(action?.type || '');
     const to = action?.to !== undefined ? Number(action.to) : undefined;
     hand.act(user.id, { type, to });
@@ -1646,8 +1655,8 @@ export class Table {
     if (hand) {
       handState = hand.publicState(userId);
       handState.turn = this.hand && this.turn ? {
-        seat: this.turn.seat, deadline: this.turn.deadline, usingBank: this.turn.usingBank,
-        total: this.turn.usingBank ? Math.max(1000, this.turn.deadline - this.turn.bankStartedAt) : this.turn.auto ? DELAYS.autoAct : this.settings.decisionSeconds * 1000,
+        seat: this.turn.seat, deadline: this.turn.deadline, usingBank: !!this.turn.usingBank,
+        total: this.turn.auto ? DELAYS.autoAct : this.settings.decisionSeconds * 1000 + (this.turn.extra || 0),
       } : null;
       handState.ritDeadline = this.ritDeadline;
       handState.bombReason = this.handMeta && this.handMeta.bomb ? this.handMeta.bomb.reason : null;

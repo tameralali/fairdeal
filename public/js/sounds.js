@@ -1,7 +1,8 @@
 // Table sounds. Cards and chips are recordings from Kenney's Casino Audio (CC0, kenney.nl): a card
 // slid to each player, a card placed for the board, cards shoved away for a fold, chips stacked for a
 // call, a clink for a bet, a handful for a raise, a big one for an all-in, and the pot swept to the
-// winner. The turn call, the check knock and the host's request chime are made in the browser with
+// winner. Each take is cut to start on its hit and kept short (most under a tenth of a second), so a
+// sound lands with what it goes with instead of after it. The turn call, the check knock and the host's request chime are made in the browser with
 // Web Audio, and stand in for any recording that has not loaded yet. Browsers only let a page make
 // sound after a tap or a key press on it, so the first one switches sound on and loads the files.
 let ctx = null;

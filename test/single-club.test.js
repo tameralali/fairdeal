@@ -104,7 +104,7 @@ test('the first start makes one club in dollars and cents and keeps everyone’s
   const owner = again.auth.users.own;
   const t = again.tables.create(owner, { name: 'Tonight', settings: { smallBlind: 25, bigBlind: 50 } });
   assert.equal(t.decimals, 2);
-  assert.equal(t.fmt(2550), '$25.50');
+  assert.equal(t.fmt(2550), '25.50', 'the table shows amounts without a dollar sign');
   again.store.flush();
 });
 
@@ -126,6 +126,7 @@ test('dollars and cents', () => {
   assert.equal(fmtMoney(123450), '$1,234.50');
   assert.equal(fmtMoney(2500), '$25');
   assert.equal(fmtMoney(2500, 2, 'always'), '$25.00');
+  assert.equal(fmtMoney(123450, 2, 'always', ''), '1,234.50', 'at the table, without the dollar sign');
   assert.equal(fmtMoney(1), '$0.01');
   assert.equal(fmtMoney(-1250), '-$12.50');
   assert.equal(fmtMoney(0), '$0');

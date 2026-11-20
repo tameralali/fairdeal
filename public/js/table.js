@@ -1,6 +1,6 @@
 import { api, ensureIdentity } from './api.js';
 import { esc, $, $$, toast, clock } from './ui.js';
-import { cardHTML, backHTML, slotHTML, prefs, applyPrefs, suitText, shortHandName } from './cards.js';
+import { cardHTML, backHTML, slotHTML, prefs, savePrefs, applyPrefs, suitText, shortHandName, rankLabel, SUIT } from './cards.js';
 import { equity } from '/shared/equity.js';
 import { playSound, unlockSound } from './sounds.js';
 import { sealSVG } from './seal.js';
@@ -21,19 +21,18 @@ const els = {};
 applyPrefs();
 
 async function main() {
-  for (const id of ['top', 'stage', 'area', 'felt', 'center', 'seats', 'chips', 'mybar', 'actions', 'drawer', 'log', 'chat', 'chatfab']) els[id] = document.getElementById(id);
+  for (const id of ['top', 'stage', 'area', 'felt', 'center', 'seats', 'chips', 'mybar', 'actions', 'drawer', 'log', 'chat', 'chatfab', 'pnchat', 'pnbox', 'pnmsgs', 'pnform', 'pninput', 'pnmore', 'pnvoice', 'pnname']) els[id] = document.getElementById(id);
   let me;
   try { me = await ensureIdentity(); }
   catch (e) { fatal(e.message); return; }
   app.me = me.user;
   app.fair = new FairClient(app.tableId, (ev, p) => emit(ev, p, { quiet: true }), onVerified);
-  // Chat sits on the right, open, on a wide screen; on a phone it opens from the chat button.
-  const drawerPref = localStorage.getItem('fd:chatpanel');
-  if (drawerPref === 'closed' || (drawerPref === null && window.innerWidth < 900)) els.drawer.classList.add('collapsed');
-  app.logOnlyChat = localStorage.getItem('fd:logtab') !== 'log';
-  $$('[data-logfilter]').forEach((b) => b.classList.toggle('on', (b.dataset.logfilter === 'chat') === app.logOnlyChat));
-  els.log.classList.toggle('chat-view', app.logOnlyChat);
+  // Where the chat goes: on a wide screen bottom left, as on PokerNow, with the log in a panel opened by
+  // Log / Ledger; narrower, in the side panel; on a phone from the chat button.
   app.unread = 0;
+  chatMode();
+  WIDE_CHAT.addEventListener('change', () => { chatMode(); resize(); render(); });
+  bindPnChat();
   keepAboveKeyboard();
   // browsers only allow sound after a tap or key press on the page
   for (const ev of ['pointerdown', 'keydown', 'touchstart']) document.addEventListener(ev, unlockSound, { capture: true, passive: true });
@@ -68,18 +67,19 @@ function connect() {
     if (e.message === 'moved') location.reload();
   });
   socket.on('state', onState);
-  socket.on('log:reset', (entries) => { app.logs = entries; renderLog(); });
+  socket.on('log:reset', (entries) => { app.logs = entries; renderLog(); renderPnChat(); });
   socket.on('log', (entries) => {
     app.logs.push(...entries);
     if (app.logs.length > 900) app.logs.splice(0, app.logs.length - 900);
     appendLog(entries);
+    appendPn(entries);
     bubbles(entries);
     for (const e of entries) {
       if (!/bounty/.test(e.kind || '')) continue;
       const m = /^(.+?) won with 7-2 and collects the (.+?) bounty from (.+): (.+)$/.exec(e.text);
       if (m) announce(`${m[1]} won with 7-2`, `${m[4]} bounty: ${m[2]} from ${m[3]}`, 'bounty');
     }
-    if (els.drawer.classList.contains('collapsed')) {
+    if (!wideChat() && els.drawer.classList.contains('collapsed')) {
       const fresh = entries.filter((e) => e.kind === 'chat' && e.userId !== myId()).length;
       if (fresh) { app.unread += fresh; paintUnread(); }
     }
@@ -205,12 +205,25 @@ function tableSounds(prev, s) {
     if (!b || !p.lastAction) continue;
     // a new action, or more chips in on the same one (a bet swept into the pot at the end of a street is not)
     if (p.lastAction === b.lastAction && !(p.bet > b.bet) && p.folded === b.folded) continue;
+    // your own action already sounded when you pressed it
+    if (p.id === s.me.userId && app.mine && app.mine.n === h.number && Date.now() - app.mine.at < 5000) { app.mine = null; continue; }
     const a = p.lastAction;
     const kind = a === 'Fold' ? 'fold' : a === 'Check' ? 'check' : a === 'All-in' ? 'allin' : a === 'Call' ? 'call' : a === 'Bet' ? 'bet' : 'raise';
     playSound(kind, delay);
     delay += 0.09;
   }
-  if (h.phase === 'done' && was.phase !== 'done' && h.results) playSound('win', 0.25);
+  if (h.phase === 'done' && was.phase !== 'done' && h.results) playSound('win', 0.12);
+}
+
+// Your own action sounds the moment you press it, not a round trip later when the table answers.
+function soundMine(type, L, to) {
+  const h = app.state && app.state.hand;
+  if (!prefs.tableSounds || !h || !L) return;
+  const kind = type === 'fold' ? 'fold' : type === 'check' ? 'check'
+    : type === 'call' ? (L.toCall >= L.stack ? 'allin' : 'call')
+      : to >= L.allInTo ? 'allin' : L.isBet ? 'bet' : 'raise';
+  playSound(kind);
+  app.mine = { n: h.number, at: Date.now() };
 }
 
 function onVerified(n, res) {
@@ -228,6 +241,9 @@ function onVerified(n, res) {
 // player boxes and how far a fanned hand reaches past the left edge of its box.
 const SIZES = {
   land: { box: 22, me: 26, card: 5.8, myCard: 7.4, reach: 8.4, myReach: 10.6, perU: 1 },
+  // on a wide screen the boxes are narrower and the fans of four and five cards tighter, as on PokerNow,
+  // so seats beside the board leave it room
+  wide: { box: 20, me: 25, card: 5.8, myCard: 7.4, reach: 8.2, myReach: 10.6, perU: 1, step: { 2: 0.5, 4: 0.27, 5: 0.22 }, tilt: { 2: 6.5, 4: 16.5, 5: 18 } },
   port: { box: 20, me: 24.5, card: 5.5, myCard: 8.2, reach: 7.5, myReach: 10.6, perU: 100 / 64 },
 };
 const STEP = { 2: 0.5, 4: 0.32, 5: 0.27 };
@@ -239,16 +255,16 @@ const PIVOT = 1.5; // the cards turn about a point this many card heights below 
 function overhang(z, n, me) {
   const w = me ? z.myCard : z.card;
   const reach = me ? z.myReach : z.reach;
-  const tilt = w * 1.2 * PIVOT * Math.sin(((TILT[n] || 7) * Math.PI) / 180);
-  return Math.max(0, w * (1 + (n - 1) * (STEP[n] || 0.4)) - reach + tilt);
+  const tilt = w * 1.2 * PIVOT * Math.sin((((z.tilt || TILT)[n] || 7) * Math.PI) / 180);
+  return Math.max(0, w * (1 + (n - 1) * ((z.step || STEP)[n] || 0.4)) - reach + tilt);
 }
 
 // Where everything sits, in percent of the table area. Position 0 is the bottom middle (my seat when
 // I play) and the rest go round clockwise. The bottom seat gets a little more room for its bigger cards.
 // Bets sit on the line from a seat to the middle, just clear of that seat's box and cards and inside the
 // felt; the dealer button sits beside the bet.
-const ASPECT = { land: 1.72, port: 0.74, portMax: 0.8 };
-const FELT = { land: { cx: 50, cy: 48, rx: 35, ry: 32 }, port: { cx: 50, cy: 49, rx: 37, ry: 39 } };
+const ASPECT = { land: 1.72, wide: 1.95, port: 0.74, portMax: 0.8 };
+const FELT = { land: { cx: 50, cy: 48, rx: 35, ry: 32 }, wide: { cx: 50, cy: 47, rx: 35.7, ry: 34.8 }, port: { cx: 50, cy: 49, rx: 37, ry: 39 } };
 // Angles for seats with these weights around an ellipse with radii a and b, the first one at the
 // bottom, going clockwise, each taking a share of the edge in proportion to its weight. The edge
 // within band of the middle, up or down, hardly counts, so the seats pass over it.
@@ -276,28 +292,48 @@ function spread(weights, a, b, band = 0) {
   return weights.map((w) => { const mid = at + (w * unit) / 2; at += w * unit; return angleAt(mid); });
 }
 
-function geometry(n, portrait, holeN) {
-  const z = portrait ? SIZES.port : SIZES.land;
+function geometry(n, portrait, holeN, shown = null) {
+  const wide = !portrait && !!app.wide;
+  const z = portrait ? SIZES.port : wide ? SIZES.wide : SIZES.land;
   const P = portrait
     ? { cx: 50, cy: 48.5, px: 40, py: 43, mine: 1.55, boxh: 7.2, myBoxh: 7.6, pill: [8.5, 3.4], aim: 10, dot: 3, board: 7.6 }
-    : { cx: 50, cy: 48, px: 42, py: 40, mine: 1.3, boxh: 6.4, myBoxh: 6.8, pill: [10, 3.1], aim: 14, dot: 2.6 };
-  const F = portrait ? FELT.port : FELT.land;
+    : wide ? { cx: 50, cy: 49.5, px: 42, py: 38.8, mine: 1.3, boxh: 7, myBoxh: 7.4, pill: [10, 3.1], aim: 14, dot: 2.6, board: 5.6 }
+      : { cx: 50, cy: 48, px: 42, py: 40, mine: 1.3, boxh: 6.4, myBoxh: 6.8, pill: [10, 3.1], aim: 14, dot: 2.6 };
+  const F = portrait ? FELT.port : wide ? FELT.wide : FELT.land;
   // work in units: x in % of the width divided by ux, y in % of the height divided by uy
   const ux = z.perU;
-  const uy = z.perU * (portrait ? app.aspect || ASPECT.port : ASPECT.land);
+  const uy = z.perU * (portrait ? app.aspect || ASPECT.port : wide ? ASPECT.wide : ASPECT.land);
   // Seats are spaced evenly along the edge of the table measured in box sizes, not by angle: a box is
   // much wider than it is tall, so seats along the top and bottom need more of the edge than seats at
   // the sides. The bottom seat takes a little more again.
   const weights = Array.from({ length: n }, (_, i) => (i === 0 ? P.mine : 1));
   const tall = Math.max(P.boxh, z.card * 1.2 + 0.5);
-  // upright, the board is nearly as wide as the table: seats at the sides keep above or below it
-  const band = portrait ? (P.board + P.boxh / 2) / tall : 0;
-  const angles = spread(weights, P.px / ux / z.box, P.py / uy / tall, band);
+  // Upright, the board is nearly as wide as the table: seats at the sides keep above or below it. On a
+  // wide screen they do too, as on PokerNow, so no name or card reaches over the board.
+  const band = P.board ? (P.board + P.boxh / 2) / tall : 0;
   const C = { x: F.cx / ux, y: F.cy / uy };
   // how far from the top or bottom a box has to be for a chat bubble to fit beyond it
   const room = (4.6 + P.boxh / 2) * uy + 0.5;
   const R = { x: (F.rx / ux) * 0.84, y: (F.ry / uy) * 0.84 };
-  return weights.map((wt, i) => {
+  // With many seats there is not room for them all above and below the board: then the band narrows,
+  // step by step, until no two boxes meet, and the board gets smaller instead (fitBoard).
+  const place = (bd) => seatsAt(spread(weights, P.px / ux / z.box, P.py / uy / tall, bd));
+  // two seats meet when one's box or cards reach over the other's
+  const hit = (a, b) => a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
+  // (only seats that are drawn count: free seats are hidden while you are seated)
+  const seen = (i) => !shown || shown[i];
+  const meets = (list) => list.reduce((k, a, i) => k + (seen(i) ? list.filter((b, j) => j > i && seen(j) && (hit(a.box, b.plate) || hit(b.box, a.plate))).length : 0), 0);
+  // (upright the band always holds: the board is nearly as wide as the table there)
+  if (!band || portrait) return place(band);
+  // the widest band that brings no seats together that would not meet anyway
+  const base = meets(place(0));
+  for (const f of [1, 0.7, 0.45, 0.2]) {
+    const out = place(band * f);
+    if (meets(out) <= base) return out;
+  }
+  return place(0);
+
+  function seatsAt(angles) { return weights.map((wt, i) => {
     const t = angles[i];
     const c = Math.cos(t);
     const sn = Math.sin(t);
@@ -333,17 +369,24 @@ function geometry(n, portrait, holeN) {
     const B = { x: S.x + d.x * dist, y: S.y + d.y * dist };
     return {
       x, y,
+      box,
+      // where this seat's bet sits, so the board keeps clear of it too
+      bet: { l: B.x - P.pill[0] / 2, r: B.x + P.pill[0] / 2, t: B.y - P.pill[1] / 2, b: B.y + P.pill[1] / 2 },
       // close to the left edge a hand's label lines up with the cards instead of centring under them
       edge: S.x - bw / 2 - over < 7,
       bx: B.x * ux, by: B.y * uy,
       upper: sn < -0.25,
       // a chat bubble goes on the outside of the box when there is room for it there
       bubbleIn: sn < -0.25 ? y < room : y > 100 - room,
+      plate: { l: S.x - bw / 2 - 0.4, r: S.x + bw / 2 + 0.4, t: S.y - (me ? P.myBoxh : P.boxh) / 2 - 0.3, b: S.y + (me ? P.myBoxh : P.boxh) / 2 + 0.3 },
     };
-  });
+  }); }
 }
 
 function resize() {
+  const wide = wideChat();
+  if (wide) return resizeWide();
+  els.area.style.left = els.area.style.top = '';
   const w = els.stage.clientWidth;
   const h = els.stage.clientHeight;
   if (!w || !h) return;
@@ -358,15 +401,39 @@ function resize() {
   // a little room above and below for the action tags and what my hand makes
   const W = Math.min(w * 0.985, h * 0.955 * aspect);
   const H = W / aspect;
+  placeArea(W, H, portrait, false, aspect);
+}
+
+// On a wide screen the table spreads across the window, as on PokerNow, with its corners left for the
+// menu (top left), the game and blinds (top right), the chat (bottom left) and the buttons (bottom
+// right). Those are drawn for a 1650 by 954 window and scaled with it (--pk); the table sits just above
+// the chat and the buttons, and is centred across.
+const PN = { w: 1650, h: 954, side: 104, top: 10, bottom: 186 };
+function resizeWide() {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const k = Math.max(0.6, Math.min(1.7, Math.min(vw / PN.w, vh / PN.h)));
+  document.body.style.setProperty('--pk', k.toFixed(4));
+  const side = PN.side * k, top = PN.top * k, bottom = PN.bottom * k;
+  const W = Math.max(300, Math.min(vw - 2 * side, (vh - top - bottom) * ASPECT.wide));
+  const H = W / ASPECT.wide;
+  els.area.style.left = ((vw - W) / 2).toFixed(1) + 'px';
+  els.area.style.top = (top + Math.max(0, vh - top - bottom - H) * 0.6).toFixed(1) + 'px';
+  placeArea(W, H, false, true, ASPECT.wide);
+}
+
+function placeArea(W, H, portrait, wide, aspect) {
   els.area.style.width = W + 'px';
   els.area.style.height = H + 'px';
   els.area.classList.toggle('portrait', portrait);
-  els.area.style.setProperty('--u', (portrait ? W / 64 : W / 100) + 'px');
-  if (app.portrait !== portrait || Math.abs((app.aspect || 0) - aspect) > 0.005) {
+  els.area.classList.toggle('wide', wide);
+  els.area.style.setProperty('--au', (portrait ? W / 64 : W / 100) + 'px');
+  if (app.portrait !== portrait || app.wide !== wide || Math.abs((app.aspect || 0) - aspect) > 0.005) {
     app.portrait = portrait;
+    app.wide = wide;
     app.aspect = aspect;
     render();
-  }
+  } else fitBoard();
 }
 
 // ---------- render ----------
@@ -419,6 +486,12 @@ function renderTop(s) {
   const ends = t.session && t.session.endsAt;
   const reqs = s.requests ? s.requests.length : 0;
   const f = s.fairness;
+  if (wideChat()) {
+    els.top.innerHTML = pnTopHTML(s, { game, dbNow, rot, status, ends, reqs });
+    els.pnname.innerHTML = `<b>${esc(t.name)}</b><a href="/">${esc(t.clubName || 'The Aquarium')}</a>`;
+    tick();
+    return;
+  }
   els.top.innerHTML = `
     <span class="conn ${app.connected ? '' : 'off'}" title="${app.connected ? 'Connected' : 'Reconnecting'}"></span>
     <a class="wordmark" href="/" title="Back to the club">${sealSVG(BRAND_HEX, 26, 'The Aquarium')}<span>The <b>Aquarium</b></span></a>
@@ -445,6 +518,78 @@ function renderTop(s) {
       <button class="btn small menu-btn" data-open="menu">Menu</button>
     </div>`;
   tick();
+}
+
+// ---------- the corners, on a wide screen ----------
+const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" aria-hidden="true" ${extra}>${d}</svg>`;
+const PN_ICON = {
+  menu: svg('<path d="M3.5 6h17M3.5 12h17M3.5 18h17" stroke-width="3"/>'),
+  hands: svg('<rect x="3.5" y="6.5" width="10.5" height="14" rx="1.8"/><path d="M10.3 4.3l1.2-.6a1.8 1.8 0 0 1 2.4.8l5.4 10.7a1.8 1.8 0 0 1-.8 2.4l-3.1 1.6"/>'),
+  chips: svg('<circle cx="10" cy="13" r="7"/><circle cx="10" cy="13" r="2.8"/><path d="M10 6v2.2M10 17.8V20M3 13h2.2M14.8 13H17M19.5 3v6M16.5 6h6"/>'),
+  away: svg('<path d="M19.5 14.8A8 8 0 0 1 9.2 4.5a8 8 0 1 0 10.3 10.3z"/>'),
+  back: svg('<path d="M7.5 3.5v8.5h9.5"/><path d="M5.5 12h13.5l-1.4 3.4H6.9z"/><path d="M12 15.4v4.6M7.8 20.5h8.4"/>'),
+  clock: svg('<circle cx="12" cy="12.5" r="8.5"/><path d="M12 8v4.8l3.2 2"/>'),
+  straddle: svg('<text x="12" y="16.6" text-anchor="middle" font-size="12.5" font-weight="900" fill="currentColor" stroke="none">2×</text><rect x="2.5" y="4.5" width="19" height="15" rx="3"/>'),
+  leave: svg('<path d="M13.5 4H6.5A1.5 1.5 0 0 0 5 5.5v13A1.5 1.5 0 0 0 6.5 20h7"/><path d="M10 12h10.5M16.8 8.2l3.8 3.8-3.8 3.8"/>'),
+  bell: svg('<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.6 2H4.4z"/><path d="M10 20.6a2.1 2.1 0 0 0 4 0"/>'),
+  soundOn: svg('<path d="M4 9.3h3.6L12.2 5v14l-4.6-4.3H4z" fill="currentColor" stroke="none"/><path d="M15.6 9a4.2 4.2 0 0 1 0 6M18.2 6.4a7.8 7.8 0 0 1 0 11.2"/>'),
+  soundOff: svg('<path d="M4 9.3h3.6L12.2 5v14l-4.6-4.3H4z" fill="currentColor" stroke="none"/><path d="M15.8 9.4l5 5.2M20.8 9.4l-5 5.2"/>'),
+  bomb: svg('<circle cx="10.5" cy="14" r="6.8" fill="currentColor" stroke="none"/><path d="M14.6 9.6l2.4-2.4M18.4 3.6v1.6M20.8 6.2h-1.6M20.4 4l-1.1 1.1"/>'),
+};
+const soundOn = () => !!(prefs.sound || prefs.tableSounds);
+
+function pnTopHTML(s, { game, dbNow, rot, status, ends, reqs }) {
+  const t = s.table;
+  const st = t.settings;
+  const f = s.fairness;
+  // the game now and, when they take turns, the next one, as PokerNow shows them
+  let games = `<span class="pn-g" title="${esc(GAME_TYPES[game]?.name || '')}"><b>${esc(gameShort(game))}</b>${dbNow ? '<small>Double board</small>' : ''}</span>`;
+  if (t.rotation) {
+    const r = t.rotation;
+    const cap = r.unit === 'orbits' && r.count > 1
+      ? (r.lastOrbit ? (r.handsLeft > 0 ? 'Last orbit' : 'Last hand') : `Orbit ${r.orbit} of ${r.count}`)
+      : (r.handsLeft > 0 ? `${r.handsLeft} more hand${r.handsLeft === 1 ? '' : 's'}` : 'Last hand');
+    games = `<span class="pn-games" title="${esc(rot)}"><span class="pn-g"><b>${esc(gameShort(r.current))}${r.currentDouble ? ' <i>DB</i>' : ''}</b><small>${cap}</small></span><span class="pn-to" aria-hidden="true">&raquo;</span><span class="pn-g next"><b>${esc(gameShort(r.next))}${r.nextDouble ? ' <i>DB</i>' : ''}</b><small>Next</small></span></span>`;
+  }
+  let bomb = '';
+  const bm = st.bombPot.mode;
+  if (t.bombNext) bomb = '<span class="pn-bomb hot" title="Bomb pot next hand">' + PN_ICON.bomb + '<small>Next</small></span>';
+  else if (bm === 'every' || bm === 'both') {
+    const left = Math.max(1, st.bombPot.every - t.handsSinceBomb);
+    bomb = `<span class="pn-bomb" title="Bomb pot ${left === 1 ? 'next hand' : `in ${left} hands`}${bm === 'both' ? `, or sooner: each hand has a ${st.bombPot.percent}% chance` : ''}">${PN_ICON.bomb}<small>${left === 1 ? 'Next' : left}</small></span>`;
+  } else if (bm === 'percent') bomb = `<span class="pn-bomb" title="Each hand has this chance of being a bomb pot">${PN_ICON.bomb}<small>${st.bombPot.percent}%</small></span>`;
+  const notes = [
+    st.sevenDeuce && `<span class="pill s72" title="Win a Hold’em hand with 7-2 and show it: everyone else dealt in pays ${esc(fmt(st.sevenDeuce))}">7-2 pays ${fmt(st.sevenDeuce)}</span>`,
+    st.straddle && '<span class="pill soft" title="The player under the gun can straddle">Straddle</span>',
+    ends && t.status === 'running' && `<${s.me.isHost ? 'button type="button" data-open="clock"' : 'div'} class="tb-clock" data-ends="${ends}" title="Time left in this game${s.me.isHost ? '. Add time or remove the clock' : ''}"><b>--:--</b><small>left</small></${s.me.isHost ? 'button' : 'div'}>`,
+    t.session && t.session.clockAtFirstHand && st.sessionMinutes && `<span class="pill soft" title="The time limit starts with the first hand">${st.sessionMinutes} min game, clock starts with the first hand</span>`,
+    status,
+  ].filter(Boolean).join('');
+  // the menu down the left, with what you can do in your seat under it
+  const it = (attrs, icon, label, cls = '') => `<button type="button" class="pn-it ${cls}" ${attrs}>${PN_ICON[icon]}<span>${label}</span></button>`;
+  let side = it('data-open="menu" title="Game options, ledger, stats, look and feel"', 'menu', 'Options') + it('data-open="hands" title="Hand history and the replayer"', 'hands', 'Hands');
+  if (reqs) side += `<button type="button" class="pn-it hot" data-open="requests" title="Players waiting for you">${PN_ICON.bell}<span>Requests</span><b class="pn-n">${reqs}</b></button>`;
+  if (s.me.seated) {
+    const out = s.me.sittingOut || s.me.sitOutNext;
+    const live = t.status !== 'ended';
+    side += out ? it('data-my="back" title="Back in from the next hand"', 'back', 'I’m back', 'go') : it('data-my="sitout" title="Away from the next hand on. I’m back brings you back in."', 'away', 'Away');
+    if (live) side += it('data-my="chips" title="Add chips to your stack"', 'chips', 'Add chips');
+    if (st.straddle && live) side += it(`data-my="straddle" aria-pressed="${!!s.me.straddle}" title="Post a straddle, twice the big blind, whenever you are under the gun"`, 'straddle', 'Straddle', s.me.straddle ? 'on' : '');
+    if (s.me.leaveAt && !s.me.leaving) side += `<button type="button" class="pn-it warn" data-my="stay" title="Take back calling it">${PN_ICON.clock}<span><b data-leave-at="${s.me.leaveAt}">--:--</b> Stay</span></button>`;
+    else if (!s.me.leaving && live) side += it('data-my="call30" title="Tell the table you are leaving in 30 minutes. A pot over 1,000 starts the 30 minutes again."', 'clock', 'Call 30');
+    if (!s.me.leaving) side += it('data-my="stand" title="Stand up and leave your seat"', 'leave', 'Leave seat');
+  }
+  const sound = soundOn();
+  return `
+    <a class="pn-brand wordmark" href="/" title="Back to the club"><span class="conn ${app.connected ? '' : 'off'}" title="${app.connected ? 'Connected' : 'Reconnecting'}"></span>${sealSVG(BRAND_HEX, 24, 'The Aquarium')}<span>The <b>Aquarium</b></span></a>
+    <nav class="pn-menu" aria-label="Table">${side}</nav>
+    <div class="pn-info">
+      <div class="pn-game">${games}<span class="pn-tilde" aria-hidden="true">~</span><span class="pn-blinds" title="Small and big blind">${fmt(st.smallBlind)} / ${fmt(st.bigBlind)}</span>${bomb}</div>
+      <div class="pn-row2">${notes ? `<div class="pn-notes">${notes}</div>` : ''}
+        <button type="button" class="pn-tool seal" data-open="fair" title="Hand #${f.handNumber} sealed, ${f.contributions} player input${f.contributions === 1 ? '' : 's'}. How the deal can be checked">${sealSVG(f.commitment, 34)}</button>
+        <button type="button" class="pn-tool" data-sound aria-pressed="${sound}" title="${sound ? 'Turn the table sounds off' : 'Turn the table sounds on'}">${sound ? PN_ICON.soundOn : PN_ICON.soundOff}</button>
+      </div>
+    </div>`;
 }
 
 function resultInfo(h) {
@@ -528,7 +673,7 @@ function boardWinners(h) {
 }
 
 // With more than one board (run more than once, or a double board), what a hand makes on each board,
-// as small numbered labels under the cards, green where it won that board.
+// as PokerNow labels it: one red row per board under the cards, #1, #2 and so on.
 const BRIEF = ['High card', 'Pair', 'Two pair', 'Trips', 'Straight', 'Flush', 'Full house', 'Quads', 'Str. flush'];
 function boardLabels(h, hole, seat, wins) {
   const boards = h.boards || [h.board];
@@ -542,7 +687,7 @@ function boardLabels(h, hole, seat, wins) {
     const c = best.score >> 20;
     const name = c === 8 && ((best.score >> 16) & 15) === 14 ? 'Royal' : BRIEF[c];
     const won = wins ? (wins.get(i) || []).some((w) => w.seat === seat) : null;
-    pills.push(`<span class="bl${won ? ' won' : won === false ? ' lost' : ''}"><i>${i + 1}</i>${esc(name)}</span>`);
+    pills.push(`<span class="bl${won ? ' won' : won === false ? ' lost' : ''}"><i>#${i + 1}</i><span>${esc(name)}</span></span>`);
   });
   return pills.length ? pills.join('') : '';
 }
@@ -557,7 +702,15 @@ function renderTable(s) {
   if (h && app.seenHand !== h.number) { app.seenHand = h.number; app.seen = new Set(); }
   const nextGame = t.rotation ? t.rotation.current : t.settings.format[0].game;
   const holeN = GAME_TYPES[h ? h.gameType : nextGame]?.holeCount || 2;
-  const geo = geometry(n, app.portrait, holeN);
+  const rot0 = s.me.seat ?? 0;
+  const myReq0 = s.me.requests.find((r) => r.type === 'seat');
+  const asked = new Set((s.requests || []).filter((r) => r.type === 'seat').map((r) => r.seat));
+  // which places are drawn, so only those have to keep clear of each other
+  const shown = Array.from({ length: n }, (_, i) => {
+    const seat = (i + rot0) % n;
+    return !!s.seats[seat] || !s.me.seated || asked.has(seat) || (myReq0 && myReq0.seat === seat);
+  });
+  const geo = geometry(n, app.portrait, holeN, shown);
   // Dealing goes one card at a time: one to each player, starting left of the button, then the next
   // round, each card coming from the middle of the table.
   const order = h ? h.players.map((p) => p.seat).sort((a, b) => a - b) : [];
@@ -577,6 +730,7 @@ function renderTable(s) {
   const nowMs = Date.now();
   let seats = '';
   let chips = '';
+  app.boxes = [];
   for (let seat = 0; seat < n; seat++) {
     const g = geo[(seat - rot + n) % n];
     const pos = `left:${g.x.toFixed(2)}%;top:${g.y.toFixed(2)}%`;
@@ -588,12 +742,16 @@ function renderTable(s) {
       // a free seat: its number in the corner and, for someone who can take it, the whole box to click
       const no = `<span class="seat-no" aria-hidden="true">${seat + 1}</span>`;
       if (canSit && !pendingSeats.has(seat)) {
+        app.boxes.push(g.box);
         seats += `<div class="seat empty open ${side}" style="${pos}"><button type="button" class="plate" data-sit="${seat}" aria-label="Sit in seat ${seat + 1}">${no}<span class="sit-word">Sit</span></button></div>`;
         continue;
       }
       let inner = '';
       if (mine) inner = '<span class="sit-note">Waiting for the host</span>';
       else if (pendingSeats.has(seat)) inner = '<span class="sit-note">Requested</span>';
+      // once you are seated, free seats are not drawn at all; one someone has asked for still says so
+      if (s.me.seated && !inner) continue;
+      app.boxes.push(g.box);
       seats += `<div class="seat empty ${side} ${mine ? 'reserved' : ''} ${inner ? '' : 'quiet'}" style="${pos}"><div class="plate" ${inner ? '' : `title="Seat ${seat + 1} is free"`}>${no}${inner}</div></div>`;
       continue;
     }
@@ -674,6 +832,9 @@ function renderTable(s) {
     const bubble = bub && bub.until > nowMs ? `<div class="bubble ${g.bubbleIn ? 'in' : 'out'}${bub.fresh ? ' fresh' : ''}" role="status"><span>${esc(bub.text)}</span></div>` : '';
     if (bub) bub.fresh = false;
     const vin = (s.voice || []).find((x) => x.userId === info.userId);
+    app.boxes.push(g.box);
+    // a player in the hand may bet: the board keeps clear of that place for the whole hand, so it does not change size as bets come and go
+    if (p) app.boxes.push(g.bet);
     seats += `<div class="${cls}${bubble ? ' talking' : ''}" style="${pos}" data-uid="${esc(info.userId)}" ${s.me.isHost && !isMe ? `data-player="${esc(info.userId)}" title="Host actions for ${esc(info.name)}"` : ''}>
       <div class="plate">
         ${fan}${extra}
@@ -695,14 +856,56 @@ function renderTable(s) {
   els.chips.innerHTML = chips;
   VC.paintVoice();
   els.center.innerHTML = centerHTML(s, R);
+  fitBoard();
   fitMark();
+}
+
+// The board never goes under a player: where a seat's box or cards would reach over it, the middle of
+// the table is drawn smaller (--bk), just enough to keep clear of them all. The boxes come from the
+// layout (in units), not from the page, so cards still flying in from the middle do not count.
+function fitBoard() {
+  const c = els.center;
+  const b = c && c.querySelector('.boards');
+  let t = 1;
+  // (upright the seats keep above and below the board instead, and a smaller board would be too small)
+  if (b && app.boxes && app.boxes.length && !app.portrait) {
+    const A = els.area.getBoundingClientRect();
+    const u = A.width / (app.portrait ? 64 : 100);
+    const B = b.getBoundingClientRect();
+    const K = c.getBoundingClientRect();
+    if (B.width && u) {
+      // Everything in the middle scales about the middle's own centre, which stays put; so take the
+      // board at full size relative to that centre, and find the largest scale that keeps it clear.
+      const bk = app.bk || 1;
+      const kx = (K.left + K.right) / 2, ky = (K.top + K.bottom) / 2;
+      const L0 = (B.left - kx) / bk, R0 = (B.right - kx) / bk, T0 = (B.top - ky) / bk, B0 = (B.bottom - ky) / bk;
+      const pad = 0.9 * u;
+      for (const r of app.boxes) {
+        const rl = r.l * u - pad + A.left - kx, rr = r.r * u + pad + A.left - kx;
+        const rt = r.t * u - pad + A.top - ky, rb = r.b * u + pad + A.top - ky;
+        if (rr <= L0 || rl >= R0 || rb <= T0 || rt >= B0) continue;
+        // how far the board can grow before it meets this box, across or up and down
+        const tx = rl >= 0 ? (R0 > 0 ? rl / R0 : 1) : rr <= 0 ? (L0 < 0 ? rr / L0 : 1) : 0;
+        const ty = rt >= 0 ? (B0 > 0 ? rt / B0 : 1) : rb <= 0 ? (T0 < 0 ? rb / T0 : 1) : 0;
+        t = Math.min(t, Math.max(tx, ty));
+      }
+    }
+  }
+  t = Math.max(0.6, Math.min(1, t));
+  if (Math.abs(t - (app.bk || 1)) > 0.012 || (t === 1 && app.bk && app.bk !== 1)) {
+    app.bk = t;
+    if (t >= 1) c.style.removeProperty('--bk');
+    else c.style.setProperty('--bk', t.toFixed(3));
+  }
 }
 
 // The Aquarium on the felt steps aside when boards or results reach down over it.
 function fitMark() {
   const mark = els.felt.querySelector('.felt-mark');
   if (!mark) return;
-  const c = els.center.firstElementChild ? els.center.getBoundingClientRect() : null;
+  const k = els.center.firstElementChild ? els.center.getBoundingClientRect() : null;
+  const low = els.center.querySelector(':scope > .below');
+  const c = k && { top: k.top, bottom: Math.max(k.bottom, low ? low.getBoundingClientRect().bottom : 0) };
   const m = mark.getBoundingClientRect();
   mark.classList.toggle('hide', !!c && c.bottom > m.top + 2 && c.top < m.bottom);
 }
@@ -757,6 +960,8 @@ function centerHTML(s, R) {
   let below = '';
   let above = '';
   if (h.phase === 'done' && h.results) {
+    // the pot's place is kept, so the board stays where it was as the results come in under it
+    above = '<div class="pot ghost" aria-hidden="true"><b>0</b></div>';
     below = `<div class="results">${resultLines(h).map((l) => `<div>${l}</div>`).join('')}</div><button type="button" class="replay-btn" data-replay="${h.number}">Replay hand #${h.number}</button>`;
     if (t.waiting && t.waiting !== 'Waiting for players') below += `<div class="waiting"><small>${esc(t.waiting)}</small></div>`;
   } else {
@@ -771,8 +976,9 @@ function centerHTML(s, R) {
   }
   const bombWhy = h.bombReason === 'manual' ? 'called by the host' : h.bombReason === 'every' ? 'scheduled' : h.bombReason === 'percent' ? 'random' : '';
   const bomb = h.isBomb ? `<span class="bomb" title="${esc(bombWhy)}">Bomb pot</span>` : '';
-  return `${above}<div class="boards k${Math.min(runs, 4)} b${bpr}${stacked ? ' stacked' : ''}${wins && bpr > 1 && runs > 1 ? ' capped' : ''}" style="grid-template-columns:${cols}">${grid}</div>${below}
-    <div class="meta">${bomb}<span>${esc(gameShort(h.gameType))} hand ${h.number}</span></div>`;
+  // what goes under the board hangs below it, so the board does not move when it comes and goes
+  return `${above}<div class="boards k${Math.min(runs, 4)} b${bpr}${stacked ? ' stacked' : ''}${wins && bpr > 1 && runs > 1 ? ' capped' : ''}" style="grid-template-columns:${cols}">${grid}</div>
+    <div class="below">${below}<div class="meta">${bomb}<span>${esc(gameShort(h.gameType))} hand ${h.number}</span></div></div>`;
 }
 
 function resultLines(h) {
@@ -853,25 +1059,40 @@ function voiceHTML(s) {
   return `<span class="vgroup on"><button class="btn vbtn ${v.muted ? 'muted' : 'live'}" data-voice="mute" aria-pressed="${v.muted}" title="${v.muted ? 'Your microphone is off' : 'Your microphone is on'}">${v.muted ? MIC_OFF : MIC}<span>${v.muted ? 'Unmute' : 'Mute'}</span></button><button class="btn ghost small" data-voice="leave">Leave voice</button>${who || '<span class="vwho">Nobody else in voice yet</span>'}</span>`;
 }
 
+// The voice box beside the chat on a wide screen, as PokerNow has it: Join, then the microphone.
+function pnVoiceHTML(s) {
+  const v = VC.voice;
+  const inVoice = s.voice || [];
+  const others = inVoice.filter((x) => x.userId !== s.me.userId);
+  const names = others.map((x) => x.name + (x.muted ? ' (muted)' : '')).join(', ');
+  if (!v.on) {
+    return `<button type="button" class="pv-join" data-voice="join" ${v.joining ? 'disabled' : ''} title="${others.length ? `In voice: ${esc(names)}` : 'Join voice chat'}"><span class="pv-l">${v.joining ? 'Joining' : 'Join'}</span><span class="pv-mic">${MIC}</span>${others.length ? `<span class="pv-n">${others.length} in</span>` : ''}</button>`;
+  }
+  return `<div class="pv-on"><span class="pv-l">Voice</span><button type="button" class="pv-mic ${v.muted ? 'muted' : 'live'}" data-voice="mute" aria-pressed="${v.muted}" title="${v.muted ? 'Your microphone is off: unmute' : 'Your microphone is on: mute'}">${v.muted ? MIC_OFF : MIC}</button><button type="button" class="pv-leave" data-voice="leave" title="${others.length ? `With ${esc(names)}` : 'Nobody else in voice yet'}">Leave</button></div>`;
+}
+
 function renderBottom(s) {
-  let my = voiceHTML(s);
+  if (wideChat()) els.pnvoice.innerHTML = s.table.status === 'ended' && !(s.voice || []).length && !VC.voice.on ? '' : pnVoiceHTML(s);
+  const wide = wideChat();
+  let my = wide ? '' : voiceHTML(s);
   if (s.me.seated) {
-    const out = s.me.sittingOut || s.me.sitOutNext;
-    my += out
-      ? `<button class="btn ${s.me.sittingOut ? 'primary' : ''}" data-my="back">I’m back</button>`
-      : '<button class="btn" data-my="sitout" title="Away from the next hand on. I’m back brings you back in.">Away</button>';
-    if (s.table.status !== 'ended') my += '<button class="btn" data-my="chips">Add chips</button>';
-    if (s.table.settings.straddle && s.table.status !== 'ended') my += `<button class="btn tog ${s.me.straddle ? 'on' : ''}" data-my="straddle" aria-pressed="${!!s.me.straddle}" title="Post a straddle, twice the big blind, whenever you are under the gun">Straddle</button>`;
-    if (s.me.leaveAt && !s.me.leaving) my += `<span class="status-line call30">Leaving in <b data-leave-at="${s.me.leaveAt}">--:--</b></span><button class="btn ghost" data-my="stay" title="Take back calling it">Stay</button>`;
-    else if (!s.me.leaving && s.table.status !== 'ended') my += '<button class="btn" data-my="call30" title="Tell the table you are leaving in 30 minutes. A pot over $1,000 starts the 30 minutes again.">Call 30</button>';
-    if (!s.me.leaving) my += '<button class="btn ghost" data-my="stand">Stand up</button>';
+    // on a wide screen these are in the menu down the left, as on PokerNow
+    if (!wide) {
+      const out = s.me.sittingOut || s.me.sitOutNext;
+      my += out
+        ? `<button class="btn ${s.me.sittingOut ? 'primary' : ''}" data-my="back">I’m back</button>`
+        : '<button class="btn" data-my="sitout" title="Away from the next hand on. I’m back brings you back in.">Away</button>';
+      if (s.table.status !== 'ended') my += '<button class="btn" data-my="chips">Add chips</button>';
+      if (s.table.settings.straddle && s.table.status !== 'ended') my += `<button class="btn tog ${s.me.straddle ? 'on' : ''}" data-my="straddle" aria-pressed="${!!s.me.straddle}" title="Post a straddle, twice the big blind, whenever you are under the gun">Straddle</button>`;
+      if (s.me.leaveAt && !s.me.leaving) my += `<span class="status-line call30">Leaving in <b data-leave-at="${s.me.leaveAt}">--:--</b></span><button class="btn ghost" data-my="stay" title="Take back calling it">Stay</button>`;
+      else if (!s.me.leaving && s.table.status !== 'ended') my += '<button class="btn" data-my="call30" title="Tell the table you are leaving in 30 minutes. A pot over 1,000 starts the 30 minutes again.">Call 30</button>';
+      if (!s.me.leaving) my += '<button class="btn ghost" data-my="stand">Stand up</button>';
+    }
     if (s.hand && s.hand.canShow) {
       const mine = s.hand.players.find((p) => p.id === s.me.userId);
-      const left = (mine?.hole || []).map((c, i) => [c, i]).filter(([, i]) => !(mine.showIdx || []).includes(i));
       const st72 = s.table.settings.sevenDeuce;
       const won = (s.hand.results?.payouts || []).some((w) => w.id === s.me.userId && w.amount > 0);
       if (st72 && won && mine?.hole?.length === 2 && mine.hole.map((c) => c && c[0]).sort().join('') === '27') my += `<span class="status-line s72-hint">Show both cards to collect the 7-2 bounty</span>`;
-      my += `<span class="show-pick" role="group" aria-label="Show your cards"><span class="sp-lbl">Show</span>${left.map(([c, i]) => `<button type="button" class="sp-card" data-show="${i}" title="Show this card">${cardHTML(c)}</button>`).join('')}<button type="button" class="btn small" data-show="all">${left.length === (mine?.hole || []).length ? 'All' : 'The rest'}</button></span>`;
     }
     if (s.me.requests.some((r) => r.type === 'chips')) my += '<span class="status-line">Chip request sent to the host</span>';
   } else if (s.me.requests.length) {
@@ -892,11 +1113,41 @@ function presetList(L) {
   return list;
 }
 
-// For a seated player the action bar keeps its size, so the table never shifts as the turn moves round:
-// on your turn it has the real buttons; otherwise the same places hold pre-clicks while you are in the hand
-// (Check/Fold, Check or Call, Call any), or sit greyed out. The sizing row keeps its room when unused.
-const GHOST_SIZING = `<div class="presets">${['Min', '½ pot', '¾ pot', 'Pot', 'All-in'].map((l) => `<button type="button" tabindex="-1">${l}</button>`).join('')}</div><input type="range" tabindex="-1" disabled><input type="number" tabindex="-1" disabled>`;
-const ghostSizing = (note = '') => `<div class="sizing ghost" aria-hidden="true">${GHOST_SIZING}</div>${note ? `<div class="ghost-note">${note}</div>` : ''}`;
+// The action bar, as PokerNow lays it out: CALL, RAISE, CHECK and FOLD, outlined, each with its key in
+// a gap in the top edge, and above them YOUR TURN with ACTIVATE EXTRA TIME. For a seated player it keeps
+// its size, so the table never shifts as the turn moves round: on your turn the buttons work; otherwise
+// the same places hold pre-clicks while you are in the hand (Call or Call any, Check, Check/Fold or Fold),
+// or sit greyed out. RAISE opens a panel over the table with a big slider, the bet sizes and the amount.
+const EXTRA = 10; // seconds each Activate extra time takes off the time bank (EXTRA_CHUNK on the server)
+function slot(cls, label, key, { act = null, pre = null, on = false, preAmount = null } = {}) {
+  const live = act || pre;
+  const attrs = act ? ` data-act="${act}"` : pre ? ` data-pre="${pre}" aria-pressed="${on}"${preAmount !== null ? ` data-pre-amount="${preAmount}"` : ''}` : ' disabled';
+  return `<button type="button" class="act ${cls}${pre ? ' pre' : ''}${on ? ' on' : ''}${live ? '' : ' off'}"${attrs}>${pre ? '<span class="box" aria-hidden="true"></span>' : ''}<span class="al">${label}</span><kbd aria-hidden="true">${key}</kbd></button>`;
+}
+const idleRow = () => slot('call', 'Call', 'C') + slot('raise', 'Raise', 'R') + slot('check', 'Check', 'K') + slot('fold', 'Fold', 'F');
+
+// YOUR TURN, the seconds left, and extra time from the time bank (T); empty but kept when it is not your turn
+function turnRow(s, mine) {
+  if (!mine) return '<div class="turn-row" aria-hidden="true"></div>';
+  const me = s.seats[s.me.seat];
+  const extra = Math.min(EXTRA, Math.floor(me?.timeBank || 0));
+  const v = VC.voice;
+  // on a phone the buttons under the table give way on your turn, so the mute comes along
+  const mute = v.on ? `<button type="button" class="btn act-mute ${v.muted ? 'muted' : 'live'}" data-voice="mute" aria-pressed="${v.muted}" title="${v.muted ? 'Unmute' : 'Mute'}">${v.muted ? MIC_OFF : MIC}</button>` : '';
+  return `<div class="turn-row">${mute}<span class="yt"><i aria-hidden="true"></i>Your turn <b data-actclock></b></span>${extra ? `<button type="button" class="xt" data-extra>Activate extra time (${extra}s)<kbd aria-hidden="true">T</kbd></button>` : ''}</div>`;
+}
+
+// the raise panel: what to raise to, the bet sizes, and a big slider
+function raisePanel(L) {
+  const to = Math.max(L.minTo, Math.min(L.maxTo, app.raiseTo ?? L.minTo));
+  app.raiseTo = to;
+  return `<div class="raise-panel" role="group" aria-label="${L.isBet ? 'Bet' : 'Raise'}">
+    <div class="rp-top"><span class="rp-what">${L.isBet ? 'Bet' : 'Raise to'}</span><input type="number" inputmode="decimal" step="${app.dec ? '0.01' : '1'}" value="${inp(to)}" data-amount aria-label="Amount"></div>
+    <div class="rp-sizes">${presetList(L).map((p) => `<button type="button" data-to="${p.to}">${p.label}</button>`).join('')}</div>
+    <input type="range" class="big-range" min="${L.minTo}" max="${L.maxTo}" step="1" value="${to}" data-range aria-label="Amount">
+    <div class="rp-foot"><button type="button" class="btn ghost" data-raise-back>Back</button><button type="button" class="act raise go" data-act="raise"><span class="al"><span data-raise-label>${raiseLabel(L, to)}</span> <span data-raise-amt>${fmt(to)}</span></span><kbd aria-hidden="true">Enter</kbd></button></div>
+  </div>`;
+}
 
 // A pre-click is for the betting round it was picked in, and is dropped once it no longer fits.
 const preKey = (h) => `${h.number}|${h.street}`;
@@ -910,6 +1161,7 @@ function firePre(h, L) {
   else if (pre.kind === 'call') type = L.canCheck ? 'check' : L.toCall === pre.amount ? 'call' : null;
   else if (pre.kind === 'callany') type = L.canCheck ? 'check' : 'call';
   if (!type) return false;
+  soundMine(type, L);
   emit('action', { type }).then((ack) => { if (!ack.ok) { app.actionKey = null; render(); } });
   return true;
 }
@@ -922,36 +1174,35 @@ function renderActions(s) {
   document.body.classList.remove('rit-open');
   if (L) {
     const v = VC.voice;
-    const key = `${h.number}|${h.street}|${L.currentBet}|${L.toCall}|${L.minTo}|${L.maxTo}|${L.canRaise}|${v.on ? (v.muted ? 'm' : 'u') : ''}`;
+    const bank = Math.floor(s.seats[s.me.seat]?.timeBank || 0);
+    const key = `${h.number}|${h.street}|${L.currentBet}|${L.toCall}|${L.minTo}|${L.maxTo}|${L.canRaise}|${v.on ? (v.muted ? 'm' : 'u') : ''}|${bank}|${app.raiseOpen ? 'R' : ''}`;
     if (key === app.actionKey) return;
-    if (firePre(h, L)) {
+    if (!app.raiseOpen && firePre(h, L)) {
       app.actionKey = key;
       $$('.act', els.actions).forEach((b) => { b.disabled = true; });
       return;
     }
     app.actionKey = key;
-    const call = L.canCheck ? '<span>Check</span>' : `<span>${L.toCall >= L.stack ? 'Call all-in' : 'Call'}</span><span class="amt">${fmt(L.toCall)}</span>`;
-    let sizing = ghostSizing();
-    if (L.canRaise && L.minTo < L.maxTo) {
-      sizing = `<div class="sizing">
-        <div class="presets">${presetList(L).map((p) => `<button type="button" data-to="${p.to}">${p.label}</button>`).join('')}</div>
-        <input type="range" min="${L.minTo}" max="${L.maxTo}" step="1" value="${L.minTo}" data-range aria-label="Raise amount">
-        <input type="number" inputmode="decimal" step="${app.dec ? '0.01' : '1'}" value="${inp(L.minTo)}" data-amount aria-label="Raise to amount">
-      </div>`;
+    const allIn = L.toCall >= L.stack;
+    const call = L.canCheck ? slot('call', 'Call', 'C') : slot('call', `${allIn ? 'All in' : 'Call'} <span class="amt">${fmt(L.toCall)}</span>`, 'C', { act: 'call' });
+    // one size only: the raise is all in, straight from the button
+    const onlyAllIn = L.canRaise && L.minTo >= L.maxTo;
+    const raise = !L.canRaise ? slot('raise', L.isBet ? 'Bet' : 'Raise', 'R')
+      : onlyAllIn ? slot('raise', `All in <span class="amt">${fmt(L.maxTo)}</span>`, 'R', { act: 'raise' })
+        : slot('raise', L.isBet ? 'Bet' : 'Raise', 'R', { act: 'open-raise' });
+    if (onlyAllIn) app.raiseTo = L.maxTo;
+    els.actions.innerHTML = `${turnRow(s, true)}<div class="act-row">${call}${raise}${slot('check', 'Check', 'K', L.canCheck ? { act: 'check' } : {})}${slot('fold', 'Fold', 'F', { act: 'fold' })}</div>${app.raiseOpen && L.canRaise && !onlyAllIn ? raisePanel(L) : ''}`;
+    if (app.raiseOpen) {
+      fillRange($('[data-range]', els.actions));
+      const a = $('[data-amount]', els.actions);
+      if (a && !window.matchMedia('(pointer: coarse)').matches) { a.focus(); a.select(); }
     }
-    // on a phone the buttons under the table give way on your turn, so the mute comes along into the row
-    const mute = v.on ? `<button type="button" class="btn act-mute ${v.muted ? 'muted' : 'live'}" data-voice="mute" aria-pressed="${v.muted}" title="${v.muted ? 'Unmute' : 'Mute'}">${v.muted ? MIC_OFF : MIC}</button>` : '';
-    els.actions.innerHTML = `${sizing}<div class="act-row">${mute}
-      <span class="act-clock" data-actclock></span>
-      <button class="act fold" data-act="fold"><span>Fold</span><kbd>F</kbd></button>
-      <button class="act call" data-act="${L.canCheck ? 'check' : 'call'}">${call}<kbd>${L.canCheck ? 'K' : 'C'}</kbd></button>
-      ${L.canRaise ? `<button class="act raise" data-act="raise"><span data-raise-label>${raiseLabel(L, L.minTo)}</span><span class="amt" data-raise-amt>${fmt(L.minTo)}</span><kbd>R</kbd></button>` : '<button class="act raise" disabled><span>Raise</span></button>'}
-    </div>`;
-    app.raiseTo = L.minTo;
     tick();
     return;
   }
   app.actionKey = null;
+  app.raiseOpen = false;
+  app.raiseTo = null;
   // The vote stays open while it lasts, so a pick can be changed to meet the others'. What the others
   // picked shows on the buttons themselves: their number gets a faint ring and their name, and the
   // numbers nobody else picked are dimmed, so meeting them is one tap.
@@ -978,7 +1229,7 @@ function renderActions(s) {
     }).join('');
     const box = `<div class="rit-box${seated ? ' over' : ''}" role="group" aria-label="Pick how many times to run it"><p>Run it how many times? <span data-ritclock></span><small class="rit-why">It runs more than once only if everyone picks the same number. Picking once settles it, and so does time running out before you agree.</small>${notes.length ? `<small class="rit-picks">${esc(notes.join(' '))}</small>` : ''}</p>${buttons}</div>`;
     // the vote sits over the bar's usual places, which keep their room underneath it
-    els.actions.innerHTML = seated ? `${ghostSizing()}<div class="act-row ghost" aria-hidden="true">${idleRow()}</div>${box}` : box;
+    els.actions.innerHTML = seated ? `${turnRow(s, false)}<div class="act-row ghost" aria-hidden="true">${idleRow()}</div>${box}` : box;
     if (seated) document.body.classList.add('rit-open');
     tick();
     return;
@@ -1000,24 +1251,47 @@ function renderActions(s) {
   }
   const mine = h && h.players.find((p) => p.id === s.me.userId);
   const live = !!(h && h.phase === 'betting' && mine && !mine.folded && !mine.allIn);
+  // once the hand is over, the places hold the panel to show your cards
+  const panel = h && h.canShow ? showPanel(s) : '';
+  if (panel) {
+    app.pre = null;
+    els.actions.innerHTML = `${turnRow(s, false)}<div class="act-row ghost" aria-hidden="true">${idleRow()}</div>${panel}`;
+    return;
+  }
+  // away, and out of the hand: one big I'm back, as on PokerNow
+  if (s.me.sittingOut && !live && !(mine && !mine.folded && h && h.phase !== 'done')) {
+    app.pre = null;
+    els.actions.innerHTML = `${turnRow(s, false)}${status ? `<div class="ghost-note">${status}</div>` : ''}<div class="act-row"><button type="button" class="act back-big" data-my="back">I’m back</button></div>`;
+    if (status) tick();
+    return;
+  }
   let row = idleRow();
   if (live) {
     const toCall = Math.max(0, Math.min((h.currentBet || 0) - (mine.bet || 0), mine.stack));
     const pre = app.pre;
     if (pre && (pre.key !== preKey(h) || (pre.kind === 'check' && toCall > 0) || (pre.kind === 'call' && toCall !== pre.amount))) app.pre = null;
     const on = (k) => !!(app.pre && app.pre.kind === k);
-    const btn = (cls, kind, label, extra = '') => `<button type="button" class="act pre ${cls}${on(kind) ? ' on' : ''}" data-pre="${kind}" aria-pressed="${on(kind)}"${extra}><span class="box" aria-hidden="true"></span><span class="pre-l">${label}</span></button>`;
-    row = btn('fold', 'checkfold', toCall > 0 ? 'Fold' : 'Check/Fold')
-      + (toCall > 0 ? btn('call', 'call', `Call <span class="amt">${fmt(toCall)}</span>`, ` data-amount="${toCall}"`) : btn('call', 'check', 'Check'))
-      + btn('raise', 'callany', 'Call any');
+    row = (toCall > 0 ? slot('call', `Call <span class="amt">${fmt(toCall)}</span>`, 'C', { pre: 'call', on: on('call'), preAmount: toCall }) : slot('call', 'Call any', 'C', { pre: 'callany', on: on('callany') }))
+      + slot('raise', 'Raise', 'R')
+      + (toCall > 0 ? slot('check', 'Check', 'K') : slot('check', 'Check', 'K', { pre: 'check', on: on('check') }))
+      + slot('fold', toCall > 0 ? 'Fold' : 'Check/<wbr>Fold', 'F', { pre: 'checkfold', on: on('checkfold') });
   } else app.pre = null;
-  els.actions.innerHTML = `${ghostSizing(status)}<div class="act-row${live ? ' pre-row' : ''}"><span class="act-clock"></span>${row}</div>`;
+  els.actions.innerHTML = `${turnRow(s, false)}${status ? `<div class="ghost-note">${status}</div>` : ''}<div class="act-row${live ? ' pre-row' : ''}">${row}</div>`;
   if (status) tick();
 }
 
-// the three places, greyed out, while you have no move to make
-function idleRow() {
-  return '<button class="act fold" disabled><span>Fold</span></button><button class="act call" disabled><span>Check</span></button><button class="act raise" disabled><span>Raise</span></button>';
+// After the hand, as on PokerNow: one green panel to show all your cards (S) or one at a time (1 to 5)
+const pipSVG = (su) => `<svg class="sp-su" aria-hidden="true" focusable="false"><use href="#su-${su}"/></svg>`;
+function showPanel(s) {
+  const mine = s.hand.players.find((p) => p.id === s.me.userId);
+  const hole = mine?.hole || [];
+  const shown = new Set(mine?.showIdx || []);
+  const left = hole.filter((c, i) => c && !shown.has(i)).length;
+  if (!left) return '';
+  const one = (c, i) => (!c || shown.has(i)
+    ? `<span class="sp-one done" title="Shown">${c ? `${esc(rankLabel(c))}${pipSVG(c[1])}` : ''}</span>`
+    : `<button type="button" class="sp-one" data-show="${i}" title="Show this card" aria-label="Show ${esc(rankLabel(c))}${esc(SUIT[c[1]])}">${esc(rankLabel(c))}${pipSVG(c[1])}<kbd aria-hidden="true">${i + 1}</kbd></button>`);
+  return `<div class="show-panel n${hole.length}" role="group" aria-label="Show your cards"><button type="button" class="sp-all" data-show="all">${left === hole.length ? 'Show all cards' : 'Show the rest'}<kbd aria-hidden="true">S</kbd></button><div class="sp-row">${hole.map(one).join('')}</div></div>`;
 }
 
 // picking a pre-click, or picking it again to take it back
@@ -1025,9 +1299,25 @@ function togglePre(btn) {
   const h = app.state && app.state.hand;
   if (!h) return;
   const kind = btn.dataset.pre;
-  const amount = btn.dataset.amount ? Number(btn.dataset.amount) : null;
+  const amount = btn.dataset.preAmount ? Number(btn.dataset.preAmount) : null;
   const same = app.pre && app.pre.kind === kind && app.pre.amount === amount;
   app.pre = same ? null : { kind, amount, key: preKey(h) };
+  renderActions(app.state);
+}
+
+// the raise panel opens from RAISE (or R), closes with Back (or Escape) and after acting
+function openRaise() {
+  const L = app.state?.hand?.legal;
+  if (!L || !L.canRaise) return;
+  if (L.minTo >= L.maxTo) return act('raise');
+  app.raiseOpen = true;
+  app.actionKey = null;
+  renderActions(app.state);
+}
+function closeRaise() {
+  if (!app.raiseOpen) return;
+  app.raiseOpen = false;
+  app.actionKey = null;
   renderActions(app.state);
 }
 
@@ -1042,6 +1332,13 @@ function raiseLabel(L, to) {
   return L.isBet ? 'Bet' : 'Raise to';
 }
 
+// the slider's track is green up to the amount
+function fillRange(range) {
+  if (!range) return;
+  const lo = Number(range.min), hi = Number(range.max);
+  range.style.setProperty('--fill', `${hi > lo ? ((Number(range.value) - lo) / (hi - lo)) * 100 : 100}%`);
+}
+
 function setRaise(to, from) {
   const L = app.state?.hand?.legal;
   if (!L) return;
@@ -1051,6 +1348,7 @@ function setRaise(to, from) {
   const range = $('[data-range]', els.actions);
   const amount = $('[data-amount]', els.actions);
   if (range && from !== 'range') range.value = to;
+  fillRange(range);
   if (amount && from !== 'amount') amount.value = inp(to);
   const lbl = $('[data-raise-label]', els.actions);
   const amt = $('[data-raise-amt]', els.actions);
@@ -1070,8 +1368,12 @@ async function act(type) {
     if (amount) { const v = parse(amount.value); if (Number.isFinite(v)) to = v; }
     payload = { type: 'raise', to: Math.max(L.minTo, Math.min(L.maxTo, to)) };
   }
+  soundMine(payload.type, L, payload.to);
   const ack = await emit('action', payload);
-  if (!ack.ok) { buttons.forEach((b) => { b.disabled = false; }); app.actionKey = null; render(); }
+  if (ack.ok) { app.raiseOpen = false; return; }
+  buttons.forEach((b) => { b.disabled = false; });
+  app.actionKey = null;
+  render();
 }
 
 // ---------- clock ----------
@@ -1086,7 +1388,7 @@ function tick() {
   const ac = document.querySelector('[data-actclock]');
   if (ac && h && h.turn) {
     const left = h.turn.deadline - t;
-    ac.textContent = `${h.turn.usingBank ? 'Bank ' : ''}${Math.max(0, Math.ceil(left / 1000))}s`;
+    ac.textContent = `${Math.max(0, Math.ceil(left / 1000))}s${h.turn.usingBank ? ' with extra time' : ''}`;
     ac.classList.toggle('low', left < 8000);
   }
   for (const rc of document.querySelectorAll('[data-ritclock]')) {
@@ -1129,6 +1431,77 @@ function renderLog() {
 }
 
 const myId = () => app.state?.me?.userId || app.me?.id;
+
+// ---------- the chat bottom left, on a wide screen ----------
+const WIDE_CHAT = window.matchMedia('(min-width: 1100px) and (min-height: 600px)');
+const wideChat = () => WIDE_CHAT.matches;
+function chatMode() {
+  const wide = wideChat();
+  document.body.classList.toggle('pn', wide);
+  // the side panel: the log on a wide screen (shut until opened), the chat and log when narrower
+  const pref = localStorage.getItem(wide ? 'fd:logpanel' : 'fd:chatpanel');
+  els.drawer.classList.toggle('collapsed', wide ? pref !== 'open' : pref === 'closed' || (pref === null && window.innerWidth < 900));
+  app.logOnlyChat = wide ? false : localStorage.getItem('fd:logtab') !== 'log';
+  $$('[data-logfilter]').forEach((b) => b.classList.toggle('on', (b.dataset.logfilter === 'chat') === app.logOnlyChat));
+  els.log.classList.toggle('chat-view', app.logOnlyChat);
+  if (wide) { app.unread = 0; paintUnread(); }
+  renderLog();
+  renderPnChat();
+}
+function toggleLog() {
+  els.drawer.classList.toggle('collapsed');
+  const shut = els.drawer.classList.contains('collapsed');
+  localStorage.setItem(wideChat() ? 'fd:logpanel' : 'fd:chatpanel', shut ? 'closed' : 'open');
+  if (!shut) { app.unread = 0; paintUnread(); els.log.scrollTop = els.log.scrollHeight; }
+  resize();
+  render();
+}
+const pnLine = (e) => {
+  const mine = !!e.userId && e.userId === myId();
+  return `<div class="pm${mine ? ' mine' : ''}${e.spectator ? ' spec' : ''}"><b>${esc(mine ? 'You' : e.name)}</b> <span>${esc(e.text)}</span></div>`;
+};
+const PN_EMPTY = '<p class="pn-empty">It’s a bit quiet here.<br>Click on the balloon and send a message!</p>';
+function renderPnChat() {
+  if (!els.pnmsgs) return;
+  const msgs = (app.logs || []).filter((e) => e.kind === 'chat').slice(-120);
+  els.pnmsgs.innerHTML = msgs.length ? msgs.map(pnLine).join('') : PN_EMPTY;
+  els.pnmsgs.scrollTop = els.pnmsgs.scrollHeight;
+}
+function appendPn(entries) {
+  const msgs = entries.filter((e) => e.kind === 'chat');
+  if (!msgs.length || !els.pnmsgs) return;
+  const near = els.pnmsgs.scrollHeight - els.pnmsgs.scrollTop - els.pnmsgs.clientHeight < 60;
+  if (els.pnmsgs.querySelector('.pn-empty')) els.pnmsgs.innerHTML = '';
+  els.pnmsgs.insertAdjacentHTML('beforeend', msgs.map(pnLine).join(''));
+  if (near || msgs.some((e) => e.userId === myId())) els.pnmsgs.scrollTop = els.pnmsgs.scrollHeight;
+}
+function openPnInput() {
+  els.pnform.hidden = false;
+  els.pnbox.classList.add('typing');
+  els.pninput.focus();
+}
+function closePnInput() {
+  els.pnform.hidden = true;
+  els.pnbox.classList.remove('typing');
+}
+function bindPnChat() {
+  $('#pnballoon').addEventListener('click', () => (els.pnform.hidden ? openPnInput() : els.pninput.focus()));
+  els.pnmore.addEventListener('click', () => {
+    const tall = els.pnbox.classList.toggle('tall');
+    els.pnmore.setAttribute('aria-expanded', String(tall));
+    els.pnmore.setAttribute('aria-label', tall ? 'Show less of the chat' : 'Show more of the chat');
+    els.pnmsgs.scrollTop = els.pnmsgs.scrollHeight;
+  });
+  els.pnform.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = els.pninput.value.trim();
+    if (!text) return closePnInput();
+    const ack = await emit('chat', { text });
+    if (ack.ok) els.pninput.value = '';
+  });
+  els.pninput.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); els.pninput.value = ''; closePnInput(); els.pninput.blur(); } });
+  els.pninput.addEventListener('blur', () => { setTimeout(() => { if (!els.pninput.value.trim() && document.activeElement !== els.pninput) closePnInput(); }, 150); });
+}
 
 // unread chat from the others, on the Chat button and the phone's chat button, while the chat is shut
 function paintUnread() {
@@ -1182,6 +1555,11 @@ function bindEvents() {
       else if (k === 'cancel') emit('seat:cancel');
       return;
     }
+    if (e.target.closest('[data-sound]')) {
+      const on = !soundOn();
+      savePrefs({ sound: on, tableSounds: on });
+      return render();
+    }
     const host = e.target.closest('[data-host]');
     if (host) {
       if (host.dataset.host === 'start') emit('host:start');
@@ -1191,15 +1569,7 @@ function bindEvents() {
     const open = e.target.closest('[data-open]');
     if (open) {
       const k = open.dataset.open;
-      if (k === 'log') {
-        els.drawer.classList.toggle('collapsed');
-        const shut = els.drawer.classList.contains('collapsed');
-        localStorage.setItem('fd:chatpanel', shut ? 'closed' : 'open');
-        if (!shut) { app.unread = 0; paintUnread(); els.log.scrollTop = els.log.scrollHeight; }
-        resize();
-        render();
-        return;
-      }
+      if (k === 'log') return toggleLog();
       if (k === 'clock') return D.hostDialog({ tab: 'time' });
       ({ options: D.hostDialog, ledger: D.ledgerDialog, stats: S.statsDialog, hands: D.handsDialog, look: D.lookDialog, fair: D.fairDialog, requests: D.requestsDialog, menu: D.menuDialog })[k]?.();
       return;
@@ -1212,7 +1582,10 @@ function bindEvents() {
     const player = e.target.closest('[data-player]');
     if (player) return D.playerDialog(player.dataset.player);
     const a = e.target.closest('[data-act]');
-    if (a && els.actions.contains(a)) return act(a.dataset.act);
+    if (a && els.actions.contains(a)) return a.dataset.act === 'open-raise' ? openRaise() : act(a.dataset.act);
+    if (e.target.closest('[data-raise-back]')) return closeRaise();
+    const xt = e.target.closest('[data-extra]');
+    if (xt) { xt.disabled = true; return emit('timebank'); }
     const pre = e.target.closest('[data-pre]');
     if (pre && els.actions.contains(pre)) return togglePre(pre);
     const pr = e.target.closest('[data-to]');
@@ -1223,7 +1596,7 @@ function bindEvents() {
       return emit('show', { cards: [Number(sc.dataset.showCard)] });
     }
     const sh = e.target.closest('[data-show]');
-    if (sh && els.mybar.contains(sh)) {
+    if (sh && (els.mybar.contains(sh) || els.actions.contains(sh))) {
       sh.disabled = true;
       return emit('show', sh.dataset.show === 'all' ? {} : { cards: [Number(sh.dataset.show)] });
     }
@@ -1249,7 +1622,7 @@ function bindEvents() {
       if (Number.isFinite(v) && L) {
         app.raiseTo = Math.max(L.minTo, Math.min(L.maxTo, v));
         const range = $('[data-range]', els.actions);
-        if (range) range.value = app.raiseTo;
+        if (range) { range.value = app.raiseTo; fillRange(range); }
         const lbl = $('[data-raise-label]', els.actions);
         const amt = $('[data-raise-amt]', els.actions);
         if (lbl) lbl.textContent = raiseLabel(L, app.raiseTo);
@@ -1263,20 +1636,38 @@ function bindEvents() {
     const inAmount = e.target.matches && e.target.matches('[data-amount]');
     if (inAmount) {
       if (e.key === 'Enter') { e.preventDefault(); act('raise'); }
+      if (e.key === 'Escape') { e.preventDefault(); closeRaise(); }
       if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && L) {
         e.preventDefault();
         setRaise((app.raiseTo ?? L.minTo) + (e.key === 'ArrowUp' ? 1 : -1) * L.bigBlind);
       }
       return;
     }
+    // on the slider or a bet size in the raise panel, Enter raises and Escape closes it, as in the amount
+    if (e.target.closest && e.target.closest('.raise-panel')) {
+      if (e.key === 'Escape') { e.preventDefault(); closeRaise(); return; }
+      if (e.key === 'Enter' && e.target.matches('[data-range]')) { e.preventDefault(); act('raise'); return; }
+    }
     if (e.target.closest && e.target.closest('input, textarea, select')) return;
-    if (!L || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key.toLowerCase();
+    if (wideChat() && (k === 'm' || k === 'l')) { e.preventDefault(); if (k === 'm') openPnInput(); else toggleLog(); return; }
+    const sp = $('.show-panel', els.actions);
+    if (sp && (k === 's' || /^[1-5]$/.test(k))) {
+      const b = $(k === 's' ? '[data-show="all"]' : `[data-show="${Number(k) - 1}"]`, sp);
+      if (b && !b.disabled) { e.preventDefault(); b.click(); }
+      return;
+    }
+    if (!L) return;
+    if (k === 'escape') return closeRaise();
     if (k === 'f') act('fold');
-    else if (k === 'c' || k === 'k') act(L.canCheck ? 'check' : 'call');
+    else if (k === 'c' && !L.canCheck) act('call');
+    else if (k === 'k' && L.canCheck) act('check');
+    else if (k === 'c' && L.canCheck) act('check');
+    else if (k === 't') { const xt = $('[data-extra]', els.actions); if (xt) { xt.disabled = true; emit('timebank'); } }
     else if (k === 'r' && L.canRaise) {
       const amount = $('[data-amount]', els.actions);
-      if (amount) { amount.focus(); amount.select(); } else act('raise');
+      if (amount) { amount.focus(); amount.select(); } else openRaise();
     }
   });
   els.chat.addEventListener('submit', async (e) => {

@@ -3,7 +3,7 @@ const PKEY = 'fd:prefs';
 
 export const DEFAULT_PREFS = {
   deck: 'big',        // big | classic
-  colors: 'four',     // four: spades black, hearts red, diamonds blue, clubs green; two: red and black
+  colors: 'two',      // two: red and black, as on PokerNow; four: spades black, hearts red, diamonds blue, clubs green
   back: 'oxblood',    // oxblood | navy | forest | slate | brass
   felt: '',           // '' = use the table's felt color
   sound: true,         // a call when it is my turn
@@ -37,6 +37,9 @@ function load() {
     const saved = JSON.parse(localStorage.getItem(PKEY) || '{}');
     // the old two-colour default is replaced by a choice that starts at four colours
     delete saved.fourColor;
+    // then two colours became the default again, as on PokerNow: every browser starts there once,
+    // because the whole set used to be saved whenever any one choice changed; a later pick of four stays
+    if (!saved.deck2) { delete saved.colors; saved.deck2 = true; }
     // the run-it vote needs agreement now: always picking the most becomes going with the others
     if (saved.autoRun === 'max') saved.autoRun = 'any';
     return { ...DEFAULT_PREFS, ...saved };

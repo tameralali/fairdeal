@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#262626">
   <title>The Aquarium</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="preload" href="/fonts/lato-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/mulish-latin-800-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/fonts/abril-fatface-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/css/base.css">
   <link rel="stylesheet" href="/css/table.css">
@@ -24,14 +24,35 @@
       <button type="button" class="chat-fab" id="chatfab" data-open="log" aria-label="Chat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.6c-.5.4-1.3.1-1.3-.6V16A2.5 2.5 0 0 1 4 13.5z" fill="currentColor"/></svg><span class="unread" hidden></span></button>
     </main>
     <div class="bottom">
+      <!-- on a wide screen the chat sits bottom left, as on PokerNow: the log and ledger button above it,
+           the messages, the balloon to write one, and the voice box beside it -->
+      <div class="pn-chat" id="pnchat">
+        <button type="button" class="pn-log" data-open="log" title="The table log, with the ledger (L)"><span>Log / Ledger</span><kbd>L</kbd></button>
+        <div class="pn-name" id="pnname"></div>
+        <div class="pn-box" id="pnbox">
+          <div class="pn-msgs" id="pnmsgs" role="log" aria-live="polite" aria-label="Chat"></div>
+          <form class="pn-form" id="pnform" autocomplete="off" hidden>
+            <input id="pninput" maxlength="300" placeholder="Say something to the table" aria-label="Chat message" enterkeyhint="send">
+            <button class="btn small primary" type="submit">Send</button>
+          </form>
+          <button type="button" class="pn-more" id="pnmore" aria-label="Show more of the chat" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12.5l6-5.5 6 5.5M6 18l6-5.5 6 5.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <div class="pn-side">
+            <kbd>M</kbd>
+            <button type="button" class="pn-balloon" id="pnballoon" aria-label="Send a message (M)"><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M24 7C13 7 4.5 13.8 4.5 22.3c0 4.6 2.5 8.7 6.5 11.5-.3 2.6-1.6 5-3.7 7 4.4-.1 8.1-1.7 10.6-3.9 1.9.5 4 .7 6.1.7 11 0 19.5-6.8 19.5-15.3S35 7 24 7z" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linejoin="round"/><circle cx="15.5" cy="22.3" r="2.9" fill="currentColor"/><circle cx="24" cy="22.3" r="2.9" fill="currentColor"/><circle cx="32.5" cy="22.3" r="2.9" fill="currentColor"/></svg></button>
+          </div>
+        </div>
+        <div class="pn-voice" id="pnvoice"></div>
+      </div>
       <div class="mybar" id="mybar"></div>
       <div class="actionbar" id="actions" aria-live="polite"></div>
     </div>
     <aside class="drawer" id="drawer" aria-label="Chat and table log">
       <div class="drawer-head">
         <div class="seg" role="group" aria-label="Show"><button type="button" class="on" data-logfilter="chat">Chat</button><button type="button" data-logfilter="all">Log</button></div>
+        <b class="pn-only drawer-title">Log</b>
         <span class="grow"></span>
-        <button class="btn ghost small" data-open="log" aria-label="Hide chat">Hide</button>
+        <button class="btn small pn-only" data-open="ledger">Ledger</button>
+        <button class="btn ghost small" data-open="log" aria-label="Hide">Hide</button>
       </div>
       <div class="log" id="log" role="log"></div>
       <form class="chatbox" id="chat" autocomplete="off">

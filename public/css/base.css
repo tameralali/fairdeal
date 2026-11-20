@@ -1,6 +1,11 @@
 @font-face { font-family: 'Lato'; font-weight: 400; font-display: swap; src: url('/fonts/lato-latin-400-normal.woff2') format('woff2'); }
 @font-face { font-family: 'Lato'; font-weight: 700; font-display: swap; src: url('/fonts/lato-latin-700-normal.woff2') format('woff2'); }
 @font-face { font-family: 'Lato'; font-weight: 900; font-display: swap; src: url('/fonts/lato-latin-900-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Mulish'; font-weight: 400; font-display: swap; src: url('/fonts/mulish-latin-400-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Mulish'; font-weight: 600; font-display: swap; src: url('/fonts/mulish-latin-600-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Mulish'; font-weight: 700; font-display: swap; src: url('/fonts/mulish-latin-700-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Mulish'; font-weight: 800; font-display: swap; src: url('/fonts/mulish-latin-800-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Mulish'; font-weight: 900; font-display: swap; src: url('/fonts/mulish-latin-900-normal.woff2') format('woff2'); }
 @font-face { font-family: 'Abril Fatface'; font-weight: 400; font-display: swap; src: url('/fonts/abril-fatface-latin-400-normal.woff2') format('woff2'); }
 
 /* Charcoal room, a green felt, white cards. Colour carries meaning: violet is the interface
@@ -23,7 +28,7 @@
   --brass-dim: #4d54a8;
   --chip: #edfca6;
   --chip-ink: #141414;
-  --made: #ce6d5d;
+  --made: #e5625d;
   --text: #f3f3f3;
   --muted: #a9a9a9;
   --faint: #7f7f7f;
@@ -33,8 +38,8 @@
   --tint: rgb(95 103 204 / .09);
   --tint-strong: rgb(166 171 242 / .45);
   --focus: rgb(95 103 204 / .28);
-  --ui: 'Lato', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --num: 'Lato', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --ui: 'Mulish', 'Lato', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --num: 'Mulish', 'Lato', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   /* the card faces and the name of the club */
   --serif: 'Abril Fatface', 'Bodoni 72', Didot, Georgia, 'Times New Roman', serif;
   --mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;

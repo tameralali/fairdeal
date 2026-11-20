@@ -139,7 +139,8 @@ test('deal reconstruction and full verification', async () => {
   assert.equal((await verifyHandRecord(bad2, wc)).ok, false);
 });
 
-test('double board run twice: a played hand record passes every check, a moved card fails', async () => {
+// a double board runs once now, but records of hands from before, run twice, must still pass every check
+test('double board run twice (an older hand record): every check passes, a moved card fails', async () => {
   const { Hand } = await import('../server/engine/hand.js');
   const wc = webCryptoAdapter();
   const serverSeed = newServerSeed();
@@ -147,7 +148,7 @@ test('double board run twice: a played hand record passes every check, a moved c
   const entropy = buildEntropy('T2', 3, seeds);
   const deck = deriveDeckSync(hmacSync, serverSeed, entropy);
   const h = new Hand({
-    number: 3, gameType: 'plo4', smallBlind: 5, bigBlind: 10, buttonSeat: 0, deck, ritMax: 2, doubleBoard: true,
+    number: 3, gameType: 'plo4', smallBlind: 5, bigBlind: 10, buttonSeat: 0, deck, ritMax: 2, doubleBoard: true, legacyDoubleRuns: true,
     players: [{ id: 'a', seat: 0, name: 'A', stack: 500 }, { id: 'b', seat: 1, name: 'B', stack: 500 }, { id: 'c', seat: 2, name: 'C', stack: 500 }],
   });
   h.start();

@@ -573,7 +573,7 @@ test('the club: one club, chips, credit limits, buy-ins draw from balance, cash-
   await until(() => (bots[0].state?.table.handNumber || 0) >= 12, 90000, 'club hands');
   const t = srv.tables.get(tableId);
   assert.ok(t.getRecords().some((x) => x.isBomb), 'every-N bomb pots');
-  assert.match(t.loadLog().map((e) => e.text).join('\n'), /posts a small blind of \$0\.25/, 'the log shows dollars and cents');
+  assert.match(t.loadLog().map((e) => e.text).join('\n'), /posts a small blind of 0\.25/, 'the log shows dollars and cents, without the dollar sign');
   // bots keep playing so the hand in progress can finish; the game ends right after it
   await bots[0].emit('host:end', {});
   await until(() => bots[0].state?.table.status === 'ended', 60000, 'club table end');

@@ -37,9 +37,10 @@ export function emit(event, payload = {}, { quiet = false } = {}) {
 }
 
 // at the table amounts keep their cents, as on a chip count: $25.00, $0.50, $1,216.90
-export const fmt = (a) => fmtMoney(a, app.dec, 'always');
+// at the table amounts show without the dollar sign, as on PokerNow
+export const fmt = (a) => fmtMoney(a, app.dec, 'always', '');
 // in ledgers and lists the cents stay ($25.00) so amounts line up
-export const fmtC = (a) => fmtMoney(a, app.dec, 'always');
+export const fmtC = (a) => fmtMoney(a, app.dec, 'always', '');
 export const parse = (v) => parseMoney(v, app.dec);
 export const inp = (a) => moneyInput(a, app.dec);
 export const gameShort = (g) => GAME_TYPES[g]?.short || g;

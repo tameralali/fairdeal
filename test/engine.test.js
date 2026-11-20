@@ -26,7 +26,7 @@ function mk(players, opts = {}) {
   return new Hand({
     number: 1, gameType: opts.gameType || 'nlh', smallBlind: opts.sb ?? 5, bigBlind: opts.bb ?? 10,
     buttonSeat: opts.button ?? players[0].seat, deck: opts.deck || CANONICAL_DECK.slice(),
-    bombAnte: opts.bombAnte || 0, ritMax: opts.ritMax || 1, doubleBoard: !!opts.doubleBoard,
+    bombAnte: opts.bombAnte || 0, ritMax: opts.ritMax || 1, doubleBoard: !!opts.doubleBoard, legacyDoubleRuns: !!opts.legacyDoubleRuns,
     players: players.map((p, i) => ({ id: p.id || 'p' + p.seat, seat: p.seat, name: p.name || 'P' + p.seat, stack: p.stack ?? 1000 })),
   });
 }
@@ -274,8 +274,9 @@ test('double board: one pot, half on each board', () => {
   assert.deepEqual(reconstructDeal(deck, rec.dealt).boards, rec.dealt.boards);
 });
 
-test('double board run twice: four boards, shared flops, every card rebuilt from the deck', () => {
-  const h = mk([{ seat: 0 }, { seat: 1 }], { button: 0, doubleBoard: true, ritMax: 4, deck: deriveDeckSync(hmacSync, 'db-seed', 'db') });
+// A double board runs once now; hands from before could run twice, and their records must still rebuild.
+test('double board run twice (hands from before it ran once only): four boards, shared flops, every card rebuilt from the deck', () => {
+  const h = mk([{ seat: 0 }, { seat: 1 }], { button: 0, doubleBoard: true, ritMax: 4, legacyDoubleRuns: true, deck: deriveDeckSync(hmacSync, 'db-seed', 'db') });
   h.start();
   h.act('p0', { type: 'call' });
   h.act('p1', { type: 'check' });

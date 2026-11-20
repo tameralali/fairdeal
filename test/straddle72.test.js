@@ -133,3 +133,24 @@ test('the 7-2 game: off, in Omaha, or with no 7-2 winning, nobody collects', () 
   assert.equal(table(50, plain).pay(), null, 'a hand won without 7-2');
   assert.equal(sanitizeSettings({ sevenDeuce: 500 }).sevenDeuce, 500);
 });
+
+test('a double board hand, bomb pot or not, runs once: no vote to run it again', () => {
+  const players = (stack) => [0, 1, 2].map((s) => ({ id: 'p' + s, seat: s, name: 'P' + s, stack }));
+  for (const bombAnte of [0, 20]) {
+    const h = new Hand({ number: 1, gameType: 'nlh', smallBlind: 5, bigBlind: 10, buttonSeat: 0, deck: CANONICAL_DECK.slice(), bombAnte, ritMax: 4, doubleBoard: true, players: players(200) });
+    h.start();
+    assert.equal(h.ritMax, 1);
+    for (let g = 0; g < 200 && h.phase !== 'done'; g++) {
+      assert.notEqual(h.phase, 'rit', 'never asked how many times to run it');
+      if (h.phase === 'betting') {
+        const a = h.actor();
+        const L = h.legalActions(a.id);
+        h.act(a.id, L.canRaise ? { type: 'allin' } : { type: 'call' });
+      } else h.advance();
+    }
+    assert.equal(h.runCount, 1);
+    assert.equal(h.boards.length, 2, 'the two boards, once');
+  }
+  const single = new Hand({ number: 1, gameType: 'nlh', smallBlind: 5, bigBlind: 10, buttonSeat: 0, deck: CANONICAL_DECK.slice(), ritMax: 3, players: players(200) });
+  assert.equal(single.ritMax, 3, 'one board still runs up to the table setting');
+});

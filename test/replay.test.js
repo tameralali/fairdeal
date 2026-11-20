@@ -75,20 +75,27 @@ test('a raised pot with a flop bet and a fold', () => {
   assert.deepEqual(R.steps.at(-1).winners, [3]);
 });
 
-test('all in preflop, run three times on two boards', () => {
+test('all in preflop, run three times; on two boards it runs once', () => {
   // heads up the button posts the small blind and acts first preflop
-  const rec = play(hand(2, { doubleBoard: true, ritMax: 3, seed: 'db3' }), [['p0', 'raise', 1000], ['p1', 'call']], 3);
+  const rec = play(hand(2, { ritMax: 3, seed: 'db3' }), [['p0', 'raise', 1000], ['p1', 'call']], 3);
   assert.equal(rec.runCount, 3);
   const R = buildReplay(rec);
   checkSteps(rec, R);
   const runs = R.steps.filter((s) => s.dealt === 'run');
   assert.equal(runs.length, 3);
-  assert.deepEqual(runs[0].cuts, [3, 3, 0, 0, 0, 0], 'run 1 starts with the flop on both of its boards');
-  assert.deepEqual(runs[1].cuts, [5, 5, 3, 3, 0, 0], 'run 2 starts once run 1 is out');
+  assert.deepEqual(runs[0].cuts, [3, 0, 0], 'run 1 starts with its flop');
+  assert.deepEqual(runs[1].cuts, [5, 3, 0], 'run 2 starts once run 1 is out');
   // every run goes street by street: flop, turn, river
   const at = R.steps.indexOf(runs[0]);
-  assert.deepEqual(R.steps.slice(at, at + 3).map((x) => x.cuts.slice(0, 2)), [[3, 3], [4, 4], [5, 5]]);
+  assert.deepEqual(R.steps.slice(at, at + 3).map((x) => x.cuts[0]), [3, 4, 5]);
   assert.deepEqual(R.steps.slice(at, at + 9).map((x) => x.street), ['flop', 'turn', 'river', 'flop', 'turn', 'river', 'flop', 'turn', 'river']);
+  // two boards already split the pot: all in on a double board, it runs once, both boards street by street
+  const two = play(hand(2, { doubleBoard: true, ritMax: 3, seed: 'db3' }), [['p0', 'raise', 1000], ['p1', 'call']], 3);
+  assert.equal(two.runCount, 1);
+  assert.equal(two.dealt.boards.length, 2);
+  const R2 = buildReplay(two);
+  checkSteps(two, R2);
+  assert.ok(!R2.steps.some((x) => x.dealt === 'run'), 'no runs on a double board');
 });
 
 test('a bomb pot starts on the flop; a hand checked down deals every street', () => {

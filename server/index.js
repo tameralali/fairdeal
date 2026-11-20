@@ -361,6 +361,7 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     on('rit', (p) => T().chooseRuns(u, p.runs));
     on('sitout', (p) => T().setSitOut(u, !!p.value));
     on('straddle', (p) => T().setStraddle(u, !!p.value));
+    on('timebank', () => T().useTimeBank(u));
     on('standup', () => T().standUp(u));
     on('call30', () => T().callThirty(u));
     on('call30:cancel', () => T().stayAfterAll(u));

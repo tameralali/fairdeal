@@ -49,7 +49,7 @@ export async function statsDialog() {
         ${st.games.length > 1 || game !== 'all' ? gameSeg(st.games, game) : ''}
         <span class="muted">${st.hands} hand${st.hands === 1 ? '' : 's'}</span>
       </div>
-      ${statsTable(st, { me: app.state.me.userId, fmt: (a) => fmtMoney(a, st.decimals ?? app.dec, 'always') })}
+      ${statsTable(st, { me: app.state.me.userId, fmt: (a) => fmtMoney(a, st.decimals ?? app.dec, 'always', '') })}
       <p class="hint">Pick a player for their money, every stat and their biggest hands.</p>
       ${glossaryHTML()}`);
   };

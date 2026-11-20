@@ -444,7 +444,7 @@ async function showHand(dlg, n, back, backLabel = 'All hands', { inline = false,
   // the seal rebuilt after the hand: from the revealed seed, or from the opened and sealed cards
   const seedHash = sealed ? (res && !res.pending ? res.rebuilt : null) : f.serverSeed ? await wc.sha256Hex(f.serverSeed) : null;
   const obs = app.fair.observed(n) || {};
-  const F = (a) => fmtMoney(a, rec.decimals ?? app.dec);
+  const F = (a) => fmtMoney(a, rec.decimals ?? app.dec, 'auto', '');
   const lines = [];
   const bpr = rec.dealt.boardsPerRun || 1;
   const nb = rec.dealt.boards.length;
@@ -505,7 +505,7 @@ export function lookDialog() {
           <input type="color" data-feltpick value="${esc(prefs.felt || s.table.settings.feltColor)}" title="Custom felt color" style="width:46px;height:38px;padding:2px">
         </div></div>
       <div class="row"><div><span class="lbl">Card faces</span>${seg('deck', [['big', 'Large index'], ['classic', 'Classic']], prefs.deck)}</div>
-        <div><span class="lbl">Suit colors</span>${seg('colors', [['four', 'Four colors'], ['two', 'Two colors']], prefs.colors)}</div></div>
+        <div><span class="lbl">Suit colors</span>${seg('colors', [['two', 'Two colors'], ['four', 'Four colors']], prefs.colors)}</div></div>
       <p class="hint">${prefs.colors === 'two' ? 'Hearts and diamonds red, spades and clubs black.' : 'Spades black, hearts red, diamonds blue, clubs green, so a flush draw is easy to spot.'}</p>
       <div><span class="lbl">Card backs</span><div class="swatches">${BACKS.map((b) => `<button type="button" class="swatch ${prefs.back === b.id ? 'on' : ''}" data-back="${b.id}" title="${esc(b.name)}" style="background:var(--back)" data-backswatch="${b.id}"></button>`).join('')}</div></div>
       <div><span class="lbl">Running it more than once</span>${seg('autoRun', [['ask', 'Ask me'], ['once', 'Always once'], ['any', 'Go with the others']], prefs.autoRun)}<p class="hint">It runs more than once only if everyone in the all-in picks the same number. Going with the others agrees to whatever number they pick.</p></div>

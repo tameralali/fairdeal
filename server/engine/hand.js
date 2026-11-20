@@ -55,7 +55,7 @@ export class Hand {
   constructor(opts) {
     const {
       number, gameType, players, buttonSeat, smallBlind, bigBlind, deck,
-      bombAnte = 0, ritMax = 1, fmt = String, doubleBoard = false, straddleIds = [],
+      bombAnte = 0, ritMax = 1, fmt = String, doubleBoard = false, straddleIds = [], legacyDoubleRuns = false,
     } = opts;
     this.straddleIds = straddleIds;
     this.straddleIdx = null;
@@ -68,7 +68,10 @@ export class Hand {
     this.bb = bigBlind;
     this.isBomb = bombAnte > 0;
     this.bombAnte = bombAnte;
-    this.ritMax = Math.max(1, Math.min(4, ritMax | 0));
+    // Two boards already split the pot two ways, so a double board hand (bomb pot or not) runs once.
+    // Hands played before that rule could run more than once: legacyDoubleRuns deals one of those again,
+    // so the checks on old hand records can still be tried.
+    this.ritMax = doubleBoard && !legacyDoubleRuns ? 1 : Math.max(1, Math.min(4, ritMax | 0));
     this.fmt = fmt;
     this.deck = deck;
     this.deckPtr = 0;
