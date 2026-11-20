@@ -21,7 +21,11 @@
 .game-pick input:focus-visible + span { outline: 2px solid var(--brass); outline-offset: 2px; }
 /* games board: running tables listed like a card room's game board */
 .gboard { border-top: 1px solid var(--line); }
-.gboard a { display: grid; grid-template-columns: 6.5rem 6rem minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 4px; border-bottom: 1px solid var(--line-soft); color: var(--text); text-decoration: none; }
+.gboard .gb-row { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--line-soft); }
+.gboard .gb-row > a { flex: 1; min-width: 0; }
+.gboard .gb-row > .end { flex: none; margin-right: 4px; }
+.gboard .gb-row > .end:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+.gboard a { display: grid; grid-template-columns: 6.5rem 6rem minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 4px; color: var(--text); text-decoration: none; }
 .gboard a:hover { background: rgba(255, 255, 255, .025); }
 .gboard .g { font: 700 19px/1 var(--num); color: var(--brass-hi); letter-spacing: .01em; }
 .gboard .stakes { font: 600 18px/1 var(--num); font-variant-numeric: tabular-nums; }

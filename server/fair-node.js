@@ -13,12 +13,28 @@ export const randomToken = () => randomBytes(32).toString('hex');
 
 // The seal published before a hand. Version 2 seals every card on its own, so folded cards can stay
 // hidden while the rest of the hand is checked.
-export function newCommitment(handNumber, version = FAIRNESS_VERSION) {
-  const serverSeed = newServerSeed();
+export function newCommitment(handNumber, version = FAIRNESS_VERSION, serverSeed = newServerSeed()) {
   const base = { version, handNumber, serverSeed, contributions: new Map(), createdAt: Date.now() };
   if (version !== FAIRNESS_V2) return { ...base, commitment: sha256Hex(serverSeed) };
   const sealed = sealDeckV2(hmacSync, sha256Hex, serverSeed);
   return { ...base, commitment: sealed.commitment, v2: sealed };
+}
+
+// What is saved of the next hand's seal, so a restart keeps the seal browsers have already seen and
+// the inputs they have already added. Everything else in it is worked out from the server seed.
+export function savedCommitment(pending) {
+  return {
+    version: pending.version, handNumber: pending.handNumber, serverSeed: pending.serverSeed, createdAt: pending.createdAt,
+    commitment: pending.commitment, contributions: [...pending.contributions.values()],
+  };
+}
+
+export function restoreCommitment(saved) {
+  const c = newCommitment(saved.handNumber, saved.version || FAIRNESS_VERSION, saved.serverSeed);
+  if (saved.commitment && c.commitment !== saved.commitment) throw new Error('the saved seal does not rebuild');
+  c.createdAt = saved.createdAt || c.createdAt;
+  for (const x of saved.contributions || []) c.contributions.set(x.userId, x);
+  return c;
 }
 
 // Turns a pending commitment plus received contributions into a deck (and bomb roll).

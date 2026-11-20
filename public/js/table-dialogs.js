@@ -7,7 +7,7 @@ import { sealSVG } from './seal.js';
 import { webCryptoAdapter } from '/shared/fairness.js';
 import { GAME_TYPES } from '/shared/cards.js';
 import { app, emit, fmt, fmtC, parse, inp, gameShort, gameName } from './table-core.js';
-import { seg, bindSegs, formatEditorHTML, bindFormatEditor, readFormat, formatProblem, bombFieldsHTML, bindBombFields, readBomb, fitSeats, fitMinPlayers, ritText, boardName, RATHOLE, ratholeHint, FOLDED, foldedHint } from './game-form.js';
+import { seg, bindSegs, formatEditorHTML, bindFormatEditor, readFormat, formatProblem, bombFieldsHTML, bindBombFields, readBomb, fitSeats, fitMinPlayers, ritText, boardName, RATHOLE, ratholeHint, FOLDED, foldedHint, endGameText } from './game-form.js';
 import { statsDialog, playerSheet, replayDialog, afText } from './table-stats.js';
 import { canReplay } from '/shared/replay.js';
 import { fmtMoney } from '/shared/money.js';
@@ -230,11 +230,10 @@ export function hostDialog() {
         <div class="row">
           ${t.status === 'waiting' ? '<button type="button" class="btn primary" data-now="start">Start the game</button>' : ''}
           ${t.status === 'running' ? (t.paused ? '<button type="button" class="btn" data-now="resume">Resume</button>' : '<button type="button" class="btn" data-now="pause">Pause after this hand</button>') : ''}
-          ${t.status !== 'ended' ? '<button type="button" class="btn danger" data-now="end">End the game</button>' : ''}
         </div>
       </div>
     </form>`,
-    foot: '<button class="btn ghost" data-close>Close</button><button class="btn primary" data-save>Save settings</button>',
+    foot: `${t.status !== 'ended' ? `<button type="button" class="btn danger" data-now="end">${t.endAfterHand ? 'Ending after this hand' : 'End game'}</button><span class="grow"></span>` : ''}<button class="btn ghost" data-close>Close</button><button class="btn primary" data-save>Save settings</button>`,
     onClose: () => { delete open.players; },
   });
   const form = dlg.$('#hostform');
@@ -267,7 +266,8 @@ export function hostDialog() {
     if (k === 'start') { const a = await emit('host:start'); if (a.ok) dlg.close(); }
     if (k === 'pause' || k === 'resume') { const a = await emit('host:pause', { value: k === 'pause' }); if (a.ok) dlg.close(); }
     if (k === 'end') {
-      if (await confirmDialog('The hand in progress finishes, then everyone is cashed out and every seed is revealed.', { title: 'End the game?', ok: 'End the game', danger: true })) {
+      if (app.state.table.endAfterHand) return;
+      if (await confirmDialog(endGameText(app.state.table.settings.revealPolicy), { title: 'End this game?', ok: 'End game', danger: true })) {
         const a = await emit('host:end');
         if (a.ok) dlg.close();
       }
@@ -622,7 +622,7 @@ export function fairDialog() {
         <li>The deck order is computed from the seed and every input with HMAC-SHA256 and a standard Fisher-Yates shuffle. Cards come off the top in order, extra runs included.</li>
         <li>The seed is revealed ${policy}. Your browser then rebuilds the deck and checks the seal, your input, your cards and every board.</li>
       </ol>`}
-      <p style="margin-top:1rem">This browser has checked <b>${verified}</b> hand${verified === 1 ? '' : 's'} at this table${failed ? `, and <b class="bad">${failed}</b> failed` : ''}.</p>
+      <p style="margin-top:1rem">${verified + failed ? `This browser has checked <b>${verified + failed}</b> hand${verified + failed === 1 ? '' : 's'} at this table${failed ? `: <b>${verified}</b> passed and <b class="bad">${failed}</b> failed. Open Hands to see which check failed.` : verified === 1 ? ', and it passed.' : ', and every one passed.'}` : 'This browser has not checked a hand at this table yet.'}</p>
       <p class="hint">What this does not cover: whoever runs the server can see cards in memory during a hand, as with any online poker site. The check proves the deck was fixed before the deal and never changed.</p>`,
     foot: `<button class="btn ghost" data-copy>Copy fingerprint</button><a class="btn" href="/verify" target="_blank" rel="noopener">Open the verifier</a><button class="btn primary" data-close>Done</button>`,
   });

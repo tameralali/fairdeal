@@ -4,7 +4,7 @@
 import { api, ensureIdentity, fmtChips, parseChips, toInput, BRAND_HEX } from './api.js';
 import { esc, $, dialog, toast, confirmDialog, copyText, timeAgo } from './ui.js';
 import { sealSVG } from './seal.js';
-import { startGameDialog, formatShort } from './game-form.js';
+import { startGameDialog, formatShort, endGameText } from './game-form.js';
 import { statsTable, glossaryHTML, gameSeg } from './stats-view.js';
 import { fmtMoney } from '/shared/money.js';
 import { GAME_TYPES } from '/shared/cards.js';
@@ -82,17 +82,19 @@ head.addEventListener('click', async (e) => {
 // ---------- shared pieces ----------
 const shortGames = (games) => (games || []).map((g) => GAME_TYPES[g]?.short || g).join(' / ');
 
-function board(tables, empty = 'No tables yet.') {
+// Each game opens in its own tab, so the club page stays open in this one. Admins can end a game here.
+function board(tables, empty = 'No tables yet.', canEnd = false) {
   if (!tables || !tables.length) return `<div class="empty">${esc(empty)}</div>`;
   return tables.map((t) => {
     const F = (a) => fmtMoney(a, t.decimals);
-    let status = t.status === 'ended' ? `Ended ${timeAgo(t.endedAt || t.createdAt)}` : t.status === 'waiting' ? 'Waiting to start' : t.paused ? 'Paused' : 'Running';
-    if (t.status === 'running' && t.endsAt) status += `, ends ${new Date(t.endsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-    const extra = t.bombMode && t.bombMode !== 'off' && t.status !== 'ended' ? ' with bomb pots' : '';
+    let status = t.status === 'ended' ? `Ended ${timeAgo(t.endedAt || t.createdAt)}` : t.ending ? 'Ending after this hand' : t.status === 'waiting' ? 'Waiting to start' : t.paused ? 'Paused' : 'Running';
+    if (t.status === 'running' && t.endsAt && !t.ending) status += `, ends ${new Date(t.endsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    const extra = t.bombMode && t.bombMode !== 'off' && t.status !== 'ended' && !t.ending ? ' with bomb pots' : '';
     const who = t.names.length ? `. ${t.status === 'ended' ? '' : 'Playing: '}${t.names.join(', ')}` : '';
-    return `<a href="/t/${esc(t.id)}" class="${t.status === 'ended' ? 'ended' : ''}"><span class="g">${esc(t.format ? formatShort(t.format) : shortGames(t.games))}</span><span class="stakes">${F(t.smallBlind)}/${F(t.bigBlind)}</span>
+    const end = canEnd && t.status !== 'ended' && !t.ending ? `<button type="button" class="btn small end" data-end="${esc(t.id)}" aria-label="End ${esc(t.name)}">End game</button>` : '';
+    return `<div class="gb-row"><a href="/t/${esc(t.id)}" target="_blank" rel="noopener" class="${t.status === 'ended' ? 'ended' : ''}"><span class="g">${esc(t.format ? formatShort(t.format) : shortGames(t.games))}</span><span class="stakes">${F(t.smallBlind)}/${F(t.bigBlind)}</span>
       <span class="nm"><b>${esc(t.name)}</b><small>${esc(status + extra + who)}</small></span>
-      <span class="seats"><b>${t.players}</b> of ${t.maxPlayers}</span></a>`;
+      <span class="seats"><b>${t.players}</b> of ${t.maxPlayers}</span></a>${end}</div>`;
   }).join('');
 }
 
@@ -217,7 +219,7 @@ async function clubHome(id) {
 
     <section class="panel">
       <h2>Games</h2>
-      <div class="gboard">${board(live, c.isManager ? 'No game running. Start one and it shows up here for every member.' : 'No game running right now. An admin starts the games.')}</div>
+      <div class="gboard">${board(live, c.isManager ? 'No game running. Start one and it shows up here for every member.' : 'No game running right now. An admin starts the games.', c.isManager)}</div>
       ${past.length ? `<details class="past"><summary>Past games (${past.length})</summary><div class="gboard">${board(past.slice(0, 20))}</div></details>` : ''}
     </section>
 
@@ -278,6 +280,18 @@ async function clubHome(id) {
     </div>`;
   loadClubStats(id, c);
 
+  async function endGame(btn) {
+    const t = data.tables.find((x) => x.id === btn.dataset.end);
+    if (!t) return;
+    if (!(await confirmDialog(endGameText(t.revealPolicy), { title: `End ${t.name}?`, ok: 'End game', danger: true }))) return;
+    btn.disabled = true;
+    try {
+      const r = await api.post(`/api/tables/${encodeURIComponent(t.id)}/end`, {});
+      toast(r.status === 'ended' ? `${t.name} has ended` : `${t.name} ends after this hand`);
+      route();
+    } catch (x) { toast(x.message, 'error'); btn.disabled = false; }
+  }
+
   const post = async (path, payload, done) => {
     try { await api.post(`/api/clubs/${id}${path}`, payload); if (done) toast(done); route(); return true; }
     catch (x) { toast(x.message, 'error'); return false; }
@@ -291,6 +305,8 @@ async function clubHome(id) {
   main.addEventListener('click', onClick);
   function onClick(e) {
     if (!main.contains(e.target)) return;
+    const end = e.target.closest('[data-end]');
+    if (end) { endGame(end); return; }
     const d = e.target.closest('[data-decide]');
     if (d) { post(`/members/${d.dataset.decide}/decide`, { approve: d.dataset.ok === '1' }); return; }
     const mm = e.target.closest('[data-mm]');

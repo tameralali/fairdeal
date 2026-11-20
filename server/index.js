@@ -201,6 +201,12 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   // ----- tables -----
   app.post('/api/tables', api((req, user) => ({ id: tables.create(user, req.body || {}).id })));
   app.get('/api/tables/:id', api((req, user) => viewTable(req, user).summary(user.id)));
+  // Ends a game from the home page: the hand in progress finishes, then everyone is cashed out.
+  app.post('/api/tables/:id/end', api((req, user) => {
+    const t = viewTable(req, user);
+    t.hostEnd(user);
+    return { status: t.status, ending: !!t.endAfterHand };
+  }));
   app.get('/api/tables/:id/ledger', api((req, user) => viewTable(req, user).ledgerSummary()));
   app.get('/api/tables/:id/ledger.csv', api((req, user, res) => {
     const t = viewTable(req, user);

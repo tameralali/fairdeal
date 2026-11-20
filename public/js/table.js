@@ -46,6 +46,7 @@ function connect() {
   app.socket = socket;
   socket.on('connect', () => {
     setConn(true);
+    if (app.fair) app.fair.reconnected();
     socket.emit('table:join', { tableId: app.tableId }, (ack) => { if (!ack || !ack.ok) fatal(ack?.error || 'Could not open this table'); });
   });
   socket.on('disconnect', () => setConn(false));

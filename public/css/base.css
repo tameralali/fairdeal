@@ -43,34 +43,33 @@
   --r-lg: 16px;
 }
 
-/* The club's pages (home, sign-in, the verifier) wear the felt: the table's green under a lamp,
-   panels of darker felt, cream text and brass, as the club looked before. The table page keeps its
-   charcoal room around the felt. */
-:root.felt-theme {
-  --room: #3d6439;
-  --room-2: #233f22;
-  --panel: #2d4c2b;
-  --panel-2: #395d36;
-  --line: #557e51;
-  --line-soft: #3e623b;
-  --brass: #d3aa5e;
-  --brass-hover: #e0bb73;
-  --brass-hi: #ecca86;
-  --brass-ink: #241a0e;
-  --brass-dim: #b08d4c;
-  --text: #f5f0e4;
-  --muted: #d2dccb;
-  --faint: #a9b9a3;
-  --ok: #b6f0ae;
-  --danger: #ffaf9f;
-  --tint: rgb(211 170 94 / .1);
-  --tint-strong: rgb(236 202 134 / .5);
-  --focus: rgb(211 170 94 / .32);
+/* The club's pages (home, sign-in, the verifier): a dark room with the felt's green in the buttons,
+   highlights and a faint glow from above, like light off a table. The table page keeps its own room. */
+:root.club-theme {
+  --room: #121513;
+  --room-2: #0d100e;
+  --panel: #1a1f1c;
+  --panel-2: #232925;
+  --line: #313934;
+  --line-soft: #252c28;
+  --brass: #4c7d4a;
+  --brass-hover: #578b55;
+  --brass-hi: #95c78e;
+  --brass-ink: #f6f8f2;
+  --brass-dim: #3f6d3d;
+  --text: #ebede7;
+  --muted: #a1a8a0;
+  --faint: #727a72;
+  --ok: #8fd19a;
+  --danger: #e47c6e;
+  --tint: rgb(84 132 80 / .15);
+  --tint-strong: rgb(149 199 142 / .42);
+  --focus: rgb(108 168 102 / .34);
 }
-:root.felt-theme body {
+:root.club-theme body {
   background:
-    radial-gradient(ellipse 80% 60% at 50% 22%, #567f52 0%, #4b7547 38%, #3c6339 74%, #34582f 100%) fixed,
-    #34582f;
+    radial-gradient(ellipse 75% 42% at 50% 0%, rgb(80 122 78 / .17), rgb(80 122 78 / 0) 72%) fixed,
+    #121513;
 }
 
 * { box-sizing: border-box; }

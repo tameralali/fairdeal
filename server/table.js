@@ -3,7 +3,7 @@ import { randomInt } from 'node:crypto';
 import { Hand } from './engine/hand.js';
 import { GAME_TYPES } from '../shared/cards.js';
 import { isValidContribution, FAIRNESS_VERSION, FAIRNESS_V2 } from '../shared/fairness.js';
-import { newCommitment, settleCommitment, randomId, openV2 } from './fair-node.js';
+import { newCommitment, settleCommitment, randomId, openV2, savedCommitment, restoreCommitment } from './fair-node.js';
 import { cleanName } from './auth.js';
 import { StatsBook, statsRows, gamesIn, summarize, aggregate } from './stats.js';
 import { fmtMoney } from '../shared/money.js';
@@ -250,7 +250,20 @@ export class Table {
     this.bombNext = false;
     this.endAfterHand = false;
     this.broadcastQueued = false;
-    this.fair = { pending: newCommitment(this.handNumber + 1, this.fairVersion()) };
+    this.fair = { pending: this.restorePending(data.fairPending, data.status !== undefined) };
+  }
+
+  // The next hand's seal after a restart. Browsers have already seen it and may have added their
+  // inputs, so the saved one is rebuilt exactly. If it cannot be (a save from before seals were kept),
+  // the new seal takes the number after it: a browser is never shown a second seal for a hand number
+  // it already holds one for, which its check would rightly call a failure.
+  restorePending(saved, restored) {
+    const version = this.fairVersion();
+    if (saved && saved.handNumber > this.handNumber && (saved.version || FAIRNESS_VERSION) === version) {
+      try { return restoreCommitment(saved); } catch (e) { console.error(`[table ${this.id}] could not restore the next seal`, e); }
+    }
+    const next = saved ? Math.max(saved.handNumber, this.handNumber) + 1 : this.handNumber + (restored ? 2 : 1);
+    return newCommitment(next, version);
   }
 
   // Tables that keep folded cards hidden seal every card on its own (version 2).
@@ -340,6 +353,7 @@ export class Table {
       buttonSeat: this.buttonSeat, revealedThrough: this.revealedThrough, session: this.session,
       rotation: this.rotation, handsSinceBomb: this.handsSinceBomb, ledger: this.ledger,
       requests: this.requests, endedAt: this.endedAt, logSeq: this.logSeq, unit: this.unit, leftWith: this.leftWith,
+      fairPending: this.fair ? savedCommitment(this.fair.pending) : undefined,
       players: [...this.players.values()].map((p) => ({
         userId: p.userId, name: p.name, seat: p.seat, stack: p.stack, sittingOut: p.sittingOut,
         timeBank: p.timeBank, joinedAt: p.joinedAt,
@@ -722,8 +736,11 @@ export class Table {
       if (last) this.reveal(last.handNumber);
     }
     if ((this.fair.pending.version || FAIRNESS_VERSION) !== this.fairVersion()) {
-      // the next hand is sealed the new way; browsers add their input to the new seal
-      this.fair.pending = newCommitment(this.fair.pending.handNumber, this.fairVersion());
+      // The next hand is sealed the new way. Browsers already hold the old seal for its number, so the
+      // new seal takes the number after it and that number is skipped; browsers add their input to it.
+      const skipped = this.fair.pending.handNumber;
+      this.fair.pending = newCommitment(skipped + 1, this.fairVersion());
+      this.log(`The next hand is sealed the new way, so it is hand #${skipped + 1} and #${skipped} is skipped`, 'game');
     }
     if (changes.length) this.log(`The host updated the game (applies from the next hand): ${changes.join('; ')}`, 'game');
     this.snapshot();
@@ -761,6 +778,7 @@ export class Table {
       this.endAfterHand = reason;
       this.log('The game will end after this hand', 'game');
       this.broadcast();
+      if (this.clubId) this.clubs.changed(this.clubId);
       return;
     }
     for (const k of ['action', 'advance', 'next', 'rit']) { clearTimeout(this.timers[k]); this.timers[k] = null; }
@@ -788,6 +806,7 @@ export class Table {
     if (!isValidContribution(seed)) fail('Invalid contribution');
     if (pend.contributions.has(user.id)) return { already: true };
     pend.contributions.set(user.id, { userId: user.id, name: p.name, seat: p.seat, seed });
+    this.snapshot(); // kept through a restart, so the deal still uses this browser's input
     this.broadcast();
     return { ok: true };
   }
@@ -1358,7 +1377,7 @@ export class Table {
       smallBlind: this.settings.smallBlind, bigBlind: this.settings.bigBlind, decimals: this.decimals,
       createdAt: this.createdAt, endedAt: this.endedAt, handNumber: this.handNumber, endsAt: this.session.endsAt,
       seated: viewerId ? this.players.has(viewerId) : undefined, isHost: viewerId ? this.isHost(viewerId) : undefined,
-      names: seated.map((p) => p.name),
+      names: seated.map((p) => p.name), ending: !!this.endAfterHand, revealPolicy: this.settings.revealPolicy,
     };
   }
 

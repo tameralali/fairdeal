@@ -614,6 +614,28 @@ test('a table that deals on its own starts its time limit with the first hand', 
   bots.forEach((x) => x.close());
 });
 
+test('an admin ends a game from the home page; the hand in progress finishes first, and members cannot', { timeout: 60000 }, async () => {
+  const a = await admin('Closer', { fund: 100000 });
+  const b = await member('Stayer', null, { fund: 100000 });
+  const { id } = await call('POST', '/api/tables', { settings: { autoStart: true, autoApprove: true, decisionSeconds: 30, timeBankSeconds: 0 } }, a.token);
+  await assert.rejects(call('POST', `/api/tables/${id}/end`, {}, b.token), /Only the host/);
+  const bots = [new Bot('Closer', a, 5), new Bot('Stayer', b, 6)];
+  for (const x of bots) await x.connect(id);
+  for (const x of bots) x.passive = true; // nobody acts, so the first hand stays open
+  await bots[0].emit('seat:request', { seat: 0, buyIn: 1000 });
+  await bots[1].emit('seat:request', { seat: 1, buyIn: 1000 });
+  await until(() => bots[0].state?.hand && bots[0].state.hand.phase !== 'done', 10000, 'a hand in progress');
+  const r = await call('POST', `/api/tables/${id}/end`, {}, a.token);
+  assert.equal(r.status, 'running');
+  assert.equal(r.ending, true);
+  const { clubs } = await call('GET', '/api/me', null, a.token);
+  const club = await call('GET', `/api/clubs/${clubs[0].id}`, null, a.token);
+  assert.equal(club.tables.find((x) => x.id === id).ending, true, 'the home page shows it ending');
+  for (const x of bots) { x.passive = false; x.onState(x.state); }
+  await until(async () => (await call('GET', `/api/tables/${id}`, null, a.token)).status === 'ended', 30000, 'the game to end');
+  bots.forEach((x) => x.close());
+});
+
 test('accounts: invite only, login, rename', async () => {
   await assert.rejects(call('POST', '/api/auth/guest', { name: 'Temp' }), /invite only/);
   await assert.rejects(call('POST', '/api/auth/register', { username: 'temp_user', password: 'abcdefgh' }), /invite only/);

@@ -29,13 +29,23 @@ export class FairClient {
     catch { return { hands: {} }; }
   }
 
+  // Another tab on the same table saves here too: keep what it saved that this tab has not.
   save() {
+    const disk = this.load().hands || {};
+    for (const [n, h] of Object.entries(disk)) {
+      const mine = this.data.hands[n];
+      if (!mine) this.data.hands[n] = h;
+      else for (const k of Object.keys(h)) if (mine[k] === undefined) mine[k] = h[k];
+    }
     const nums = Object.keys(this.data.hands).map(Number).sort((a, b) => a - b);
     while (nums.length > MAX_HANDS) delete this.data.hands[nums.shift()];
     try { localStorage.setItem(this.key, JSON.stringify(this.data)); } catch { /* quota */ }
   }
 
   rec(n) { return (this.data.hands[n] ||= {}); }
+
+  // After the connection comes back, check again whether the server has this browser's input.
+  reconnected() { this.contributing = null; }
   result(n) { return this.data.hands[n]?.result || null; }
   observed(n) { return this.data.hands[n] || null; }
 
@@ -46,7 +56,9 @@ export class FairClient {
       if (!r.commitment) { r.commitment = f.commitment; this.save(); }
       if (s.me.seated && !f.iContributed && this.contributing !== f.commitment) {
         this.contributing = f.commitment;
-        const seed = randomHex(16);
+        // An input this browser already sent to this seal goes again (the server lost it in a
+        // restart), so the deal still uses the input this browser will look for.
+        const seed = r.seed && r.commitment === f.commitment ? r.seed : randomHex(16);
         this.emit('fair:contribute', { handNumber: f.handNumber, commitment: f.commitment, seed }).then((ack) => {
           if (ack && ack.ok && !ack.stale && !ack.notSeated && !ack.already) {
             this.rec(f.handNumber).seed = seed;
