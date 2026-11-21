@@ -1,4 +1,37 @@
+# The Aquarium on Render.
+# The app is moving from the old "fairdeal" service to a new "theaquarium" service, for its address,
+# theaquarium.onrender.com (a service's onrender.com address cannot be changed once it exists). While
+# it moves both are listed: the old one hands over its data once (MIGRATION_EXPORT) and from then on
+# sends every visitor to the new address; the new one pulls that data on its first boot (IMPORT_FROM).
+# Both read MIGRATION_KEY from an env group that Render fills with a random value, so nobody types it.
+envVarGroups:
+  - name: aquarium-move
+    envVars:
+      - key: MIGRATION_KEY
+        generateValue: true
 services:
+  - type: web
+    name: theaquarium
+    runtime: node
+    plan: starter
+    region: frankfurt
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /healthz
+    # deploys stay manual, as before: a push to GitHub does not change the live site
+    autoDeployTrigger: "off"
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: NODE_VERSION
+        value: "22"
+      - key: IMPORT_FROM
+        value: https://fairdeal-yf1j.onrender.com
+      - fromGroup: aquarium-move
+    disk:
+      name: theaquarium-data
+      mountPath: /data
+      sizeGB: 1
   - type: web
     name: fairdeal
     runtime: node
@@ -12,6 +45,9 @@ services:
         value: /data
       - key: NODE_VERSION
         value: "22"
+      - key: MIGRATION_EXPORT
+        value: "on"
+      - fromGroup: aquarium-move
     disk:
       name: fairdeal-data
       mountPath: /data
