@@ -692,7 +692,7 @@ function allInChances(h) {
 }
 
 // What a hand makes on the run being dealt, one name per board: "Two pair (5,4) / Flush". brief: the
-// short names (Trips, not Three of a kind), as the runouts use.
+// short form (Straight (9), not Straight (9 high)), as the runouts use.
 function madeHand(h, hole, brief = false) {
   if (!hole || !hole.length || !hole.every(Boolean)) return '';
   const { boards } = currentRun(h);

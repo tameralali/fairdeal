@@ -45,7 +45,9 @@ test('hand labels on the table', () => {
   assert.equal(name(['Ah', 'Kh'], ['Qh', 'Jh', 'Th', '2c', '3d']), 'Royal flush');
   // the short labels for several boards or runs keep the rank too: Pair (A), not just Pair
   const brief = (hole, board) => shortHandName(bestHand(hole, board, false).score, true);
-  assert.equal(brief(['Th', 'Td'], ['Tc', '7s', '9d']), 'Trips (10)');
+  assert.equal(brief(['Th', 'Td'], ['Tc', '7s', '9d']), 'Three of a kind (10)');
+  assert.equal(brief(['Th', 'Td'], ['Tc', 'Ts', '9d']), 'Four of a kind (10)');
+  assert.equal(brief(['9h', '8h'], ['7h', '6h', '5h']), 'Straight flush (9)');
   assert.equal(brief(['Ah', '4d'], ['Ac', '7s', '9d']), 'Pair (A)');
   assert.equal(brief(['Kh', '9d'], ['Kc', '9s', '2d']), 'Two pair (K,9)');
   assert.equal(brief(['Kh', 'Kd'], ['Kc', '7s', '7d']), 'Full house (K,7)');

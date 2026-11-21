@@ -97,9 +97,9 @@ export function backHTML(cls = '', style = '') {
 const R1 = { 14: 'A', 13: 'K', 12: 'Q', 11: 'J', 10: '10' };
 const rk = (v) => R1[v] || String(v);
 const KINDS = ['High card', 'Pair', 'Two pair', 'Three of a kind', 'Straight', 'Flush', 'Full house', 'Four of a kind', 'Straight flush'];
-// brief: shorter still, for a label that names a hand on each of several boards or runs, still with
-// its rank, so a pair reads Pair (A) and not just Pair
-const BRIEF = ['High card', 'Pair', 'Two pair', 'Trips', 'Straight', 'Flush', 'Full house', 'Quads', 'Str. flush'];
+// brief: shorter still, for a label that names a hand on each of several boards or runs: the same
+// words, still with the rank (a pair reads Pair (A), not just Pair), only without "high" on a straight
+const BRIEF = ['High card', 'Pair', 'Two pair', 'Three of a kind', 'Straight', 'Flush', 'Full house', 'Four of a kind', 'Straight flush'];
 export function shortHandName(score, brief = false) {
   const c = score >> 20;
   const a = (score >> 16) & 15;
