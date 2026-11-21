@@ -789,6 +789,17 @@ dialog.replay-dlg { width: min(1000px, calc(100vw - 16px)); }
 
 /* ---------- hand history: the list of hands beside the replayer ---------- */
 dialog.hh-dlg { width: min(1380px, calc(100vw - 16px)); height: min(920px, calc(100dvh - 16px)); max-height: none; }
+/* Open in new tab: the history goes on in a tab of its own */
+.hh-newtab { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; white-space: nowrap; }
+.hh-newtab svg { width: 16px; height: 16px; flex: none; }
+.hh-newtab .short { display: none; }
+@media (max-width: 560px) { .hh-newtab .long { display: none; } .hh-newtab .short { display: inline; } }
+/* the history in its own tab fills it */
+body.hands-page { background: var(--room); min-height: 100dvh; }
+.hands-loading { padding: 24px; }
+dialog.hh-dlg.hh-page { width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; box-shadow: none; }
+dialog.hh-dlg.hh-page::backdrop { background: var(--room); }
+dialog.hh-page .dlg-head a.btn { text-decoration: none; }
 dialog.hh-dlg .dlg-body { padding: 0; overflow: hidden; flex: 1; min-height: 0; display: flex; }
 .hh { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(270px, 330px) minmax(0, 1fr); }
 .hh-side { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line-soft); background: var(--room-2); }
@@ -823,6 +834,7 @@ dialog.hh-dlg .dlg-body { padding: 0; overflow: hidden; flex: 1; min-height: 0; 
 .hh-sub { grid-area: sub; color: var(--muted); font-size: 12.5px; line-height: 1.3; }
 .hh-sub b { color: var(--text); font-weight: 700; margin-left: .45em; }
 .hh-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; padding: 14px 18px 16px; overflow: auto; }
+.hh-main:focus { outline: none; }
 .hh-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; }
 .hh-views { display: flex; align-items: center; gap: 8px; }
 .hh-list-btn, .hh-side-top { display: none; }
@@ -1172,6 +1184,48 @@ body.pn .pn-info {
 .pn-tool:hover { color: var(--text); background: rgb(58 58 60 / .8); }
 .pn-tool:not(.seal) svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; }
 .pn-tool[aria-pressed="false"] { color: #ff6961; }
+/* the HUD button: its word, with a green dot under it while the HUD is on */
+.pn-tool.hud-tool { position: relative; }
+.pn-tool.hud-tool span { font: 800 13.5px/1 var(--ui); letter-spacing: .05em; margin-top: -5px; }
+.pn-tool.hud-tool.on { color: var(--text); }
+.pn-tool.hud-tool::after { content: ''; position: absolute; left: 50%; bottom: 10px; width: 6px; height: 6px; margin-left: -3px; border-radius: 50%; background: #30d158; }
+.pn-tool.hud-tool.off::after { background: none; box-shadow: inset 0 0 0 1.5px rgb(235 235 245 / .38); }
+.pn-tool.hud-tool[aria-expanded="true"] { background: rgb(58 58 60 / .9); color: var(--text); }
+.btn.hud-btn.off { color: var(--muted); }
+
+/* ---------- the HUD panel: the HUD on or off and a switch for each player ---------- */
+.hud-pop {
+  position: fixed; z-index: 60; width: 344px; max-height: min(580px, calc(100dvh - 24px)); overflow: auto; overscroll-behavior: contain;
+  background: rgb(40 40 42 / .9); -webkit-backdrop-filter: blur(30px) saturate(1.6); backdrop-filter: blur(30px) saturate(1.6);
+  border: 1px solid var(--hair); border-radius: 18px; box-shadow: 0 24px 70px rgb(0 0 0 / .55); padding: 14px 14px 12px; color: var(--text);
+}
+.hud-pop.sheet {
+  left: 50%; right: auto; top: auto; transform: translateX(-50%); bottom: calc(8px + env(safe-area-inset-bottom));
+  width: min(420px, calc(100vw - 16px)); max-height: min(78dvh, 580px); background: rgb(36 36 38 / .97);
+}
+.hp-scope.dim { opacity: .5; }
+.hp-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 2px 2px 12px; }
+.hp-head b { display: block; font: 700 17px/1.2 var(--ui); letter-spacing: -.01em; }
+.hp-head small { display: block; color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+.hp-scope { display: flex; width: 100%; margin-bottom: 12px; }
+.hp-scope button { flex: 1; }
+.hp-list { border-radius: 13px; background: rgb(255 255 255 / .055); padding: 2px 0 4px; transition: opacity .15s; }
+.hp-list.dim { opacity: .5; }
+.hp-lh { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 12px 5px; font: 600 12.5px/1 var(--ui); color: var(--muted); }
+.hp-lh button { appearance: none; background: none; border: 0; padding: 2px 0; margin: 0; cursor: pointer; font: 600 13px/1 var(--ui); color: var(--brass-hi); }
+.hp-lh button:hover { text-decoration: underline; text-underline-offset: 3px; }
+.hp-lh button:disabled { color: var(--faint); cursor: default; text-decoration: none; }
+.hp-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 8px 12px; }
+.hp-row + .hp-row { border-top: 1px solid rgb(255 255 255 / .06); }
+.hp-who { appearance: none; background: none; border: 0; padding: 0; margin: 0; text-align: left; color: inherit; cursor: pointer; min-width: 0; font: inherit; }
+.hp-who b { display: block; font: 600 15px/1.2 var(--ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hp-who small { display: block; font: 500 12.5px/1.2 var(--num); color: var(--muted); font-variant-numeric: tabular-nums; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hp-who:hover b, .hp-who:focus-visible b { color: var(--brass-hi); }
+.hp-row.off .av { opacity: .45; }
+.hp-row.off .hp-who b { color: var(--muted); }
+.hp-note { margin: 10px 3px 0; color: var(--faint); font-size: 12px; }
+.hp-none { padding: 6px 12px 10px; margin: 0; }
+.check.ps-hud { margin: -.2rem 0 1rem; }
 /* bottom left: Log / Ledger and the table's name, the chat, and voice beside it */
 body.pn .pn-chat {
   --pnw: 665px; --pvw: 70px; --pnh: 130px;

@@ -2,9 +2,9 @@
 // for admins). Also the invite, owner setup and password reset pages, and the admin page where people
 // are invited and managed.
 import { api, ensureIdentity, fmtChips, parseChips, toInput, BRAND_HEX } from './api.js';
-import { esc, $, dialog, toast, confirmDialog, copyText, timeAgo } from './ui.js';
+import { esc, $, dialog, toast, confirmDialog, copyText, timeAgo, avatarHTML } from './ui.js';
 import { sealSVG } from './seal.js';
-import { startGameDialog, formatShort, endGameText } from './game-form.js';
+import { startGameDialog, endGameText } from './game-form.js';
 import { statsTable, glossaryHTML, gameSeg } from './stats-view.js';
 import { fmtMoney } from '/shared/money.js';
 import { GAME_TYPES } from '/shared/cards.js';
@@ -84,23 +84,133 @@ head.addEventListener('click', async (e) => {
   }
 });
 
-// ---------- shared pieces ----------
-const shortGames = (games) => (games || []).map((g) => GAME_TYPES[g]?.short || g).join(' / ');
+// ---------- the games board ----------
+// Each game is a row like a card room's board, or PokerNow's lobby: a little table with its seats, the
+// name with a Live badge, what is played, then blinds, buy-in, players and the average stack, and a
+// button to go in. Games open in their own tab, so the club page stays open in this one. Admins can
+// end a game here.
+const GB_ICON = {
+  go: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5.5 15.5 12 9 18.5" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  bomb: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="14" r="6.8" fill="currentColor"/><path d="M14.6 9.6l2.4-2.4M18.4 3.6v1.6M20.8 6.2h-1.6M20.4 4l-1.1 1.1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  runs: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h12.5M13 4.5 16.5 8 13 11.5M20 16H7.5M11 12.5 7.5 16l3.5 3.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12.5" r="8" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M12 8.3v4.4l2.9 1.8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
+};
+const GAME_HUE = { nlh: 'g-nlh', plo4: 'g-plo', plo5: 'g-plo5' };
 
-// Each game opens in its own tab, so the club page stays open in this one. Admins can end a game here.
+// a table seen from above: an oval with a dot for each seat, filled where someone sits
+function tableGlyph(max, taken = []) {
+  const n = Math.max(2, Math.min(10, max || 9));
+  const set = new Set(taken);
+  let dots = '';
+  for (let i = 0; i < n; i++) {
+    const a = Math.PI / 2 + (i * 2 * Math.PI) / n;
+    dots += `<circle cx="${(24 + 17.5 * Math.cos(a)).toFixed(1)}" cy="${(24 + 12 * Math.sin(a)).toFixed(1)}" r="2.9" class="${set.has(i) ? 'on' : ''}"/>`;
+  }
+  return `<svg viewBox="0 0 48 48" aria-hidden="true"><ellipse class="tg-felt" cx="24" cy="24" rx="12.5" ry="7.5"/>${dots}</svg>`;
+}
+
+// amounts on the board leave out the dollar sign, as at the table; big ones are shortened, as on PokerNow
+const boardMoney = (a, dec) => fmtMoney(a, dec, 'auto', '');
+function compactMoney(a, dec) {
+  const v = dec ? a / 100 : a;
+  if (v >= 1000) return `${Number((v / 1000).toFixed(v % 1000 ? 1 : 0))}k`;
+  return boardMoney(a, dec);
+}
+function buyInText(t) {
+  const lo = t.minBuyIn ? compactMoney(t.minBuyIn, t.decimals) : '';
+  const hi = t.maxBuyIn ? compactMoney(t.maxBuyIn, t.decimals) : '';
+  if (lo && hi) return `${lo}-${hi}`;
+  if (lo) return `${lo}+`;
+  if (hi) return `Up to ${hi}`;
+  return 'Any';
+}
+
+// what the game plays, step by step, each game in its own colour
+function formatChips(t) {
+  const steps = (t.format || []).map((s) => ({ g: s.game, db: !!s.doubleBoard }));
+  const seen = new Set();
+  const uniq = steps.filter((s) => { const k = `${s.g}${s.db}`; if (seen.has(k)) return false; seen.add(k); return true; });
+  if (!uniq.length) return (t.games || []).map((g) => `<span class="gb-gm ${GAME_HUE[g] || ''}">${esc(GAME_TYPES[g]?.short || g)}</span>`).join('');
+  return uniq.map((s) => `<span class="gb-gm ${GAME_HUE[s.g] || ''}" title="${esc(GAME_TYPES[s.g]?.name || s.g)}${s.db ? ', double board' : ''}">${esc(GAME_TYPES[s.g]?.short || s.g)}${s.db ? '<i>DB</i>' : ''}</span>`).join('<span class="gb-then" aria-label="then">&rsaquo;</span>');
+}
+
+// the extras played at the game, as small tags
+function extrasHTML(t) {
+  const out = [];
+  const b = t.bomb;
+  if (b) {
+    const every = b.mode === 'every' || b.mode === 'both';
+    const pct = b.mode === 'percent' || b.mode === 'both';
+    const text = every && pct ? `${b.every} or ${b.percent}%` : every ? `every ${b.every}` : `${b.percent}%`;
+    const tip = every && pct ? `A bomb pot every ${b.every} hands, or sooner: each hand has a ${b.percent}% chance` : every ? `A bomb pot every ${b.every} hands` : `Each hand has a ${b.percent}% chance of being a bomb pot`;
+    out.push(`<span class="gb-x bomb" title="${esc(tip)}">${GB_ICON.bomb}${esc(text)}</span>`);
+  }
+  if (t.sevenDeuce) out.push(`<span class="gb-x s72" title="The 7-2 game: win a Hold’em hand with 7-2 and show it, and everyone else dealt in pays ${esc(boardMoney(t.sevenDeuce, t.decimals))}"><span class="s72-cards" aria-hidden="true"><b>7</b><b>2</b></span>${esc(boardMoney(t.sevenDeuce, t.decimals))}</span>`);
+  if (t.straddle) out.push('<span class="gb-x strad" title="The player under the gun can straddle">Straddle</span>');
+  if (t.runs > 1) out.push(`<span class="gb-x runs" title="All in? Run it up to ${t.runs} times if everyone in agrees">${GB_ICON.runs}Up to ${t.runs} runs</span>`);
+  if (t.status === 'running' && t.endsAt && !t.ending) out.push(`<span class="gb-x" title="The game ends at this time">${GB_ICON.clock}Ends ${esc(new Date(t.endsAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}</span>`);
+  return out.join('');
+}
+
+// Live: cards are being dealt. A running game short of players, or paused, is waiting.
+const isLive = (t) => t.status === 'running' && !t.paused && !t.waiting;
+function statusHTML(t) {
+  if (t.status === 'ended') return `<span class="gb-st ended">Ended ${esc(timeAgo(t.endedAt || t.createdAt))}</span>`;
+  if (t.ending) return '<span class="gb-st warn"><i></i>Last hand</span>';
+  if (t.status === 'waiting') return '<span class="gb-st wait"><i></i>Not started</span>';
+  if (t.paused) return '<span class="gb-st wait"><i></i>Paused</span>';
+  if (t.waiting) return `<span class="gb-st wait" title="${esc(t.waiting)}"><i></i>Waiting for players</span>`;
+  return '<span class="gb-st live"><i></i>Live</span>';
+}
+
+function facesHTML(names) {
+  if (!names.length) return '';
+  const shown = names.slice(0, names.length > 5 ? 4 : 5);
+  const more = names.length - shown.length;
+  return `<span class="gb-faces" title="${esc(names.join(', '))}">${shown.map((n) => avatarHTML(n)).join('')}${more ? `<span class="av more">+${more}</span>` : ''}</span>`;
+}
+
+// One live game. mine: the viewer sits at it.
+function gameRow(t, canEnd) {
+  const ended = t.status === 'ended';
+  const href = `/${ended ? 'g' : 't'}/${encodeURIComponent(t.id)}`;
+  const full = t.players >= t.maxPlayers;
+  const go = ended ? 'Summary' : t.seated ? 'Back to table' : full ? 'Watch' : 'Join';
+  const state = ended ? 'ended' : isLive(t) ? 'live' : 'wait';
+  const end = canEnd && !ended && !t.ending ? `<button type="button" class="btn small gb-end" data-end="${esc(t.id)}" aria-label="End ${esc(t.name)}">End game</button>` : '';
+  const sum = `${t.name}. ${ended ? 'Ended' : state === 'live' ? 'Live' : 'Waiting'}. Blinds ${boardMoney(t.smallBlind, t.decimals)}/${boardMoney(t.bigBlind, t.decimals)}. ${ended ? `${t.handNumber} hands` : `${t.players} of ${t.maxPlayers} seats taken`}.`;
+  return `<div class="gb-row ${state}${t.seated ? ' mine' : ''}">
+    <a class="gb-hit" href="${href}" target="_blank" rel="noopener" tabindex="-1" aria-hidden="true" title="${esc(`${t.name}${!ended && t.names?.length ? `: ${t.names.join(', ')}` : ''}. Opens in a new tab`)}"></a>
+    <span class="gb-tile">${tableGlyph(t.maxPlayers, ended ? [] : t.taken)}</span>
+    <span class="gb-main">
+      <span class="gb-title"><b>${esc(t.name)}</b>${statusHTML(t)}${t.seated && !ended ? '<span class="gb-you">You’re playing</span>' : ''}</span>
+      <span class="gb-meta">${formatChips(t)}${ended ? '' : extrasHTML(t)}</span>
+    </span>
+    <span class="gb-cells">
+    <span class="gb-c blinds"><small>Blinds</small><b>${esc(boardMoney(t.smallBlind, t.decimals))}/${esc(boardMoney(t.bigBlind, t.decimals))}</b></span>
+    ${ended
+      ? `<span class="gb-c hands"><small>Hands</small><b>${t.handNumber || 0}</b></span>`
+      : `<span class="gb-c buy"><small>Buy-in</small><b>${esc(buyInText(t))}</b></span>
+    <span class="gb-c seats"><small>Players</small><span class="gb-pl"><b><em>${t.players}</em>/${t.maxPlayers}</b>${facesHTML(t.names || [])}</span></span>
+    <span class="gb-c avg"><small>Avg stack</small><b>${t.avgStack === null || t.avgStack === undefined ? '-' : esc(boardMoney(Math.round(t.avgStack / (t.decimals ? 100 : 1)) * (t.decimals ? 100 : 1), t.decimals))}</b></span>`}
+    </span>
+    <span class="gb-act">${end}<a class="btn ${ended ? '' : 'primary'} gb-go" href="${href}" target="_blank" rel="noopener" aria-label="${esc(`${go}: ${sum} Opens in a new tab`)}">${go}${GB_ICON.go}</a></span>
+  </div>`;
+}
+
 function board(tables, empty = 'No tables yet.', canEnd = false) {
-  if (!tables || !tables.length) return `<div class="empty">${esc(empty)}</div>`;
-  return tables.map((t) => {
-    const F = (a) => fmtMoney(a, t.decimals);
-    let status = t.status === 'ended' ? `Ended ${timeAgo(t.endedAt || t.createdAt)}` : t.ending ? 'Ending after this hand' : t.status === 'waiting' ? 'Waiting to start' : t.paused ? 'Paused' : 'Running';
-    if (t.status === 'running' && t.endsAt && !t.ending) status += `, ends ${new Date(t.endsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-    const extra = t.bombMode && t.bombMode !== 'off' && t.status !== 'ended' && !t.ending ? ' with bomb pots' : '';
-    const who = t.names.length ? `. ${t.status === 'ended' ? '' : 'Playing: '}${t.names.join(', ')}` : '';
-    const end = canEnd && t.status !== 'ended' && !t.ending ? `<button type="button" class="btn small end" data-end="${esc(t.id)}" aria-label="End ${esc(t.name)}">End game</button>` : '';
-    return `<div class="gb-row"><a href="/${t.status === 'ended' ? 'g' : 't'}/${esc(t.id)}" target="_blank" rel="noopener" class="${t.status === 'ended' ? 'ended' : ''}"><span class="g">${esc(t.format ? formatShort(t.format) : shortGames(t.games))}</span><span class="stakes">${F(t.smallBlind)}/${F(t.bigBlind)}</span>
-      <span class="nm"><b>${esc(t.name)}</b><small>${esc(status + extra + who)}</small></span>
-      <span class="seats"><b>${t.players}</b> of ${t.maxPlayers}</span></a>${end}</div>`;
-  }).join('');
+  if (!tables || !tables.length) return `<div class="gb-empty"><span class="gb-tile">${tableGlyph(8)}</span><span>${esc(empty)}</span></div>`;
+  const live = tables[0].status !== 'ended';
+  const head = live ? '<div class="gb-head" aria-hidden="true"><span></span><span>Game</span><span>Blinds</span><span>Buy-in</span><span>Players</span><span>Avg stack</span><span></span></div>' : '';
+  return head + tables.map((t) => gameRow(t, canEnd)).join('');
+}
+
+// PokerNow's line above its lobby: how many are playing right now, with a dot that glows when someone is
+function nowPlaying(live) {
+  const running = live.filter((t) => isLive(t) && t.players > 0);
+  const n = running.reduce((a, t) => a + t.players, 0);
+  const text = n ? `${n} player${n === 1 ? '' : 's'} at ${running.length} table${running.length === 1 ? '' : 's'} right now` : 'Nobody is playing right now';
+  return `<span class="gb-now ${n ? 'on' : ''}"><i></i>${esc(text)}</span>`;
 }
 
 const openStart = (presetId = null) => startGameDialog({ user: me.user, presetId });
@@ -195,7 +305,8 @@ async function clubHome(id) {
   const F = (a) => fmtChips(a, dec);
   const P = (v) => parseChips(v, dec);
   const roleLabel = { owner: 'You own the club', manager: 'You are an admin', member: 'Member' }[c.myRole];
-  const live = data.tables.filter((t) => t.status !== 'ended');
+  // games being dealt first, then the ones waiting for players or a start
+  const live = data.tables.filter((t) => t.status !== 'ended').sort((a, b) => Number(isLive(b)) - Number(isLive(a)));
   const past = data.tables.filter((t) => t.status === 'ended');
   const money = (n) => (n === undefined ? '<span class="faint">-</span>' : `<span class="${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}">${F(n)}</span>`);
   const signed = (n) => (n === undefined ? '<span class="faint">-</span>' : `<span class="${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}">${n > 0 ? '+' : ''}${F(n)}</span>`);
@@ -224,10 +335,10 @@ async function clubHome(id) {
       ${requestRows(c.requests || [])}
       ${(c.pending || []).map((p) => `<div class="row" style="padding:6px 0"><b class="grow">${esc(p.name)}</b><span class="muted">${timeAgo(p.requestedAt)}</span><button class="btn small ghost" data-decide="${esc(p.userId)}" data-ok="0">Decline</button><button class="btn small primary" data-decide="${esc(p.userId)}" data-ok="1">Approve</button></div>`).join('')}</section>` : ''}
 
-    <section class="panel">
-      <h2>Games</h2>
+    <section class="panel games-panel">
+      <div class="sec-head"><h2>Games</h2>${nowPlaying(live)}</div>
       <div class="gboard">${board(live, c.isManager ? 'No game running. Start one and it shows up here for every member.' : 'No game running right now. An admin starts the games.', c.isManager)}</div>
-      ${past.length ? `<details class="past"><summary>Past games (${past.length})</summary><div class="gboard">${board(past.slice(0, 20))}</div></details>` : ''}
+      ${past.length ? `<details class="past"><summary>Past games (${past.length})</summary><div class="gboard past-board">${board(past.slice(0, 20))}</div></details>` : ''}
     </section>
 
     <section class="panel" id="balances">
@@ -714,7 +825,7 @@ async function gamePage(id) {
   const signed = (n) => `<span class="${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}">${n > 0 ? '+' : ''}${F(n)}</span>`;
   const you = (uid, name) => (uid === me.user.id ? 'You' : name);
   const hands = list.hands.slice().sort((a, b) => a.handNumber - b.handNumber);
-  const replay = (n) => `/t/${q}?hand=${n}`;
+  const replay = (n) => `/hands/${q}?hand=${n}`;
   const first = hands[0];
   const last = hands[hands.length - 1];
   const ended = sum.status === 'ended';

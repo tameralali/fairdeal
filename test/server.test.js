@@ -629,6 +629,48 @@ test('a table that deals on its own starts its time limit with the first hand', 
   bots.forEach((x) => x.close());
 });
 
+test('the games board: each game lists its buy-in, seats, average stack and extras, and says when it is waiting for players', { timeout: 60000 }, async () => {
+  const a = await admin('Boarder', { fund: 100000 });
+  const b = await member('Joiner', null, { fund: 100000 });
+  const { id } = await call('POST', '/api/tables', {
+    name: 'Board test',
+    settings: { autoStart: true, autoApprove: true, decisionSeconds: 30, timeBankSeconds: 0, minBuyIn: 500, maxBuyIn: 3000, straddle: true, sevenDeuce: 100, rit: { enabled: true, maxRuns: 3 }, bombPot: { mode: 'percent', percent: 15, anteBB: 2, game: 'current', doubleBoard: false } },
+  }, a.token);
+  const listed = async () => {
+    const { clubs } = await call('GET', '/api/me', null, a.token);
+    return (await call('GET', `/api/clubs/${clubs[0].id}`, null, a.token)).tables.find((x) => x.id === id);
+  };
+  let t = await listed();
+  assert.equal(t.minBuyIn, 500);
+  assert.equal(t.maxBuyIn, 3000);
+  assert.equal(t.straddle, true);
+  assert.equal(t.sevenDeuce, 100);
+  assert.equal(t.runs, 3);
+  assert.deepEqual(t.bomb, { mode: 'percent', every: 10, percent: 15 });
+  assert.equal(t.avgStack, null, 'nobody sitting: no average');
+  assert.deepEqual(t.taken, []);
+  assert.equal(t.waiting, 'Waiting for players', 'running but nobody to deal to');
+  const bots = [new Bot('Boarder', a, 21), new Bot('Joiner', b, 22)];
+  for (const x of bots) await x.connect(id);
+  for (const x of bots) x.passive = true; // the first hand stays open, so the stacks hold still
+  await bots[0].emit('seat:request', { seat: 2, buyIn: 1000 });
+  t = await listed();
+  assert.deepEqual(t.taken, [2]);
+  assert.equal(t.waiting, 'Waiting for players', 'one player is not a game');
+  await bots[1].emit('seat:request', { seat: 5, buyIn: 2000 });
+  await until(() => bots[0].state?.hand && bots[0].state.hand.phase !== 'done', 10000, 'a hand in progress');
+  t = await listed();
+  assert.deepEqual(t.taken.slice().sort((x, y) => x - y), [2, 5]);
+  assert.equal(t.waiting, null, 'cards are being dealt: live');
+  const stacks = bots[0].state.seats.filter(Boolean).map((x) => x.stack);
+  assert.equal(t.avgStack, Math.round(stacks.reduce((x, y) => x + y, 0) / stacks.length));
+  // the hand history in a tab of its own
+  const page = await fetch(`${url}/hands/${id}`);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /hands-page\.js/);
+  bots.forEach((x) => x.close());
+});
+
 test('an admin ends a game from the home page; the hand in progress finishes first, and members cannot', { timeout: 60000 }, async () => {
   const a = await admin('Closer', { fund: 100000 });
   const b = await member('Stayer', null, { fund: 100000 });

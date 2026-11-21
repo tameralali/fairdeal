@@ -20,11 +20,12 @@ export function toast(text, kind = '') {
 }
 
 // Opens a modal <dialog>. body/foot are HTML strings. Returns helpers.
-export function dialog({ title, body = '', foot = '', className = '', tabs = null, onClose = null, closable = true }) {
+// actions: buttons or links shown in the head beside Close.
+export function dialog({ title, body = '', foot = '', className = '', tabs = null, onClose = null, closable = true, actions = '' }) {
   const d = document.createElement('dialog');
   d.className = className;
   d.innerHTML = `
-    <div class="dlg-head"><h2>${esc(title)}</h2>${closable ? '<button class="btn ghost small" data-close aria-label="Close">Close</button>' : ''}</div>
+    <div class="dlg-head"><h2>${esc(title)}</h2>${actions}${closable ? '<button class="btn ghost small" data-close aria-label="Close">Close</button>' : ''}</div>
     ${tabs ? `<div class="tabs" role="tablist">${tabs.map((t, i) => `<button role="tab" data-tab="${esc(t.id)}" class="${i === 0 ? 'on' : ''}">${esc(t.label)}</button>`).join('')}</div>` : ''}
     <div class="dlg-body">${body}</div>
     ${foot ? `<div class="dlg-foot">${foot}</div>` : ''}`;
@@ -62,6 +63,19 @@ export function confirmDialog(text, { title = 'Are you sure?', ok = 'Confirm', d
     });
     dlg.$('[data-ok]').addEventListener('click', () => { answered = true; resolve(true); dlg.close(); });
   });
+}
+
+// A round badge with someone's initial, in one of Apple's system colours picked from the name, so the
+// same person has the same colour on every page.
+const AV_COLORS = ['#ff9f0a', '#30d158', '#64d2ff', '#0a84ff', '#5e5ce6', '#bf5af2', '#ff375f', '#ffd60a', '#ff453a', '#ac8e68', '#66d4cf', '#a2845e'];
+export function avatarColor(name) {
+  let h = 0;
+  for (const ch of String(name || '')) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  return AV_COLORS[h % AV_COLORS.length];
+}
+export function avatarHTML(name, cls = '') {
+  const first = [...String(name || '?').trim()][0] || '?';
+  return `<span class="av ${cls}" style="--av:${avatarColor(name)}" aria-hidden="true">${esc(first.toUpperCase())}</span>`;
 }
 
 export function timeAgo(ts) {

@@ -8,7 +8,7 @@ import { webCryptoAdapter } from '/shared/fairness.js';
 import { GAME_TYPES } from '/shared/cards.js';
 import { app, emit, fmt, fmtC, parse, inp, gameShort, gameName } from './table-core.js';
 import { seg, bindSegs, formatEditorHTML, bindFormatEditor, readFormat, formatProblem, bombFieldsHTML, bindBombFields, readBomb, fitSeats, fitMinPlayers, ritText, boardName, RATHOLE, ratholeHint, FOLDED, foldedHint, endGameText } from './game-form.js';
-import { statsDialog, playerSheet, afText } from './table-stats.js';
+import { statsDialog, playerSheet, afText, hudPanel } from './table-stats.js';
 import { historyDialog } from './hand-history.js';
 import { canReplay } from '/shared/replay.js';
 import { fmtMoney } from '/shared/money.js';
@@ -509,7 +509,7 @@ export function lookDialog() {
       <p class="hint">${prefs.colors === 'two' ? 'Hearts and diamonds red, spades and clubs black.' : 'Spades black, hearts red, diamonds blue, clubs green, so a flush draw is easy to spot.'}</p>
       <div><span class="lbl">Card backs</span><div class="swatches">${BACKS.map((b) => `<button type="button" class="swatch ${prefs.back === b.id ? 'on' : ''}" data-back="${b.id}" title="${esc(b.name)}" style="background:var(--back)" data-backswatch="${b.id}"></button>`).join('')}</div></div>
       <div><span class="lbl">Running it more than once</span>${seg('autoRun', [['ask', 'Ask me'], ['once', 'Always once'], ['any', 'Go with the others']], prefs.autoRun)}<p class="hint">It runs more than once only if everyone in the all-in picks the same number. Going with the others agrees to whatever number they pick.</p></div>
-      <div><span class="lbl">Stats on each seat (VPIP / PFR / AF, then hands)</span>${seg('hud', [['game', 'This game'], ['all', 'All games'], ['off', 'Off']], prefs.hud || 'game')}<p class="hint">Numbers are for the game type being played. Pick a seat’s numbers for every stat.</p></div>
+      <div><span class="lbl">Stats on each seat (VPIP / PFR / AF, then hands)</span>${seg('hud', [['game', 'This game'], ['all', 'All games'], ['off', 'Off']], prefs.hud || 'game')}<p class="hint">Numbers are for the game type being played. Pick a seat’s numbers for every stat. To switch them off for one player, use the HUD button.</p></div>
       <label class="check"><input type="checkbox" data-pref="handStrength" ${prefs.handStrength ? 'checked' : ''}> Show what my hand makes</label>
       <label class="check"><input type="checkbox" data-pref="sound" ${prefs.sound ? 'checked' : ''}> Sound when it is my turn</label>
       <label class="check"><input type="checkbox" data-pref="tableSounds" ${prefs.tableSounds ? 'checked' : ''}> Table sounds<small>Chips for bets and calls, folds, checks, cards being dealt and the pot going to the winner.</small></label>
@@ -541,7 +541,7 @@ export function menuDialog() {
   const items = [
     s.me.isHost && ['options', 'Game options'],
     s.me.isHost && t.status === 'running' && ['clock', t.session?.endsAt ? 'Game clock' : 'Start a clock'],
-    ['ledger', 'Ledger'], ['stats', 'Stats'], ['hands', 'Hand history'], ['fair', 'Sealed deck'], ['look', 'Look and feel'], ['log', 'Chat and log'],
+    ['ledger', 'Ledger'], ['stats', 'Stats'], ['hud', 'HUD'], ['hands', 'Hand history'], ['fair', 'Sealed deck'], ['look', 'Look and feel'], ['log', 'Chat and log'],
   ].filter(Boolean);
   const dlg = dialog({
     title: 'Menu', className: 'narrow',
@@ -554,7 +554,7 @@ export function menuDialog() {
     const k = b.dataset.go;
     if (k === 'log') { document.querySelector('[data-open="log"]')?.click(); return; }
     if (k === 'clock') { hostDialog({ tab: 'time' }); return; }
-    ({ options: hostDialog, ledger: ledgerDialog, stats: statsDialog, hands: handsDialog, fair: fairDialog, look: lookDialog })[k]?.();
+    ({ options: hostDialog, ledger: ledgerDialog, stats: statsDialog, hud: hudPanel, hands: handsDialog, fair: fairDialog, look: lookDialog })[k]?.();
   });
 }
 

@@ -60,6 +60,8 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'] }));
   const page = (f) => (req, res) => res.sendFile(path.join(ROOT, 'public', f));
   app.get('/t/:id', page('table.html'));
+  // a game's hand history and replayer in a tab of its own (Open in new tab)
+  app.get('/hands/:id', page('hands.html'));
   app.get(['/club/:id', '/join/:code', '/invite/:token', '/reset/:token', '/admin', '/fair', '/g/:id'], page('index.html'));
   app.get('/verify', page('verify.html'));
   app.get('/healthz', (req, res) => res.json({ ok: true }));

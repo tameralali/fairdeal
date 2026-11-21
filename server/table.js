@@ -13,9 +13,11 @@ import { score5 } from '../shared/evaluator.js';
 // after a hand, and for the run-it vote.
 const VOICE_MAX = 10; // each person in voice sends to each other one, so it stays small
 
+// After a hand the result stays up for 9 seconds, folded or shown down, before the next deal: PokerNow's
+// slowest showdown setting (it offers 3, 6 or 9), time to show cards or say something.
 export const DELAYS = {
   street: 1400, runoutFirst: 2400, runout: 2200, showdown: 1400,
-  afterUncontested: 4000, afterShowdown: 7500, perExtraRun: 1500, perExtraBoard: 1000,
+  afterUncontested: 9000, afterShowdown: 9000, perExtraRun: 1500, perExtraBoard: 1000,
   rit: 45000, ritSettle: 15000, autoAct: 400, away: 5000, call: 30 * 60000,
 };
 export const BANK_REFILL = { hands: 10, seconds: 5 };
@@ -1633,16 +1635,25 @@ export class Table {
     return null;
   }
 
+  // What the club page lists for each game: the columns of its games board (blinds, buy-in, players,
+  // average stack) and the extras played at it.
   summary(viewerId) {
     const seated = [...this.players.values()];
+    const s = this.settings;
+    const bp = s.bombPot;
     return {
       id: this.id, name: this.name, clubId: this.clubId, status: this.status, paused: this.paused,
-      players: seated.length, maxPlayers: this.settings.maxPlayers, games: formatGames(this.settings.format), format: this.settings.format,
-      bombMode: this.settings.bombPot.mode,
-      smallBlind: this.settings.smallBlind, bigBlind: this.settings.bigBlind, decimals: this.decimals,
+      players: seated.length, maxPlayers: s.maxPlayers, games: formatGames(s.format), format: s.format,
+      bombMode: bp.mode, bomb: bp.mode === 'off' ? null : { mode: bp.mode, every: bp.every, percent: bp.percent },
+      smallBlind: s.smallBlind, bigBlind: s.bigBlind, decimals: this.decimals,
+      minBuyIn: s.minBuyIn, maxBuyIn: s.maxBuyIn,
+      avgStack: seated.length ? Math.round(seated.reduce((a, p) => a + p.stack, 0) / seated.length) : null,
+      straddle: !!s.straddle, sevenDeuce: s.sevenDeuce || 0, runs: s.rit.enabled ? s.rit.maxRuns : 1, feltColor: s.feltColor,
       createdAt: this.createdAt, endedAt: this.endedAt, handNumber: this.handNumber, endsAt: this.session.endsAt,
       seated: viewerId ? this.players.has(viewerId) : undefined, isHost: viewerId ? this.isHost(viewerId) : undefined,
-      names: seated.map((p) => p.name), ending: !!this.endAfterHand, revealPolicy: this.settings.revealPolicy,
+      names: seated.map((p) => p.name), taken: seated.map((p) => p.seat), ending: !!this.endAfterHand, revealPolicy: s.revealPolicy,
+      // a running game that is not dealing: why (too few players, paused)
+      waiting: this.status === 'running' ? this.waitingReason() : null,
     };
   }
 

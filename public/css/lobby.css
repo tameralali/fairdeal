@@ -19,22 +19,127 @@
 .game-pick span small { font-weight: 400; color: var(--muted); font-size: 13px; }
 .game-pick input:checked + span { border-color: var(--brass); box-shadow: inset 0 0 0 1px var(--brass); background: color-mix(in srgb, var(--panel) 84%, var(--brass) 16%); }
 .game-pick input:focus-visible + span { outline: 2px solid var(--brass); outline-offset: 2px; }
-/* games board: running tables listed like a card room's game board */
-.gboard { border-top: 1px solid var(--line); }
-.gboard .gb-row { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--line-soft); }
-.gboard .gb-row > a { flex: 1; min-width: 0; }
-.gboard .gb-row > .end { flex: none; margin-right: 4px; }
-.gboard .gb-row > .end:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
-.gboard a { display: grid; grid-template-columns: 6.5rem 7.2rem minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 4px; color: var(--text); text-decoration: none; }
-.gboard a:hover { background: rgba(255, 255, 255, .025); }
-.gboard .g { font: 700 19px/1 var(--num); color: var(--brass-hi); letter-spacing: .01em; }
-.gboard .stakes { font: 600 18px/1 var(--num); font-variant-numeric: tabular-nums; }
-.gboard .nm { min-width: 0; }
-.gboard .nm b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gboard .nm small { color: var(--muted); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gboard .seats { font: 600 16px/1 var(--num); color: var(--muted); text-align: right; white-space: nowrap; }
-.gboard .seats b { color: var(--text); }
-.gboard .empty { color: var(--muted); padding: 14px 4px; }
+/* ---------- games board ----------
+   Each game a row, as on a card room's board or PokerNow's lobby: a felt tile with the table's seats
+   (filled where someone sits), the name with a Live badge, the games in their colours and the extras,
+   then blinds, buy-in, players and average stack under one header, and a Join button. The rows share
+   one set of columns (subgrid), so the header lines up with every row. */
+.games-panel .sec-head { margin-bottom: 14px; }
+.gb-now { display: inline-flex; align-items: center; gap: 8px; padding: 7px 13px 7px 11px; border-radius: 999px; border: 1px solid var(--line-soft); background: rgb(255 255 255 / .03); color: var(--muted); font: 600 13.5px/1 var(--ui); }
+.gb-now i { width: 8px; height: 8px; border-radius: 50%; background: #6e6e73; flex: none; }
+.gb-now.on { color: var(--text); }
+.gb-now.on i { background: #30d158; }
+/* (the first and last columns are max-content so they hold each row's padding as well as its tile and buttons) */
+.gboard { --gb-bg: #1f2622; display: grid; grid-template-columns: max-content minmax(0, 1fr) repeat(4, max-content) max-content; column-gap: 22px; row-gap: 10px; }
+.gboard.past-board { grid-template-columns: max-content minmax(0, 1fr) repeat(2, max-content) max-content; margin-top: 10px; }
+.gb-head, .gb-row { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; }
+.gb-head { padding: 0 16px 0; font: 500 12.5px/1 var(--ui); color: var(--muted); }
+.gb-row {
+  position: relative; padding: 14px 16px; border-radius: 16px; background: var(--gb-bg); border: 1px solid rgb(255 255 255 / .06);
+  box-shadow: 0 1px 0 rgb(255 255 255 / .03) inset, 0 6px 18px rgb(0 0 0 / .18); transition: border-color .15s, background-color .15s;
+}
+.gb-row.live { background: linear-gradient(90deg, rgb(48 209 88 / .09), rgb(48 209 88 / 0) 42%), var(--gb-bg); border-color: rgb(48 209 88 / .16); }
+.gb-row:hover { border-color: rgb(255 255 255 / .16); }
+.gb-row.live:hover { border-color: rgb(48 209 88 / .38); }
+.gb-row.ended { --gb-bg: #1b201d; box-shadow: none; }
+.gb-hit { position: absolute; inset: 0; z-index: 1; border-radius: inherit; }
+.gb-hit:focus-visible { outline: 2px solid var(--brass-hi); outline-offset: 2px; }
+.gb-cells { display: contents; }
+/* the table: an oval of felt with its seats around it */
+.gb-tile {
+  width: 52px; height: 52px; border-radius: 14px; display: grid; place-items: center; flex: none;
+  background: radial-gradient(120% 95% at 28% 18%, #63ad6f 0%, #3c8148 46%, #275a31 100%);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / .16), inset 0 -8px 14px rgb(0 0 0 / .22), 0 4px 10px rgb(0 0 0 / .28);
+}
+.gb-tile svg { width: 44px; height: 44px; }
+.gb-tile .tg-felt { fill: rgb(0 0 0 / .2); stroke: rgb(255 255 255 / .62); stroke-width: 1.7; }
+.gb-tile circle { fill: rgb(0 0 0 / .12); stroke: rgb(255 255 255 / .55); stroke-width: 1.3; }
+.gb-tile circle.on { fill: #fff; stroke: #fff; }
+.gb-row.ended .gb-tile { background: radial-gradient(120% 95% at 28% 18%, #6a6a70 0%, #48484d 50%, #313135 100%); }
+.gb-main { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.gb-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.gb-title b { font: 650 18px/1.2 var(--ui); letter-spacing: -.01em; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.gb-st { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px 4px 8px; border-radius: 999px; font: 650 12.5px/1 var(--ui); white-space: nowrap; }
+.gb-st i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+.gb-st.live { color: #34d35c; background: rgb(48 209 88 / .15); }
+.gb-st.wait { color: #ffd426; background: rgb(255 214 10 / .12); }
+.gb-st.warn { color: #ffa733; background: rgb(255 159 10 / .14); }
+.gb-st.ended { color: var(--muted); background: var(--fill); }
+.gb-st.live i, .gb-now.on i { animation: gb-pulse 1.8s ease-out infinite; }
+@keyframes gb-pulse {
+  0% { box-shadow: 0 0 0 0 rgb(48 209 88 / .6); }
+  70% { box-shadow: 0 0 0 7px rgb(48 209 88 / 0); }
+  100% { box-shadow: 0 0 0 0 rgb(48 209 88 / 0); }
+}
+@media (prefers-reduced-motion: reduce) { .gb-st.live i, .gb-now.on i { animation: none; } }
+.gb-you { font: 600 12px/1 var(--ui); color: var(--text); background: rgb(255 255 255 / .1); padding: 4px 8px; border-radius: 999px; white-space: nowrap; }
+.gb-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.gb-gm { display: inline-flex; align-items: baseline; padding: 5px 8px; border-radius: 7px; font: 700 13px/1 var(--num); letter-spacing: .01em; color: #e4e6e1; background: var(--fill); white-space: nowrap; }
+.gb-gm i { font-style: normal; font-size: .84em; margin-left: .38em; opacity: .78; }
+.gb-gm.g-nlh { color: #7fe08c; background: rgb(48 209 88 / .13); }
+.gb-gm.g-plo { color: #7cc0ff; background: rgb(10 132 255 / .17); }
+.gb-gm.g-plo5 { color: #cf9bff; background: rgb(191 90 242 / .17); }
+.gb-then { color: var(--faint); font: 700 15px/1 var(--ui); margin: 0 -1px; }
+.gb-x { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border-radius: 7px; font: 600 12.5px/1 var(--ui); color: #cfd3cc; background: var(--fill); white-space: nowrap; }
+.gb-x svg { width: 13px; height: 13px; flex: none; }
+.gb-x.bomb, .gb-x.s72 { color: #ff8f86; background: rgb(255 69 58 / .14); }
+.gb-x.strad { color: #b3b1ff; background: rgb(94 92 230 / .2); }
+.gb-x.runs { color: #7cc0ff; background: rgb(10 132 255 / .15); }
+.s72-cards { display: inline-flex; margin-right: 1px; }
+.s72-cards b { display: inline-grid; place-items: center; width: 11px; height: 14px; border: 1.4px solid currentColor; border-radius: 2.5px; font: 800 9px/1 var(--num); }
+.s72-cards b + b { margin-left: -3px; transform: rotate(9deg) translateY(1px); background: #2a201f; }
+.gb-c { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.gb-c small { font: 500 12px/1 var(--ui); color: var(--muted); }
+.gboard:not(.past-board) .gb-c small { display: none; }
+.gb-c b { font: 650 17px/1.1 var(--num); font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
+.gb-pl { display: flex; align-items: center; gap: 9px; }
+.gb-pl b { color: var(--muted); }
+.gb-pl b em { font-style: normal; color: var(--text); }
+.gb-faces { display: inline-flex; align-items: center; }
+.gb-faces .av { width: 24px; height: 24px; font-size: 11px; box-shadow: 0 0 0 2px var(--gb-bg); }
+.gb-faces .av + .av { margin-left: -7px; }
+.gb-act { position: relative; z-index: 2; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.gb-go { display: inline-flex; align-items: center; justify-content: center; gap: 3px; min-width: 104px; height: 42px; padding: 0 14px 0 18px; font-weight: 650; font-size: 15.5px; text-decoration: none; border-radius: 12px; }
+.gb-go svg { width: 17px; height: 17px; margin-right: -3px; }
+.gb-go.primary { box-shadow: 0 4px 14px rgb(76 125 74 / .35); }
+.gb-end { height: 42px; border-radius: 12px; color: var(--muted); }
+.gb-end:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+.gb-empty { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: 16px; border: 1px dashed var(--line); color: var(--muted); }
+.gb-empty .gb-tile { background: var(--fill); box-shadow: none; opacity: .7; }
+/* a little narrower: no room for the faces of who is playing */
+@media (max-width: 1279px) {
+  .gboard { column-gap: 18px; }
+  .gb-faces { display: none; }
+}
+/* narrower: each game a card, the four numbers in a strip under the name and Join beside it */
+@media (max-width: 1060px) {
+  .gboard, .gboard.past-board { display: flex; flex-direction: column; gap: 10px; }
+  .gb-head { display: none; }
+  .gb-row { grid-template-columns: 46px minmax(0, 1fr) auto; grid-template-areas: "tile main act" "cells cells cells"; gap: 12px 14px; padding: 14px; }
+  .gb-tile { grid-area: tile; width: 46px; height: 46px; border-radius: 13px; align-self: start; }
+  .gb-tile svg { width: 40px; height: 40px; }
+  .gb-main { grid-area: main; }
+  .gb-cells { grid-area: cells; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-radius: 12px; background: rgb(0 0 0 / .18); padding: 10px 4px; }
+  .past-board .gb-cells { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gb-c { align-items: center; text-align: center; padding: 0 4px; }
+  .gb-c + .gb-c { border-left: 1px solid rgb(255 255 255 / .07); }
+  .gboard:not(.past-board) .gb-c small { display: block; }
+  .gb-c b { font-size: 16px; }
+  .gb-pl { flex-direction: column; gap: 6px; }
+  .gb-faces { display: none; }
+  .gb-act { grid-area: act; align-self: start; }
+  .gb-title b { font-size: 17px; }
+}
+/* phones: Join across the bottom of the card */
+@media (max-width: 600px) {
+  .gb-row { grid-template-columns: 46px minmax(0, 1fr); grid-template-areas: "tile main" "cells cells" "act act"; }
+  .gb-act { align-self: auto; }
+  .gb-go { flex: 1; }
+}
+@media (max-width: 380px) {
+  .gb-c b { font-size: 14.5px; }
+  .gb-c small { font-size: 11px; }
+}
 .club-list a { display: flex; justify-content: space-between; gap: 12px; padding: 11px 2px; border-bottom: 1px solid var(--line-soft); color: var(--text); text-decoration: none; }
 .club-list a:hover b { color: var(--brass-hi); }
 .club-list small { color: var(--muted); }
@@ -82,8 +187,7 @@
 .balances td b { font-weight: 600; }
 .role { font: 600 12.5px/1 var(--ui); color: var(--brass-hi); border: 1px solid var(--tint-strong); border-radius: 999px; padding: 2px 7px 3px; margin-left: 4px; }
 .past { margin-top: 12px; }
-.past summary { cursor: pointer; color: var(--muted); padding: 6px 2px; }
-.gboard a.ended { opacity: .72; }
+.past summary { cursor: pointer; color: var(--muted); padding: 6px 2px; font-weight: 600; }
 .more { display: flex; justify-content: center; padding-top: 10px; }
 .club-foot { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 22px; }
 .club-list > div { display: flex; flex-direction: column; padding: 10px 2px; border-bottom: 1px solid var(--line-soft); }
@@ -127,12 +231,6 @@
   .lob-head .wordmark span { white-space: nowrap; }
   .cb-name h1 { font-size: 2rem; }
   .cb-bal b { font-size: 26px; }
-  .gboard a { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "g stakes seats" "nm nm nm"; row-gap: 6px; }
-  .gboard .g { grid-area: g; }
-  .gboard .stakes { grid-area: stakes; }
-  .gboard .seats { grid-area: seats; }
-  .gboard .nm { grid-area: nm; }
-  .gboard .nm small { white-space: normal; }
 }
 
 /* ---------- invite, owner setup and reset pages ---------- */

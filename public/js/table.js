@@ -317,7 +317,7 @@ function geometry(n, portrait, holeN, shown = null) {
   const R = { x: (F.rx / ux) * 0.84, y: (F.ry / uy) * 0.84 };
   // With many seats there is not room for them all above and below the board: then the band narrows,
   // step by step, until no two boxes meet, and the board gets smaller instead (fitBoard).
-  const place = (bd) => seatsAt(spread(weights, P.px / ux / z.box, P.py / uy / tall, bd));
+  const place = (bd) => clearBets(seatsAt(spread(weights, P.px / ux / z.box, P.py / uy / tall, bd)));
   // two seats meet when one's box or cards reach over the other's
   const hit = (a, b) => a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
   // (only seats that are drawn count: free seats are hidden while you are seated)
@@ -349,27 +349,38 @@ function geometry(n, portrait, holeN, shown = null) {
     // the box with its cards: wider on the left, and the cards a little taller than the box
     const card = (me ? z.myCard : z.card) * 1.2;
     const box = { l: S.x - bw / 2 - over, r: S.x + bw / 2, t: S.y - Math.max(me ? P.myBoxh : P.boxh, card + 1.2) / 2, b: S.y + Math.max(me ? P.myBoxh : P.boxh, card + 0.4) / 2 };
-    // aim above or below the middle, so bets from the sides stay off the board
-    const off = S.y < C.y - 0.5 ? -P.aim : S.y > C.y + 0.5 ? P.aim : 0;
-    let d = { x: C.x - S.x, y: C.y + off - S.y };
-    const len = Math.hypot(d.x, d.y) || 1;
-    d = { x: d.x / len, y: d.y / len };
-    const exit = Math.min(
-      d.x > 1e-6 ? (box.r - S.x) / d.x : d.x < -1e-6 ? (box.l - S.x) / d.x : Infinity,
-      d.y > 1e-6 ? (box.b - S.y) / d.y : d.y < -1e-6 ? (box.t - S.y) / d.y : Infinity,
-    );
-    const along = Math.abs(d.x) * (P.pill[0] / 2) + Math.abs(d.y) * (P.pill[1] / 2);
-    let dist = exit + along + 0.6;
-    // and far enough in to be on the felt: where the ray enters the inner ellipse
-    const ox = (S.x - C.x) / R.x, oy = (S.y - C.y) / R.y, vx = d.x / R.x, vy = d.y / R.y;
-    const qa = vx * vx + vy * vy, qb = 2 * (ox * vx + oy * vy), qc = ox * ox + oy * oy - 1;
-    const disc = qb * qb - 4 * qa * qc;
-    if (qc > 0 && disc > 0) dist = Math.max(dist, (-qb - Math.sqrt(disc)) / (2 * qa));
-    dist = Math.min(dist, len * 0.8);
+    // a hand's label hangs a little below the cards: a bet from a seat above the middle keeps clear of it
+    const reach = sn < 0 ? { ...box, b: box.b + 0.7 } : box;
+    // Where the bet goes: out of the box toward the middle, aimed above or below it so bets from the
+    // sides stay off the board (aimK), and far enough to be on the felt. across < 1 puts it more in front
+    // of its own player than toward the middle.
+    const ray = (aimK, across) => {
+      const off = (S.y < C.y - 0.5 ? -P.aim : S.y > C.y + 0.5 ? P.aim : 0) * aimK;
+      let d = { x: (C.x - S.x) * across, y: C.y + off - S.y };
+      const len = Math.hypot(d.x, d.y) || 1;
+      d = { x: d.x / len, y: d.y / len };
+      const exit = Math.min(
+        d.x > 1e-6 ? (reach.r - S.x) / d.x : d.x < -1e-6 ? (reach.l - S.x) / d.x : Infinity,
+        d.y > 1e-6 ? (reach.b - S.y) / d.y : d.y < -1e-6 ? (reach.t - S.y) / d.y : Infinity,
+      );
+      const along = Math.abs(d.x) * (P.pill[0] / 2) + Math.abs(d.y) * (P.pill[1] / 2);
+      let dist = exit + along + 0.6;
+      // and far enough in to be on the felt: where the ray enters the inner ellipse
+      const ox = (S.x - C.x) / R.x, oy = (S.y - C.y) / R.y, vx = d.x / R.x, vy = d.y / R.y;
+      const qa = vx * vx + vy * vy, qb = 2 * (ox * vx + oy * vy), qc = ox * ox + oy * oy - 1;
+      const disc = qb * qb - 4 * qa * qc;
+      if (qc > 0 && disc > 0) dist = Math.max(dist, (-qb - Math.sqrt(disc)) / (2 * qa));
+      return { S, d, len, dist: Math.min(dist, len * 0.8) };
+    };
+    // On a wide screen a seat along the top or the bottom has a second place to try, more in front of
+    // itself, for when the first lands on its own cards or on a neighbour (clearBets picks).
+    const rays = [ray(1, 1)];
+    if (wide) rays.push(ray(1 - Math.abs(sn), 1 - 0.6 * Math.abs(sn)));
+    const { d, dist } = rays[0];
     const B = { x: S.x + d.x * dist, y: S.y + d.y * dist };
     return {
       x, y,
-      box,
+      box, reach, rays,
       // where this seat's bet sits, so the board keeps clear of it too
       bet: { l: B.x - P.pill[0] / 2, r: B.x + P.pill[0] / 2, t: B.y - P.pill[1] / 2, b: B.y + P.pill[1] / 2 },
       // close to the left edge a hand's label lines up with the cards instead of centring under them
@@ -381,6 +392,36 @@ function geometry(n, portrait, holeN, shown = null) {
       plate: { l: S.x - bw / 2 - 0.4, r: S.x + bw / 2 + 0.4, t: S.y - (me ? P.myBoxh : P.boxh) / 2 - 0.3, b: S.y + (me ? P.myBoxh : P.boxh) / 2 + 0.3 },
     };
   }); }
+
+  // Each bet takes the first of its places that is clear of its own box, of every other player and of
+  // the bets already placed; failing that, it moves on toward the middle until it is clear of them.
+  function clearBets(list) {
+    const placed = [];
+    const pill = (ray, k) => {
+      const B = { x: ray.S.x + ray.d.x * k, y: ray.S.y + ray.d.y * k };
+      return { B, r: { l: B.x - P.pill[0] / 2, r: B.x + P.pill[0] / 2, t: B.y - P.pill[1] / 2, b: B.y + P.pill[1] / 2 } };
+    };
+    list.forEach((s, i) => {
+      if (!seen(i)) return;
+      const blocked = (r) => hit(r, s.reach) || hit(r, s.plate) || placed.some((q) => hit(r, q))
+        || list.some((o, j) => j !== i && seen(j) && (hit(r, o.reach) || hit(r, o.plate)));
+      let pick = null;
+      for (const ray of s.rays) { const at = pill(ray, ray.dist); if (!blocked(at.r)) { pick = at; break; } }
+      for (const ray of s.rays) {
+        if (pick) break;
+        let k = ray.dist;
+        let at = pill(ray, k);
+        while (k < ray.len * 0.8 && blocked(at.r)) { k += 0.4; at = pill(ray, k); }
+        if (!blocked(at.r)) pick = at;
+      }
+      if (!pick) pick = pill(s.rays[0], s.rays[0].dist);
+      s.bet = pick.r;
+      s.bx = pick.B.x * ux;
+      s.by = pick.B.y * uy;
+      placed.push(pick.r);
+    });
+    return list;
+  }
 }
 
 function resize() {
@@ -446,6 +487,7 @@ function render() {
   renderBottom(s);
   document.title = `${s.hand?.legal ? 'Your turn | ' : ''}${s.table.name}`;
   document.body.classList.toggle('my-turn', !!(s.hand && (s.hand.legal || (s.hand.rit && s.hand.rit.canChoose && s.hand.rit.myChoice === null))));
+  S.hudRefresh();
 }
 app.render = render;
 
@@ -512,6 +554,7 @@ function renderTop(s) {
       ${s.me.isHost ? '<button class="btn small sm-hide" data-open="options">Options</button>' : ''}
       <button class="btn small sm-hide" data-open="ledger">Ledger</button>
       <button class="btn small sm-hide" data-open="stats">Stats</button>
+      ${hudButton('btn small sm-hide md-hide hud-btn')}
       <button class="btn small sm-hide md-hide" data-open="hands">Hands</button>
       <button class="btn small sm-hide md-hide" data-open="look">Look</button>
       <button class="btn small sm-hide chat-btn ${els.drawer.classList.contains('collapsed') ? '' : 'primary'}" data-open="log">Chat<span class="unread" ${app.unread ? '' : 'hidden'}>${app.unread > 9 ? '9+' : app.unread || ''}</span></button>
@@ -537,6 +580,11 @@ const PN_ICON = {
   bomb: svg('<circle cx="10.5" cy="14" r="6.8" fill="currentColor" stroke="none"/><path d="M14.6 9.6l2.4-2.4M18.4 3.6v1.6M20.8 6.2h-1.6M20.4 4l-1.1 1.1"/>'),
 };
 const soundOn = () => !!(prefs.sound || prefs.tableSounds);
+// opens the HUD panel: the HUD on or off, and a switch for each player
+const hudButton = (cls) => {
+  const on = S.hudOn();
+  return `<button type="button" class="${cls} ${on ? 'on' : 'off'}" data-open="hud" aria-haspopup="dialog" aria-expanded="false" title="HUD, the stats on each seat: ${on ? 'on' : 'off'}. Switch it on or off for each player"><span>HUD</span></button>`;
+};
 
 function pnTopHTML(s, { game, dbNow, rot, status, ends, reqs }) {
   const t = s.table;
@@ -587,6 +635,7 @@ function pnTopHTML(s, { game, dbNow, rot, status, ends, reqs }) {
       <div class="pn-game">${games}<span class="pn-tilde" aria-hidden="true">~</span><span class="pn-blinds" title="Small and big blind">${fmt(st.smallBlind)} / ${fmt(st.bigBlind)}</span>${bomb}</div>
       <div class="pn-row2">${notes ? `<div class="pn-notes">${notes}</div>` : ''}
         <button type="button" class="pn-tool seal" data-open="fair" title="Hand #${f.handNumber} sealed, ${f.contributions} player input${f.contributions === 1 ? '' : 's'}. How the deal can be checked">${sealSVG(f.commitment, 34)}</button>
+        ${hudButton('pn-tool hud-tool')}
         <button type="button" class="pn-tool" data-sound aria-pressed="${sound}" title="${sound ? 'Turn the table sounds off' : 'Turn the table sounds on'}">${sound ? PN_ICON.soundOn : PN_ICON.soundOff}</button>
       </div>
     </div>`;
@@ -1601,7 +1650,7 @@ function bindEvents() {
       const k = open.dataset.open;
       if (k === 'log') return toggleLog();
       if (k === 'clock') return D.hostDialog({ tab: 'time' });
-      ({ options: D.hostDialog, ledger: D.ledgerDialog, stats: S.statsDialog, hands: D.handsDialog, look: D.lookDialog, fair: D.fairDialog, requests: D.requestsDialog, menu: D.menuDialog })[k]?.();
+      ({ options: D.hostDialog, ledger: D.ledgerDialog, stats: S.statsDialog, hands: D.handsDialog, look: D.lookDialog, fair: D.fairDialog, requests: D.requestsDialog, menu: D.menuDialog, hud: S.hudPanel })[k]?.();
       return;
     }
     if (e.target.closest('dialog')) return; // dialogs handle their own buttons
@@ -1678,7 +1727,7 @@ function bindEvents() {
       if (e.key === 'Escape') { e.preventDefault(); closeRaise(); return; }
       if (e.key === 'Enter' && e.target.matches('[data-range]')) { e.preventDefault(); act('raise'); return; }
     }
-    if (e.target.closest && e.target.closest('input, textarea, select')) return;
+    if (e.target.closest && e.target.closest('input, textarea, select, .hud-pop')) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key.toLowerCase();
     if (wideChat() && (k === 'm' || k === 'l')) { e.preventDefault(); if (k === 'm') openPnInput(); else toggleLog(); return; }

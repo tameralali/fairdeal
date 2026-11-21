@@ -23,21 +23,28 @@ const icon = {
   pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 5.5h3v13h-3zM13.5 5.5h3v13h-3z" fill="currentColor"/></svg>',
   next: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5.5 15.5 12 9 18.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   nextHand: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 6l6 6-6 6M12.5 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  newTab: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 4.5h6v6M19.2 4.8 11 13M17.5 13.5V18a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 18V8A1.5 1.5 0 0 1 6 6.5h4.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 
 let current = null; // the open history, so new hands can be added to its list while it is open
 
-// start: the hand to show first. sort and who: how the list opens. who is the player whose hands and
-// results the list shows; empty (Everyone) shows every hand with its pot.
-export async function historyDialog({ start = null, sort = null, who = null } = {}) {
+// start: the hand to show first, at step. sort, filter, game and who: how the list opens. who is the
+// player whose hands and results the list shows; empty or 'all' (Everyone) shows every hand with its
+// pot. view 'details' opens on the details. page: the history fills a tab of its own (hands-page.js),
+// with page.actions in its head in place of Close; otherwise its head has Open in new tab, which
+// carries on in a new tab exactly where this one is.
+export async function historyDialog({ start = null, sort = null, who = null, filter = null, game = null, step = 0, view = null, page = null } = {}) {
   if (current) current.close();
   const r = await emit('hands:list');
   if (!r.ok) return;
   const me = app.state.me.userId;
   const ended = app.state.table.status === 'ended';
+  const firstSort = ended ? 'old' : 'new';
   const v = {
-    all: r.hands, sort: sort || (ended ? 'old' : 'new'), filter: 'all', game: 'all', who: null,
-    cur: null, mode: 'replay', rec: null, R: null, i: 0, playing: false, timer: null, cache: new Map(), loading: 0,
+    all: r.hands, sort: SORTS.some(([k]) => k === sort) ? sort : firstSort,
+    filter: FILTERS.some(([k]) => k === filter) ? filter : 'all',
+    game: game && r.hands.some((h) => h.gameType === game) ? game : 'all', who: null,
+    cur: null, mode: view === 'details' ? 'details' : 'replay', rec: null, R: null, i: 0, playing: false, timer: null, cache: new Map(), loading: 0,
   };
   const played = (id) => v.all.some((h) => h.nets[id] !== undefined);
   const names = () => {
@@ -45,11 +52,33 @@ export async function historyDialog({ start = null, sort = null, who = null } = 
     for (const h of v.all) for (const [id, nm] of Object.entries(h.names || {})) if (!out.has(id)) out.set(id, nm);
     return out;
   };
-  v.who = who && played(who) ? who : played(me) ? me : '';
+  v.who = who === 'all' ? '' : who && played(who) ? who : played(me) ? me : '';
 
-  const dlg = dialog({ title: `Hand history, ${app.state.table.name}`, className: 'hh-dlg', body: '<p class="muted" style="padding:1.2rem">Loading…</p>' });
+  // the address of this history as it stands, for Open in new tab and for the tab of its own
+  const tabURL = () => {
+    const q = new URLSearchParams();
+    if (v.cur != null) q.set('hand', v.cur);
+    if (v.mode === 'details') q.set('view', 'details');
+    else if (v.R && v.i > 0) q.set('step', v.i);
+    q.set('who', v.who || 'all');
+    if (v.sort !== firstSort) q.set('sort', v.sort);
+    if (v.filter !== 'all') q.set('show', v.filter);
+    if (v.game !== 'all') q.set('game', v.game);
+    return `/hands/${encodeURIComponent(app.tableId)}?${q}`;
+  };
+  const newTab = `<a class="btn small hh-newtab" data-newtab href="${esc(tabURL())}" target="_blank" rel="noopener" title="Open the hand history in its own tab">${icon.newTab}<span class="long">Open in new tab</span><span class="short">New tab</span></a>`;
+  const dlg = dialog({
+    title: `Hand history, ${app.state.table.name}`, className: `hh-dlg${page ? ' hh-page' : ''}`, closable: !page,
+    actions: page ? page.actions || '' : newTab, body: '<p class="muted" style="padding:1.2rem">Loading…</p>',
+  });
   current = { close: () => dlg.close(), refresh };
   const $ = (s) => dlg.el.querySelector(s);
+  // keep the address up to date: the link in the head, or this tab's own address
+  const syncURL = () => {
+    if (page) { try { history.replaceState(null, '', tabURL()); } catch { /* not allowed */ } return; }
+    const a = dlg.el.querySelector('[data-newtab]');
+    if (a) a.href = tabURL();
+  };
 
   // ----- the list -----
   const list = () => {
@@ -154,7 +183,7 @@ export async function historyDialog({ start = null, sort = null, who = null } = 
     if (ticket !== v.loading) return; // a later choice won
     v.rec = rec;
     v.R = rec && canReplay(rec) ? buildReplay(rec, fmt) : null;
-    v.i = v.R ? (at === 'last' ? v.R.steps.length - 1 : at) : 0;
+    v.i = v.R ? (at === 'last' ? v.R.steps.length - 1 : Math.max(0, Math.min(v.R.steps.length - 1, Number(at) || 0))) : 0;
     drawMain();
     for (const d of [1, -1]) { const k = neighbor(d); if (k != null) record(k); } // ready before it is asked for
   };
@@ -162,6 +191,7 @@ export async function historyDialog({ start = null, sort = null, who = null } = 
   const drawMain = () => {
     const main = $('.hh-main');
     if (!main) return;
+    syncURL();
     const rec = v.rec;
     if (!rec) { main.innerHTML = `<p class="muted">${v.all.length ? 'Pick a hand from the list.' : 'No finished hands yet. They show up here as soon as one ends.'}</p>`; return; }
     const L = list();
@@ -240,6 +270,8 @@ export async function historyDialog({ start = null, sort = null, who = null } = 
 
   // ----- events -----
   dlg.el.addEventListener('click', (e) => {
+    // the history goes on in a tab of its own, so this one closes and the table shows again
+    if (e.target.closest('[data-newtab]')) { stop(); syncURL(); setTimeout(() => dlg.close(), 0); return; }
     const row = e.target.closest('[data-h]');
     if (row) { stop(); $('.hh')?.classList.remove('list-open'); load(Number(row.dataset.h), 0); return; }
     if (e.target.closest('[data-list]')) { $('.hh')?.classList.toggle('list-open'); markRow(true); return; }
@@ -285,13 +317,15 @@ export async function historyDialog({ start = null, sort = null, who = null } = 
     if (!v.playing) drawMain();
   }
 
-  dlg.setBody('<div class="hh"><aside class="hh-side"></aside><section class="hh-main"></section></div>');
+  dlg.setBody('<div class="hh"><aside class="hh-side"></aside><section class="hh-main" tabindex="-1" aria-label="Hand"></section></div>');
   drawSide();
   const L = list();
   const first = start != null && v.all.some((h) => h.handNumber === start) ? start : L[0]?.handNumber ?? null;
-  if (first != null && !L.some((h) => h.handNumber === first)) { v.sort = 'new'; v.filter = 'all'; drawSide(); }
+  if (first != null && !L.some((h) => h.handNumber === first)) { v.sort = 'new'; v.filter = 'all'; v.game = 'all'; drawSide(); }
   if (first == null) drawMain();
-  else await load(first, 0);
+  else await load(first, start === first ? step : 0);
+  // the keys step through the hand from the start, without a ring round the first button in the head
+  if (dlg.el.open) $('.hh-main')?.focus({ preventScroll: true });
 }
 
 // Called when the table's count of finished hands changes.
