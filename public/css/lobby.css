@@ -209,7 +209,6 @@
 .bi-name { min-width: 0; }
 .bi-bal { font: 700 22px/1 var(--num); font-variant-numeric: tabular-nums; text-align: right; }
 .bi-sub { color: var(--muted); font-size: 13.5px; }
-.bi-net { font: 600 15px/1 var(--num); font-variant-numeric: tabular-nums; text-align: right; }
 .led-list li { padding: 10px 2px; border-bottom: 1px solid var(--line-soft); }
 .li-top { display: flex; justify-content: space-between; gap: 10px; }
 .li-top span { font: 600 17px/1.2 var(--num); font-variant-numeric: tabular-nums; }

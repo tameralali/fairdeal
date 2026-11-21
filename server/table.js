@@ -642,14 +642,19 @@ export class Table {
   }
 
   scheduleCalls() {
+    const next = Math.min(...[...this.players.values()].map((p) => p.leaveAt || Infinity));
+    // a countdown already set for that time keeps its timer: setting it again at the end of every hand
+    // would put it off for as long as hands keep ending quickly
+    if (this.timers.call && this.callAt === next) return;
     clearTimeout(this.timers.call);
     this.timers.call = null;
-    const next = Math.min(...[...this.players.values()].map((p) => p.leaveAt || Infinity));
+    this.callAt = next;
     if (next === Infinity) return;
     this.timers.call = setTimeout(this.safe(() => this.callsDue()), Math.max(0, next - Date.now()) + 50);
   }
 
   callsDue() {
+    this.timers.call = null;
     const now = Date.now();
     for (const p of [...this.players.values()]) {
       if (!p.leaveAt || p.leaveAt > now) continue;

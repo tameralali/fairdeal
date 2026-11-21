@@ -15,7 +15,7 @@ let me = null;
 let clubSocket = null;
 let watching = null;
 // view state that survives live refreshes of the club page
-const ui = { sort: 'name', member: '', ledgerLimit: 15, statsGame: 'all', period: 'all', from: '', to: '' };
+const ui = { member: '', ledgerLimit: 15, statsGame: 'all', period: 'all', from: '', to: '' };
 const isAdmin = () => me && (me.user.role === 'owner' || me.user.role === 'admin');
 
 async function boot() {
@@ -310,7 +310,8 @@ async function clubHome(id) {
   const past = data.tables.filter((t) => t.status === 'ended');
   const money = (n) => (n === undefined ? '<span class="faint">-</span>' : `<span class="${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}">${F(n)}</span>`);
   const signed = (n) => (n === undefined ? '<span class="faint">-</span>' : `<span class="${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}">${n > 0 ? '+' : ''}${F(n)}</span>`);
-  const members = c.members.slice().sort((a, b) => (ui.sort === 'net' ? (b.net ?? -1e18) - (a.net ?? -1e18) : ui.sort === 'balance' ? (b.balance ?? -1e18) - (a.balance ?? -1e18) : 0));
+  // always by balance, the most first, then by name
+  const members = c.members.slice().sort((a, b) => (b.balance ?? -1e18) - (a.balance ?? -1e18) || a.name.localeCompare(b.name));
   if (ui.member && !c.members.some((m) => m.userId === ui.member)) ui.member = '';
   const txs = c.transactions.filter((t) => !ui.member || t.userId === ui.member);
   const shown = txs.slice(0, ui.ledgerLimit);
@@ -344,7 +345,6 @@ async function clubHome(id) {
     <section class="panel" id="balances">
       <div class="sec-head"><h2>Balances</h2>
         <div class="row">
-          ${c.seeAll ? `<div class="seg" role="group" aria-label="Sort members">${[['name', 'By role'], ['balance', 'By balance'], ['net', 'Leaderboard']].map(([k, l]) => `<button type="button" data-sort="${k}" class="${k === ui.sort ? 'on' : ''}">${l}</button>`).join('')}</div>` : ''}
           ${isAdmin() ? '<button class="btn small" data-invite>Invite players</button>' : ''}
         </div>
       </div>
@@ -353,10 +353,10 @@ async function clubHome(id) {
         <div><small>Owed to the club</small><b class="${c.totals.owed < 0 ? 'neg' : ''}">${F(c.totals.owed)}</b></div>
         <div><small>On tables now</small><b>${F(c.totals.onTables)}</b></div>
         <div><small>Net balance</small><b>${F(c.totals.balances)}</b></div></div>` : ''}
-      <div class="scroll-x wide-only"><table class="data balances"><thead><tr><th>Member</th><th class="n">Balance</th><th class="n hide-sm">Credit limit</th><th class="n">Available</th><th class="n hide-sm">On tables</th><th class="n">Net from play</th>${c.isManager ? '<th><span class="sr">Actions</span></th>' : ''}</tr></thead>
+      <div class="scroll-x wide-only"><table class="data balances"><thead><tr><th>Member</th><th class="n">Balance</th><th class="n hide-sm">Credit limit</th><th class="n">Available</th><th class="n hide-sm">On tables</th>${c.isManager ? '<th><span class="sr">Actions</span></th>' : ''}</tr></thead>
       <tbody>${members.map((m) => `<tr class="${m.userId === me.user.id ? 'me' : ''}"><td><button type="button" class="linkish" data-mm="${esc(m.userId)}" ${c.isManager || m.userId === me.user.id ? '' : 'disabled'}>${esc(m.name)}</button>${m.userId === me.user.id ? ' <span class="faint">(you)</span>' : ''}${m.role !== 'member' ? ` <span class="role">${m.role === 'manager' ? 'admin' : m.role}</span>` : ''}${m.off ? ' <span class="off">access off</span>' : ''}</td>
         <td class="n bal">${money(m.balance)}</td><td class="n hide-sm">${m.creditLimit === undefined ? '<span class="faint">-</span>' : F(m.creditLimit)}</td><td class="n">${m.available === undefined ? '<span class="faint">-</span>' : F(Math.max(0, m.available))}</td>
-        <td class="n hide-sm">${m.onTables === undefined ? '<span class="faint">-</span>' : F(m.onTables)}</td><td class="n">${signed(m.net)}</td>
+        <td class="n hide-sm">${m.onTables === undefined ? '<span class="faint">-</span>' : F(m.onTables)}</td>
         ${c.isManager ? `<td><div class="member-actions">
           <button class="btn tiny" data-m="chips" data-u="${esc(m.userId)}">Adjust</button>
           <button class="btn tiny" data-m="credit" data-u="${esc(m.userId)}">Credit</button>
@@ -365,7 +365,7 @@ async function clubHome(id) {
       <ul class="bal-list narrow-only">${members.map((m) => `<li><button type="button" class="bal-item ${m.userId === me.user.id ? 'me' : ''}" data-mm="${esc(m.userId)}" ${c.isManager || m.userId === me.user.id ? '' : 'disabled'}>
         <span class="bi-name"><b>${esc(m.name)}</b>${m.userId === me.user.id ? ' <span class="faint">(you)</span>' : ''}${m.role !== 'member' ? ` <span class="role">${m.role === 'manager' ? 'admin' : m.role}</span>` : ''}</span>
         <span class="bi-bal">${money(m.balance)}</span>
-        ${m.balance === undefined ? '' : `<small class="bi-sub">Available ${F(Math.max(0, m.available))}${m.onTables ? `, ${F(m.onTables)} on tables` : ''}${m.creditLimit ? `, credit ${F(m.creditLimit)}` : ''}</small><small class="bi-net">${signed(m.net)}</small>`}
+        ${m.balance === undefined ? '' : `<small class="bi-sub">Available ${F(Math.max(0, m.available))}${m.onTables ? `, ${F(m.onTables)} on tables` : ''}${m.creditLimit ? `, credit ${F(m.creditLimit)}` : ''}</small>`}
       </button></li>`).join('')}</ul>
       ${!c.seeAll ? '<p class="hint">Only admins see other members’ balances.</p>' : ''}
     </section>
@@ -453,8 +453,6 @@ async function clubHome(id) {
     if (d) { post(`/members/${d.dataset.decide}/decide`, { approve: d.dataset.ok === '1' }); return; }
     const mm = e.target.closest('[data-mm]');
     if (mm) { const m = c.members.find((x) => x.userId === mm.dataset.mm); if (m) memberSheet(m); return; }
-    const s = e.target.closest('[data-sort]');
-    if (s) { ui.sort = s.dataset.sort; clubHome(id); return; }
     if (e.target.closest('[data-more]')) { ui.ledgerLimit += 50; clubHome(id); return; }
     if (e.target.closest('[data-invite]')) return inviteDialog();
     if (e.target.closest('[data-settings]')) return settingsDialog();

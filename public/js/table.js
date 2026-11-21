@@ -5,7 +5,7 @@ import { equity } from '/shared/equity.js';
 import { playSound, unlockSound } from './sounds.js';
 import { sealSVG } from './seal.js';
 import { FairClient } from './fair-client.js';
-import { bestHand } from '/shared/evaluator.js';
+import { bestHand, score5 } from '/shared/evaluator.js';
 import { GAME_TYPES } from '/shared/cards.js';
 import { app, emit, fmt, inp, parse, gameShort, now } from './table-core.js';
 import * as D from './table-dialogs.js';
@@ -292,7 +292,8 @@ function spread(weights, a, b, band = 0) {
   return weights.map((w) => { const mid = at + (w * unit) / 2; at += w * unit; return angleAt(mid); });
 }
 
-function geometry(n, portrait, holeN, shown = null) {
+// extra: more room to keep around the board, in units (upright, for the list of runs under it)
+function geometry(n, portrait, holeN, shown = null, extra = 0) {
   const wide = !portrait && !!app.wide;
   const z = portrait ? SIZES.port : wide ? SIZES.wide : SIZES.land;
   const P = portrait
@@ -310,7 +311,7 @@ function geometry(n, portrait, holeN, shown = null) {
   const tall = Math.max(P.boxh, z.card * 1.2 + 0.5);
   // Upright, the board is nearly as wide as the table: seats at the sides keep above or below it. On a
   // wide screen they do too, as on PokerNow, so no name or card reaches over the board.
-  const band = P.board ? (P.board + P.boxh / 2) / tall : 0;
+  const band = P.board ? (P.board + extra + P.boxh / 2) / tall : 0;
   const C = { x: F.cx / ux, y: F.cy / uy };
   // how far from the top or bottom a box has to be for a chat bubble to fit beyond it
   const room = (4.6 + P.boxh / 2) * uy + 0.5;
@@ -474,7 +475,7 @@ function placeArea(W, H, portrait, wide, aspect) {
     app.wide = wide;
     app.aspect = aspect;
     render();
-  } else fitBoard();
+  } else { fitBoard(); fitLabels(); fitTags(); fitBets(); }
 }
 
 // ---------- render ----------
@@ -690,13 +691,14 @@ function allInChances(h) {
   catch { return null; }
 }
 
-// What a hand makes on the run being dealt, one name per board: "Two pair (5,4) / Flush".
-function madeHand(h, hole) {
+// What a hand makes on the run being dealt, one name per board: "Two pair (5,4) / Flush". brief: the
+// short names (Trips, not Three of a kind), as the runouts use.
+function madeHand(h, hole, brief = false) {
   if (!hole || !hole.length || !hole.every(Boolean)) return '';
   const { boards } = currentRun(h);
   if (!boards[0] || boards[0].length < 3) return '';
   const made = boards.map((b) => bestHand(hole, b, GAME_TYPES[h.gameType].omaha)).filter(Boolean);
-  if (made.length < 2) return made.length ? shortHandName(made[0].score) : '';
+  if (made.length < 2) return made.length ? shortHandName(made[0].score, brief) : '';
   return made.map((r) => shortHandName(r.score, true)).join(' / ');
 }
 
@@ -721,23 +723,49 @@ function boardWinners(h) {
   return new Map([...per].map(([i, m]) => [i, [...m.values()].sort((a, b) => b.amount - a.amount)]));
 }
 
-// With more than one board (run more than once, or a double board), what a hand makes on each board,
-// as PokerNow labels it: one red row per board under the cards, #1, #2 and so on.
-function boardLabels(h, hole, seat, wins) {
+const RUN_ROOM = 2.4;
+const BOARD_ROOM = 6;
+const runCount = (h) => Math.max(1, Math.round((h.boards || [h.board]).length / (h.boardsPerRun || 1)));
+
+// Run more than once on one board: for each run, who won it as soon as its last card is down (the
+// server's word once the hand is over), or, while its cards are still to come and everyone left is all
+// in with their cards face up, each one's chance of winning that run. Cards dealt to the other runs
+// cannot come in this one, so they count as seen.
+function runsInfo(h, wins) {
   const boards = h.boards || [h.board];
-  if (boards.length < 2 || !hole || !hole.length || !hole.every(Boolean)) return '';
   const omaha = GAME_TYPES[h.gameType].omaha;
-  const pills = [];
-  boards.forEach((b, i) => {
-    if (!b || b.length < 3) return;
-    const best = bestHand(hole, b, omaha);
-    if (!best) return;
-    const name = shortHandName(best.score, true);
-    const won = wins ? (wins.get(i) || []).some((w) => w.seat === seat) : null;
-    pills.push(`<span class="bl${won ? ' won' : won === false ? ' lost' : ''}"><i>#${i + 1}</i><span>${esc(name)}</span></span>`);
+  const left = h.players.filter((p) => !p.folded);
+  const live = left.filter((p) => p.hole && p.hole.length && p.hole.every(Boolean));
+  const faceUp = live.length >= 2 && live.length === left.length;
+  const betting = h.actorSeat !== null && h.actorSeat !== undefined;
+  const foldedSeen = h.players.filter((p) => p.folded && p.hole).flatMap((p) => p.hole.filter(Boolean));
+  const handOn = (hole, b) => { const r = hole && hole.every(Boolean) ? bestHand(hole, b, omaha) : null; return r ? shortHandName(r.score, true) : ''; };
+  return boards.map((b, r) => {
+    b = b || [];
+    const server = wins && wins.get(r);
+    if (server && server.length) {
+      const first = h.players.find((p) => p.seat === server[0].seat);
+      return { done: true, winners: server.map((w) => w.seat), hand: first ? handOn(first.hole, b) : '' };
+    }
+    if (b.length >= 5 && faceUp) {
+      let best = -1;
+      let winners = [];
+      for (const p of live) {
+        const res = bestHand(p.hole, b, omaha);
+        const sc = res ? res.score : -1;
+        if (sc > best) { best = sc; winners = [p.seat]; } else if (sc === best) winners.push(p.seat);
+      }
+      return { done: true, winners, hand: best >= 0 ? shortHandName(best, true) : '' };
+    }
+    if (faceUp && !betting && h.phase !== 'done') {
+      const seen = [...boards.filter((_, i) => i !== r).flat(), ...foldedSeen];
+      try { return { done: false, odds: equity(live.map((p) => ({ seat: p.seat, hole: p.hole })), [b], omaha, seen) }; } catch { /* no odds */ }
+    }
+    return { done: false };
   });
-  return pills.length ? pills.join('') : '';
 }
+
+const pctText = (ch) => { const n = Math.round(ch); return `${n === 0 && ch > 0 ? '<1' : n === 100 && ch < 100 ? '>99' : n}%`; };
 
 const FOLD_MARK = '<span class="foldmark" aria-label="Folded"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg><span>Fold</span></span>';
 
@@ -745,7 +773,6 @@ function renderTable(s) {
   const t = s.table;
   const n = t.settings.maxPlayers;
   const h = s.hand;
-  const wins = boardWinners(h);
   if (h && app.seenHand !== h.number) { app.seenHand = h.number; app.seen = new Set(); }
   const nextGame = t.rotation ? t.rotation.current : t.settings.format[0].game;
   const holeN = GAME_TYPES[h ? h.gameType : nextGame]?.holeCount || 2;
@@ -757,7 +784,13 @@ function renderTable(s) {
     const seat = (i + rot0) % n;
     return !!s.seats[seat] || !s.me.seated || asked.has(seat) || (myReq0 && myReq0.seat === seat);
   });
-  const geo = geometry(n, app.portrait, holeN, shown);
+  // Upright, the middle is taller when a hand is run more than once (its runs are listed under the
+  // board) or dealt on two boards (one above the other): the seats at the sides keep clear of it.
+  const runsN = h ? runCount(h) : 1;
+  const bprN = h ? h.boardsPerRun || 1 : 1;
+  const rowsN = bprN > 1 && runsN === 1 ? bprN : bprN > 1 ? runsN : 1;
+  const extra = !app.portrait || !h ? 0 : bprN === 1 ? (runsN - 1) * RUN_ROOM : (rowsN - 1) * BOARD_ROOM;
+  const geo = geometry(n, app.portrait, holeN, shown, extra);
   // Dealing goes one card at a time: one to each player, starting left of the button, then the next
   // round, each card coming from the middle of the table.
   const order = h ? h.players.map((p) => p.seat).sort((a, b) => a - b) : [];
@@ -770,7 +803,8 @@ function renderTable(s) {
   const rot = s.me.seat ?? 0;
   const hp = new Map((h?.players || []).map((p) => [p.seat, p]));
   const R = resultInfo(h);
-  const chances = allInChances(h);
+  // run more than once, each runout shows its own odds beside it, so the seats show none
+  const chances = h && runCount(h) > 1 ? null : allInChances(h);
   const best = chances ? Math.max(...chances.values()) : 0;
   const myReq = s.me.requests.find((r) => r.type === 'seat');
   const pendingSeats = new Set((s.requests || []).filter((r) => r.type === 'seat').map((r) => r.seat));
@@ -848,12 +882,14 @@ function renderTable(s) {
       }
       const seeAll = p.hole && p.hole.length && p.hole.every(Boolean);
       if (seeAll && (!p.folded || p.shown) && (isMe ? prefs.handStrength || !live : true) && (isMe || !live || chances || p.shown)) {
-        const multi = (h.boards || []).length > 1 ? boardLabels(h, p.hole, seat, wins) : '';
-        if (multi) extra += `<span class="mades n${count} k${Math.min(4, (h.boards || []).length)}">${multi}</span>`;
-        else {
-          const name = madeHand(h, p.hole);
-          if (name) extra += `<span class="made n${count}">${esc(name)}</span>`;
-        }
+        // One label, over the bottom of the cards only: what the hand makes on the run being dealt (with
+        // its number when it runs more than once). Once a hand run more than once is over, each runout
+        // names its winner and their hand instead.
+        const runsN = runCount(h);
+        const name = runsN > 1 && h.phase === 'done' ? '' : madeHand(h, p.hole, runsN > 1);
+        // two boards: both hands, on two lines where one would reach over a box (fitLabels)
+        const parts = name.split(' / ').map((x) => `<span>${esc(x)}</span>`);
+        if (name) extra += `<span class="made n${count}">${runsN > 1 ? `<i>#${currentRun(h).r + 1}</i>` : ''}${parts.join('<span class="sep"> / </span>')}</span>`;
       }
     }
 
@@ -898,13 +934,16 @@ function renderTable(s) {
       </div>
       ${bubble}
     </div>`;
-    if (p && p.bet > 0) chips += `<div class="bet" style="left:${g.bx.toFixed(2)}%;top:${g.by.toFixed(2)}%">${fmt(p.bet)}</div>`;
+    if (p && p.bet > 0) chips += `<div class="bet" data-x="${g.bx.toFixed(2)}" data-y="${g.by.toFixed(2)}" data-uid="${esc(info.userId)}" style="left:${g.bx.toFixed(2)}%;top:${g.by.toFixed(2)}%">${fmt(p.bet)}</div>`;
   }
   els.seats.innerHTML = seats;
   els.chips.innerHTML = chips;
   VC.paintVoice();
   els.center.innerHTML = centerHTML(s, R);
   fitBoard();
+  fitLabels();
+  fitTags();
+  fitBets();
   fitMark();
 }
 
@@ -945,6 +984,146 @@ function fitBoard() {
     if (t >= 1) c.style.removeProperty('--bk');
     else c.style.setProperty('--bk', t.toFixed(3));
   }
+}
+
+// What a hand makes hangs under the cards. A long one could reach over the player's own name and
+// numbers: then it moves left as far as the window allows, and on two boards it can go on two lines;
+// where it would still reach down over the player below, it moves up a little over the foot of the
+// cards. Whichever covers least (on a tie the label stays as it is).
+function fitLabels() {
+  const seats = [...els.seats.querySelectorAll('.seat')];
+  const labels = seats.map((x) => x.querySelector('.plate > .made')).filter(Boolean);
+  if (!labels.length) return;
+  const hit = (a, c, k = 1) => a.left < c.right - k && c.left < a.right - k && a.top < c.bottom - k && c.top < a.bottom - k;
+  const rectsOf = (x, sel) => [...x.querySelectorAll(sel)].map((el) => el.getBoundingClientRect()).filter((r) => r.width && r.height);
+  const cost = (m, own) => {
+    const r = m.getBoundingClientRect();
+    let n = r.left < 1 ? 1 : 0;
+    for (const q of rectsOf(own, '.who')) if (hit(r, q, 2)) n++;
+    seats.forEach((x) => { if (x !== own) for (const q of rectsOf(x, '.plate, .fan, .made')) if (hit(r, q)) n++; });
+    return n;
+  };
+  const shift = (m, own) => {
+    const who = own.querySelector('.who');
+    const r = m.getBoundingClientRect();
+    const over = who ? r.right - who.getBoundingClientRect().left + 3 : 0;
+    const dx = Math.min(over, r.left - 2);
+    if (dx > 0) m.style.marginLeft = `${-dx}px`;
+  };
+  // up, just clear of whoever is below, by at most two thirds of the label's height
+  const raise = (m, own) => {
+    const r = m.getBoundingClientRect();
+    let need = 0;
+    seats.forEach((x) => { if (x !== own) for (const q of rectsOf(x, '.plate, .fan, .made')) if (hit(r, q) && q.top > r.top) need = Math.max(need, r.bottom - q.top + 2); });
+    if (need > 0 && need <= r.height * 0.65) m.style.marginTop = `${-need}px`;
+  };
+  for (const m of labels) {
+    const own = m.closest('.seat');
+    const ways = [[false, false, false], [false, true, false]];
+    if (m.querySelector('.sep')) ways.push([true, false, false], [true, true, false]);
+    ways.push([false, true, true]);
+    let best = null;
+    for (const [two, moved, up] of ways) {
+      m.classList.toggle('two', two);
+      m.style.marginLeft = m.style.marginTop = '';
+      if (moved) shift(m, own);
+      if (up) raise(m, own);
+      const n = cost(m, own);
+      if (!best || n < best.n) best = { n, two, ml: m.style.marginLeft, mt: m.style.marginTop };
+      if (!n) break;
+    }
+    m.classList.toggle('two', best.two);
+    m.style.marginLeft = best.ml;
+    m.style.marginTop = best.mt;
+  }
+}
+
+// A player's last action sits just outside their box, on the side away from the middle, so it covers
+// none of their name, stack or numbers; where another player's box, cards or labels are there, or the
+// edge of the window, it goes on the inside of the box instead.
+function fitTags() {
+  const seats = [...els.seats.querySelectorAll('.seat')];
+  const tags = seats.map((x) => x.querySelector('.plate > .tag')).filter(Boolean);
+  if (!tags.length) return;
+  const hit = (a, c) => a.left < c.right - 1 && c.left < a.right - 1 && a.top < c.bottom - 1 && c.top < a.bottom - 1;
+  const rectsOf = (x, sel) => [...x.querySelectorAll(sel)].map((el) => el.getBoundingClientRect()).filter((r) => r.width && r.height);
+  const parts = seats.map((x) => rectsOf(x, '.plate, .fan, .made, .eq'));
+  const top = els.top && els.top.offsetHeight ? els.top.getBoundingClientRect() : null;
+  const cost = (tag, own) => {
+    const r = tag.getBoundingClientRect();
+    let n = 0;
+    seats.forEach((x, i) => {
+      if (x === own) { for (const q of rectsOf(x, '.made, .eq')) if (hit(r, q)) n++; return; }
+      for (const q of parts[i]) if (hit(r, q)) n++;
+      const t = x.querySelector('.plate > .tag');
+      if (t && hit(r, t.getBoundingClientRect())) n++;
+    });
+    if (r.top < 0 || r.bottom > window.innerHeight || (top && hit(r, top))) n += 2;
+    return n;
+  };
+  for (const tag of tags) {
+    tag.classList.remove('in');
+    const own = tag.closest('.seat');
+    const out = cost(tag, own);
+    if (!out) continue;
+    tag.classList.add('in');
+    if (cost(tag, own) >= out) tag.classList.remove('in');
+  }
+}
+
+// A bet never sits on anyone's box, cards or labels, on the pot or the board, or on another bet. The
+// layout places bets for a pill of the usual size, so a long amount, or a pot pushed up by a taller
+// middle, can still reach over something: such a bet moves to the nearest clear place on the felt
+// around where it was put, the side nearest its player first.
+function fitBets() {
+  const bets = [...els.chips.querySelectorAll('.bet')];
+  if (!bets.length) return;
+  // start from where the layout put them
+  for (const b of bets) { b.style.left = `${b.dataset.x}%`; b.style.top = `${b.dataset.y}%`; }
+  const A = els.area.getBoundingClientRect();
+  const F = els.felt.getBoundingClientRect();
+  if (!A.width || !F.width) return;
+  const pad = 2;
+  const grow = (r) => ({ l: r.left - pad, r: r.right + pad, t: r.top - pad, b: r.bottom + pad });
+  const hit = (a, c) => a.l < c.r && c.l < a.r && a.t < c.b && c.t < a.b;
+  const keep = [];
+  const add = (el) => { const r = el.getBoundingClientRect(); if (r.width && r.height) keep.push(grow(r)); };
+  els.seats.querySelectorAll('.plate, .fan, .made, .tag, .hud, .dbtn, .c30').forEach(add);
+  els.center.querySelectorAll('.pot:not(.ghost), .boards, .meta, .rit-note').forEach(add);
+  const fx = (F.left + F.right) / 2, fy = (F.top + F.bottom) / 2, frx = F.width / 2, fry = F.height / 2;
+  const onFelt = (q) => [[q.l, q.t], [q.r, q.t], [q.l, q.b], [q.r, q.b]].every(([x, y]) => ((x - fx) / frx) ** 2 + ((y - fy) / fry) ** 2 <= 1);
+  const rects = bets.map((b) => b.getBoundingClientRect());
+  const u = parseFloat(getComputedStyle(els.area).getPropertyValue('--au')) || A.width / 100;
+  const maxR = Math.max(64, u * 14);
+  bets.forEach((b, i) => {
+    const r = rects[i];
+    const others = rects.filter((_, j) => j !== i).map(grow);
+    const at = (dx, dy) => ({ l: r.left + dx, r: r.right + dx, t: r.top + dy, b: r.bottom + dy });
+    const clear = (q) => !keep.some((k) => hit(q, k)) && !others.some((k) => hit(q, k));
+    if (clear(at(0, 0))) return;
+    // the player's own box, to keep the bet on their side
+    const own = els.seats.querySelector(`.seat[data-uid="${CSS.escape(b.dataset.uid || '')}"] .plate`);
+    const o = own && own.getBoundingClientRect();
+    const ox = o ? (o.left + o.right) / 2 : fx, oy = o ? (o.top + o.bottom) / 2 : fy;
+    const cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+    for (let d = 3; d <= maxR; d += 3) {
+      let best = null;
+      for (let k = 0; k < 24; k++) {
+        const th = (k / 24) * 2 * Math.PI;
+        const dx = d * Math.cos(th), dy = d * Math.sin(th);
+        const q = at(dx, dy);
+        if (!clear(q) || !onFelt(q)) continue;
+        const near = Math.hypot(cx + dx - ox, cy + dy - oy);
+        if (!best || near < best.near) best = { dx, dy, near };
+      }
+      if (best) {
+        b.style.left = `${((cx + best.dx - A.left) / A.width) * 100}%`;
+        b.style.top = `${((cy + best.dy - A.top) / A.height) * 100}%`;
+        rects[i] = b.getBoundingClientRect();
+        return;
+      }
+    }
+  });
 }
 
 // The Aquarium on the felt steps aside when boards or results reach down over it.
@@ -1006,8 +1185,23 @@ function centerHTML(s, R) {
       }
       cols += `<div class="bcol${stack ? ' multi' : ''}">${cards}</div>`;
     }
-    const tags = Array.from({ length: runs }, (_, r) => `<span class="rtag" style="--r:${r}"><i><span class="rw">Run </span>${r + 1}</i>${runWin(r)}</span>`).join('');
-    grid = `<div class="board runs" aria-label="Runs ${runs}"><div class="rtags" aria-hidden="true">${tags}</div>${cols}</div>`;
+    // beside each run: its winner and their hand once its cards are all down, its odds until then
+    const nameOf = (seat) => { const n = s.seats[seat]?.name || `Seat ${seat + 1}`; return n.length > 10 ? `${n.slice(0, 9)}…` : n; };
+    const info = runsInfo(h, wins);
+    const tags = info.map((x, r) => {
+      let body = '';
+      if (x.done && x.winners && x.winners.length) {
+        const who = x.winners.length === 1 ? esc(nameOf(x.winners[0])) : `${x.winners.slice(0, 2).map((w) => esc(nameOf(w))).join(', ')}${x.winners.length > 2 ? ' +' : ''} split`;
+        body = `<span class="rbody"><b class="rwin">${who}</b>${x.hand ? `<small class="rhand">${esc(x.hand)}</small>` : ''}</span>`;
+      } else if (x.odds && x.odds.size) {
+        const list = [...x.odds].sort((a, b) => b[1] - a[1]).slice(0, 3);
+        const top = list[0][1];
+        body = `<span class="rbody rodds">${list.map(([seat, ch]) => `<span class="${ch >= top - 0.01 ? 'fav' : ''}"><b>${esc(nameOf(seat))}</b> ${pctText(ch)}</span>`).join('')}</span>`;
+      }
+      return `<span class="rtag${x.done ? ' done' : x.odds ? ' odds' : ''}" style="--r:${r}"><i><span class="rw">Run </span>${r + 1}</i>${body}</span>`;
+    }).join('');
+    const label = info.map((x, r) => `Run ${r + 1}: ${x.done && x.winners ? `${x.winners.map(nameOf).join(' and ')}${x.hand ? `, ${x.hand}` : ''}` : x.odds ? [...x.odds].map(([seat, ch]) => `${nameOf(seat)} ${pctText(ch)}`).join(', ') : 'to come'}`).join('. ');
+    grid = `<div class="board runs" aria-label="${esc(label)}"><div class="rtags" aria-hidden="true">${tags}</div>${cols}</div>`;
   }
   for (let r = 0; r < (stackRuns ? 0 : runs); r++) {
     // one board a run: the winner under the run's name; two boards a run: under each board instead
@@ -1049,7 +1243,7 @@ function centerHTML(s, R) {
       : `<div class="pot"><b><i>total</i> ${fmt(h.potTotal)}</b></div>`;
     if (h.phase === 'rit') {
       below += `<div class="rit-note">All in: picking how many times to run it, <span data-ritclock></span></div>`;
-    } else if (h.rit && h.rit.result > 1) below += `<div class="rit-note">Running it ${TIMES[h.rit.result]}</div>`;
+    } else if (h.rit && h.rit.result > 1 && !stackRuns) below += `<div class="rit-note">Running it ${TIMES[h.rit.result]}</div>`;
   }
   const bombWhy = h.bombReason === 'manual' ? 'called by the host' : h.bombReason === 'every' ? 'scheduled' : h.bombReason === 'percent' ? 'random' : '';
   const bomb = h.isBomb ? `<span class="bomb" title="${esc(bombWhy)}">Bomb pot</span>` : '';
@@ -1073,7 +1267,10 @@ function resultLines(h) {
     for (const w of run.winners) {
       if (pot.uncontested) { alone.set(w.name, (alone.get(w.name) || 0) + w.amount); continue; }
       const m = per[run.b ?? run.run];
-      const cur = m.get(w.seat) || { name: w.name, amount: 0, hand: w.hand };
+      // the hand in its short name, with its ranks, as on the seats: Two pair (4,2)
+      let hand = w.hand;
+      try { if (w.cards && w.cards.length === 5) hand = shortHandName(score5(w.cards), true); } catch { /* keep the server's name */ }
+      const cur = m.get(w.seat) || { name: w.name, amount: 0, hand };
       cur.amount += w.amount;
       m.set(w.seat, cur);
     }
@@ -1081,8 +1278,10 @@ function resultLines(h) {
   const lines = [];
   // run more than once on one board, each board is a run, and the line says so
   const word = (h.boardsPerRun || 1) === 1 && nb > 1 ? 'runs' : 'boards';
-  if (nb > 2) {
-    // three or more boards: one line per winner, so the felt stays readable (the log has every board)
+  // Three or more boards, a hand run more than once on one board, or two boards on a phone (each run
+  // or board already names its winner beside it, and the seats their hands): one line for the winners,
+  // so the felt stays readable (the log has every board).
+  if (nb > 2 || (nb > 1 && (bpr === 1 || app.portrait))) {
     const tot = new Map();
     per.forEach((m) => m.forEach((x, seat) => {
       const t = tot.get(seat) || { name: x.name, amount: 0, boards: 0 };
@@ -1093,7 +1292,7 @@ function resultLines(h) {
     const list = [...tot.values()].sort((a, b) => b.amount - a.amount);
     if (list.length === 1) {
       const x = list[0];
-      lines.push(`<b>${esc(x.name)}</b> wins ${fmt(x.amount)} ${x.boards === nb ? `on all ${nb} ${word}` : `on ${x.boards} of ${nb} ${word}`}`);
+      lines.push(`<b>${esc(x.name)}</b> wins ${fmt(x.amount)} ${x.boards === nb ? (nb === 2 ? `on both ${word}` : `on all ${nb} ${word}`) : `on ${x.boards} of ${nb} ${word}`}`);
     } else if (list.length) {
       const parts = list.map((x) => `<b>${esc(x.name)}</b> ${fmt(x.amount)}`);
       lines.push(`${parts.slice(0, -1).join(', ')} and ${parts.at(-1)} over ${nb} ${word}`);
@@ -1370,7 +1569,7 @@ function showPanel(s) {
   const one = (c, i) => (!c || shown.has(i)
     ? `<span class="sp-one done${c ? ` s-${c[1]}` : ''}" title="Shown">${c ? `${esc(rankLabel(c))}${pipSVG(c[1])}` : ''}</span>`
     : `<button type="button" class="sp-one s-${c[1]}" data-show="${i}" title="Show this card" aria-label="Show ${esc(rankLabel(c))}${esc(SUIT[c[1]])}">${esc(rankLabel(c))}${pipSVG(c[1])}<kbd aria-hidden="true">${i + 1}</kbd></button>`);
-  return `<div class="show-panel n${hole.length}" role="group" aria-label="Show your cards"><button type="button" class="sp-all" data-show="all">${left === hole.length ? 'Show all cards' : 'Show the rest'}<kbd aria-hidden="true">S</kbd></button><div class="sp-row">${hole.map(one).join('')}</div></div>`;
+  return `<div class="show-panel n${hole.length}" role="group" aria-label="Show your cards"><button type="button" class="sp-all" data-show="all">${left === hole.length ? 'Show all<span class="sp-x"> cards</span>' : 'Show the rest'}<kbd aria-hidden="true">S</kbd></button><div class="sp-row">${hole.map(one).join('')}</div></div>`;
 }
 
 // picking a pre-click, or picking it again to take it back
