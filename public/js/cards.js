@@ -3,7 +3,7 @@ const PKEY = 'fd:prefs';
 
 export const DEFAULT_PREFS = {
   deck: 'big',        // big | classic
-  colors: 'two',      // two: red and black, as on PokerNow; four: spades black, hearts red, diamonds blue, clubs green
+  colors: 'four',     // four: spades black, hearts red, diamonds blue, clubs green, as on PokerNow; two: red and black
   back: 'oxblood',    // oxblood | navy | forest | slate | brass
   felt: '',           // '' = use the table's felt color
   sound: true,         // a call when it is my turn
@@ -40,6 +40,9 @@ function load() {
     // then two colours became the default again, as on PokerNow: every browser starts there once,
     // because the whole set used to be saved whenever any one choice changed; a later pick of four stays
     if (!saved.deck2) { delete saved.colors; saved.deck2 = true; }
+    // and then four colours, PokerNow's blue diamonds and green clubs, picked over two: again every
+    // browser starts there once, and a later pick of two stays
+    if (!saved.deck4) { delete saved.colors; saved.deck4 = true; }
     // the run-it vote needs agreement now: always picking the most becomes going with the others
     if (saved.autoRun === 'max') saved.autoRun = 'any';
     return { ...DEFAULT_PREFS, ...saved };
@@ -94,12 +97,18 @@ export function backHTML(cls = '', style = '') {
 const R1 = { 14: 'A', 13: 'K', 12: 'Q', 11: 'J', 10: '10' };
 const rk = (v) => R1[v] || String(v);
 const KINDS = ['High card', 'Pair', 'Two pair', 'Three of a kind', 'Straight', 'Flush', 'Full house', 'Four of a kind', 'Straight flush'];
-// brief: just the kind of hand, for a label that names a hand on each of two boards
+// brief: shorter still, for a label that names a hand on each of several boards or runs, still with
+// its rank, so a pair reads Pair (A) and not just Pair
+const BRIEF = ['High card', 'Pair', 'Two pair', 'Trips', 'Straight', 'Flush', 'Full house', 'Quads', 'Str. flush'];
 export function shortHandName(score, brief = false) {
   const c = score >> 20;
   const a = (score >> 16) & 15;
   const b = (score >> 12) & 15;
-  if (brief) return c === 8 && a === 14 ? 'Royal flush' : KINDS[c];
+  if (brief) {
+    if (c === 8 && a === 14) return 'Royal flush';
+    if (c === 5) return 'Flush';
+    return `${BRIEF[c]} (${rk(a)}${c === 2 || c === 6 ? `,${rk(b)}` : ''})`;
+  }
   switch (c) {
     case 8: return a === 14 ? 'Royal flush' : `Straight flush (${rk(a)} high)`;
     case 7: return `Four of a kind (${rk(a)})`;

@@ -1,51 +1,55 @@
-@font-face { font-family: 'Lato'; font-weight: 400; font-display: swap; src: url('/fonts/lato-latin-400-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Lato'; font-weight: 700; font-display: swap; src: url('/fonts/lato-latin-700-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Lato'; font-weight: 900; font-display: swap; src: url('/fonts/lato-latin-900-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Mulish'; font-weight: 400; font-display: swap; src: url('/fonts/mulish-latin-400-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Mulish'; font-weight: 600; font-display: swap; src: url('/fonts/mulish-latin-600-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Mulish'; font-weight: 700; font-display: swap; src: url('/fonts/mulish-latin-700-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Mulish'; font-weight: 800; font-display: swap; src: url('/fonts/mulish-latin-800-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Mulish'; font-weight: 900; font-display: swap; src: url('/fonts/mulish-latin-900-normal.woff2') format('woff2'); }
 @font-face { font-family: 'Abril Fatface'; font-weight: 400; font-display: swap; src: url('/fonts/abril-fatface-latin-400-normal.woff2') format('woff2'); }
+/* Inter stands in for Apple's SF Pro where the system does not have it */
+@font-face { font-family: 'Inter'; font-weight: 400; font-display: swap; src: url('/fonts/inter-latin-400-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-weight: 500; font-display: swap; src: url('/fonts/inter-latin-500-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-weight: 600; font-display: swap; src: url('/fonts/inter-latin-600-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-weight: 700; font-display: swap; src: url('/fonts/inter-latin-700-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-weight: 800; font-display: swap; src: url('/fonts/inter-latin-800-normal.woff2') format('woff2'); }
 
-/* Charcoal room, a green felt, white cards. Colour carries meaning: violet is the interface
-   (buttons, links, the dealer button, chat), pale yellow-green is money on the felt, red is
-   what a hand makes, green is winning. */
+/* Apple's dark look: a near-black room, frosted panels with hairline edges, Apple's system colours, and
+   its own font (SF Pro, or Inter where the system lacks it). A green felt and white cards on top.
+   Colour carries meaning: blue is the interface (buttons, links, the dealer button, chat), pale yellow
+   is money on the felt, red is what a hand makes, green is winning and going on. */
 :root {
-  --room: #2e2e2e;
-  --room-2: #262626;
-  --panel: #353535;
-  --panel-2: #404040;
-  --line: #4d4d4d;
-  --line-soft: #3d3d3d;
-  --rail: #1f1f1f;
-  --rail-hi: #2b2b2b;
+  --room: #1c1c1e;
+  --room-2: #141416;
+  --panel: #2c2c2e;
+  --panel-2: #3a3a3c;
+  --line: #48484a;
+  --line-soft: #333336;
+  --rail: #1b1b1d;
+  --rail-hi: #2c2c2e;
   --felt: #507a4e;
-  --brass: #5f67cc;
-  --brass-hover: #6e76d8;
-  --brass-hi: #a6abf2;
+  --brass: #0a84ff;
+  --brass-hover: #2a94ff;
+  --brass-hi: #64b5ff;
   --brass-ink: #ffffff;
-  --brass-dim: #4d54a8;
-  --chip: #edfca6;
-  --chip-ink: #141414;
-  --made: #e5625d;
-  --text: #f3f3f3;
-  --muted: #a9a9a9;
-  --faint: #7f7f7f;
-  --danger: #e0715f;
-  --ok: #7cc47e;
+  --brass-dim: #0a63c2;
+  --chip: #f2f4b0;
+  --chip-ink: #1c1c1e;
+  --made: #e8564d;
+  --text: #f5f5f7;
+  --muted: #98989f;
+  --faint: #6e6e73;
+  --danger: #ff453a;
+  --ok: #30d158;
+  --go: #2e9d4f;
   --card: #ffffff;
-  --tint: rgb(95 103 204 / .09);
-  --tint-strong: rgb(166 171 242 / .45);
-  --focus: rgb(95 103 204 / .28);
-  --ui: 'Mulish', 'Lato', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --num: 'Mulish', 'Lato', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --fill: rgb(118 118 128 / .24);
+  --fill-hi: rgb(118 118 128 / .34);
+  --glass: rgb(30 30 32 / .74);
+  --hair: rgb(255 255 255 / .08);
+  --tint: rgb(10 132 255 / .12);
+  --tint-strong: rgb(100 181 255 / .45);
+  --focus: rgb(10 132 255 / .42);
+  --ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --num: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   /* the card faces and the name of the club */
   --serif: 'Abril Fatface', 'Bodoni 72', Didot, Georgia, 'Times New Roman', serif;
   --mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
-  --r-sm: 6px;
-  --r-md: 9px;
-  --r-lg: 16px;
+  --r-sm: 8px;
+  --r-md: 11px;
+  --r-lg: 20px;
 }
 
 /* The club's pages (home, sign-in, the verifier): a dark room with the felt's green in the buttons,
@@ -89,12 +93,12 @@ body {
   text-rendering: optimizeLegibility;
 }
 a { color: var(--brass-hi); text-underline-offset: 3px; }
-h1, h2, h3 { font-weight: 700; line-height: 1.15; margin: 0 0 .5em; letter-spacing: .005em; }
+h1, h2, h3 { font-weight: 700; line-height: 1.15; margin: 0 0 .5em; letter-spacing: -.015em; }
 h1 { font-size: 2rem; }
 h2 { font-size: 1.4rem; }
 h3 { font-size: 1.1rem; }
 p { margin: 0 0 .75em; max-width: 68ch; }
-.num { font-family: var(--num); font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+.num { font-family: var(--num); font-variant-numeric: tabular-nums; }
 .muted { color: var(--muted); }
 .faint { color: var(--faint); }
 .ok { color: var(--ok); }
@@ -111,11 +115,12 @@ p { margin: 0 0 .75em; max-width: 68ch; }
 .btn {
   appearance: none;
   font: 600 15px/1 var(--ui);
+  letter-spacing: -.005em;
   color: var(--text);
-  background: var(--panel-2);
-  border: 1px solid var(--line);
+  background: var(--fill);
+  border: 1px solid transparent;
   border-radius: var(--r-md);
-  padding: .62em 1em;
+  padding: .66em 1.1em;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -125,7 +130,7 @@ p { margin: 0 0 .75em; max-width: 68ch; }
   white-space: nowrap;
   transition: background-color .12s, border-color .12s, transform .06s;
 }
-.btn:hover { background: #4a4a4a; border-color: #5c5c5c; }
+.btn:hover { background: var(--fill-hi); }
 .btn:active { transform: translateY(1px); }
 .btn[disabled] { opacity: .45; cursor: not-allowed; transform: none; }
 .btn.primary { background: var(--brass); border-color: var(--brass); color: var(--brass-ink); }
@@ -133,10 +138,10 @@ p { margin: 0 0 .75em; max-width: 68ch; }
 .btn.light { background: var(--card); border-color: var(--card); color: #1c1c1c; }
 .btn.light:hover { background: #fff; }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
-.btn.ghost:hover { color: var(--text); background: rgba(255, 255, 255, .05); }
+.btn.ghost:hover { color: var(--text); background: rgb(118 118 128 / .16); }
 .btn.outline { background: transparent; }
-.btn.danger { color: #f2a99d; border-color: #6a3d36; background: transparent; }
-.btn.danger:hover { background: rgba(208, 100, 90, .12); border-color: var(--danger); }
+.btn.danger { color: #ff6961; background: rgb(255 69 58 / .14); }
+.btn.danger:hover { background: rgb(255 69 58 / .22); }
 .btn.small { font-size: 13.5px; padding: .45em .7em; border-radius: var(--r-sm); }
 .btn.tiny { font-size: 12.5px; padding: .3em .55em; border-radius: 5px; }
 .btn.big { font-size: 17px; padding: .8em 1.35em; border-radius: var(--r-md); }
@@ -154,34 +159,34 @@ label { display: block; font-weight: 500; color: var(--muted); font-size: 14px; 
 input:not([type]), input[type=text], input[type=email], input[type=number], input[type=password], input[type=search], select, textarea {
   font: 500 16px/1.2 var(--ui);
   color: var(--text);
-  background: var(--room-2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
+  background: rgb(118 118 128 / .18);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-md);
   padding: .55em .7em;
   width: 100%;
   min-width: 0;
 }
-input:focus, select:focus, textarea:focus { border-color: var(--brass-dim); outline: none; box-shadow: 0 0 0 3px var(--focus); }
+input:focus, select:focus, textarea:focus { border-color: var(--brass); outline: none; box-shadow: 0 0 0 3px var(--focus); }
 input[type=number] { font-family: var(--num); font-size: 17px; font-variant-numeric: tabular-nums; }
 .check { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: .55rem; align-items: start; color: var(--text); font-weight: 500; cursor: pointer; }
 .check input { margin-top: .25em; accent-color: var(--brass); width: 16px; height: 16px; grid-row: 1 / span 2; }
 .check small { grid-column: 2; display: block; color: var(--muted); font-weight: 400; font-size: 14px; }
 .field-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .8rem 1rem; }
 .hint { font-size: 13.5px; color: var(--muted); font-weight: 400; margin-top: .3rem; }
-.seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
+.seg { display: inline-flex; gap: 2px; padding: 2px; background: var(--fill); border-radius: 9px; }
 .seg button {
-  font: 600 14px/1 var(--ui); color: var(--muted); background: transparent; border: 0; padding: .55em .9em; cursor: pointer;
+  font: 600 14px/1 var(--ui); color: var(--muted); background: transparent; border: 0; border-radius: 7px; padding: .55em .9em; cursor: pointer;
 }
-.seg button + button { border-left: 1px solid var(--line); }
-.seg button.on { background: var(--panel-2); color: var(--text); box-shadow: inset 0 -2px 0 var(--brass); }
+.seg button:hover { color: var(--text); }
+.seg button.on { background: #636366; color: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / .35); }
 
 /* ---------- game format editor (start a game, host options) ---------- */
 .fmt-presets { display: flex; flex-wrap: wrap; gap: .4rem; }
 .fmt-chip {
-  font: 600 13.5px/1 var(--ui); color: var(--muted); background: transparent; border: 1px solid var(--line);
+  font: 600 13.5px/1 var(--ui); color: var(--muted); background: var(--fill); border: 1px solid transparent;
   border-radius: 999px; padding: .5em .85em; cursor: pointer;
 }
-.fmt-chip:hover { color: var(--text); border-color: var(--brass); }
+.fmt-chip:hover { color: var(--text); background: var(--fill-hi); }
 .fmt-steps { list-style: none; margin: .75rem 0 .6rem; padding: 0; }
 .fstep {
   display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .6rem; padding: .5rem .6rem;
@@ -243,21 +248,23 @@ body.gated > :not(.gate) { display: none !important; }
 
 /* ---------- dialogs ---------- */
 dialog {
-  border: 1px solid var(--line);
+  border: 1px solid var(--hair);
   border-radius: var(--r-lg);
-  background: var(--panel);
+  background: rgb(40 40 42 / .94);
+  -webkit-backdrop-filter: blur(30px) saturate(1.6);
+  backdrop-filter: blur(30px) saturate(1.6);
   color: var(--text);
   padding: 0;
   width: min(640px, calc(100vw - 24px));
   max-height: calc(100dvh - 32px);
-  box-shadow: 0 30px 80px rgba(0, 0, 0, .55);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, .6);
 }
 dialog.wide { width: min(940px, calc(100vw - 24px)); }
 dialog.narrow { width: min(420px, calc(100vw - 24px)); }
-dialog::backdrop { background: rgba(10, 10, 10, .62); backdrop-filter: blur(2px); }
+dialog::backdrop { background: rgb(0 0 0 / .45); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
 dialog[open] { display: flex; flex-direction: column; }
 .dlg-head { display: flex; align-items: center; gap: .75rem; padding: 1rem 1.25rem .75rem; border-bottom: 1px solid var(--line-soft); }
-.dlg-head h2 { margin: 0; font-size: 1.3rem; flex: 1; }
+.dlg-head h2 { margin: 0; font-size: 1.25rem; font-weight: 600; letter-spacing: -.01em; flex: 1; }
 .dlg-body { padding: 1rem 1.25rem 1.25rem; overflow: auto; }
 .dlg-foot { display: flex; gap: .6rem; justify-content: flex-end; padding: .85rem 1.25rem; border-top: 1px solid var(--line-soft); }
 .tabs { display: flex; gap: .25rem; padding: 0 1.25rem; border-bottom: 1px solid var(--line-soft); overflow-x: auto; }
@@ -306,10 +313,11 @@ dialog[open] { display: flex; flex-direction: column; }
 /* ---------- toasts ---------- */
 .toasts { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 1000; display: grid; gap: 8px; pointer-events: none; }
 .toast {
-  background: var(--card); color: #1c1c1c; font-weight: 600; padding: .6rem 1rem; border-radius: var(--r-md);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, .4); max-width: min(90vw, 520px); pointer-events: auto;
+  background: rgb(44 44 46 / .94); -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6);
+  color: var(--text); font-weight: 600; padding: .65rem 1.05rem; border-radius: 14px; border: 1px solid var(--hair);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .45); max-width: min(90vw, 520px); pointer-events: auto;
 }
-.toast.error { background: #f6d7d2; color: #5a1610; }
+.toast.error { background: rgb(90 28 24 / .94); color: #ffd8d4; }
 
 /* ---------- seal ---------- */
 .seal { display: inline-block; vertical-align: middle; flex: none; }

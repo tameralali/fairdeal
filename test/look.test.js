@@ -43,7 +43,15 @@ test('hand labels on the table', () => {
   assert.equal(name(['Kh', 'Kd'], ['Kc', '7s', '7d', '2h', '3c']), 'Full house (K,7)');
   assert.equal(name(['Th', 'Td'], ['2c', '7s', '9d', 'Jh', '3c']), 'Pair (10)');
   assert.equal(name(['Ah', 'Kh'], ['Qh', 'Jh', 'Th', '2c', '3d']), 'Royal flush');
-  assert.equal(shortHandName(bestHand(['Th', 'Td'], ['Tc', '7s', '9d'], false).score, true), 'Three of a kind');
+  // the short labels for several boards or runs keep the rank too: Pair (A), not just Pair
+  const brief = (hole, board) => shortHandName(bestHand(hole, board, false).score, true);
+  assert.equal(brief(['Th', 'Td'], ['Tc', '7s', '9d']), 'Trips (10)');
+  assert.equal(brief(['Ah', '4d'], ['Ac', '7s', '9d']), 'Pair (A)');
+  assert.equal(brief(['Kh', '9d'], ['Kc', '9s', '2d']), 'Two pair (K,9)');
+  assert.equal(brief(['Kh', 'Kd'], ['Kc', '7s', '7d']), 'Full house (K,7)');
+  assert.equal(brief(['Ah', '2h'], ['Qh', 'Jh', '5h']), 'Flush');
+  assert.equal(brief(['Ah', 'Kh'], ['Qh', 'Jh', 'Th']), 'Royal flush');
+  assert.equal(brief(['Ah', 'Kd'], ['7c', '4s', '9d']), 'High card (A)');
 });
 
 test('the bomb pot size only has to be filled in when there are bomb pots', () => {

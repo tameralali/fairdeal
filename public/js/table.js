@@ -674,7 +674,6 @@ function boardWinners(h) {
 
 // With more than one board (run more than once, or a double board), what a hand makes on each board,
 // as PokerNow labels it: one red row per board under the cards, #1, #2 and so on.
-const BRIEF = ['High card', 'Pair', 'Two pair', 'Trips', 'Straight', 'Flush', 'Full house', 'Quads', 'Str. flush'];
 function boardLabels(h, hole, seat, wins) {
   const boards = h.boards || [h.board];
   if (boards.length < 2 || !hole || !hole.length || !hole.every(Boolean)) return '';
@@ -684,8 +683,7 @@ function boardLabels(h, hole, seat, wins) {
     if (!b || b.length < 3) return;
     const best = bestHand(hole, b, omaha);
     if (!best) return;
-    const c = best.score >> 20;
-    const name = c === 8 && ((best.score >> 16) & 15) === 14 ? 'Royal' : BRIEF[c];
+    const name = shortHandName(best.score, true);
     const won = wins ? (wins.get(i) || []).some((w) => w.seat === seat) : null;
     pills.push(`<span class="bl${won ? ' won' : won === false ? ' lost' : ''}"><i>#${i + 1}</i><span>${esc(name)}</span></span>`);
   });
@@ -833,8 +831,9 @@ function renderTable(s) {
     if (bub) bub.fresh = false;
     const vin = (s.voice || []).find((x) => x.userId === info.userId);
     app.boxes.push(g.box);
-    // a player in the hand may bet: the board keeps clear of that place for the whole hand, so it does not change size as bets come and go
-    if (p) app.boxes.push(g.bet);
+    // a player in the hand may bet: while there is betting, the board keeps clear of that place, so it
+    // does not change size as bets come and go (once everyone is all in, the bets are in the pot)
+    if (p && h.phase === 'betting') app.boxes.push(g.bet);
     seats += `<div class="${cls}${bubble ? ' talking' : ''}" style="${pos}" data-uid="${esc(info.userId)}" ${s.me.isHost && !isMe ? `data-player="${esc(info.userId)}" title="Host actions for ${esc(info.name)}"` : ''}>
       <div class="plate">
         ${fan}${extra}
@@ -932,7 +931,36 @@ function centerHTML(s, R) {
     return list.length === 1 ? esc(list[0].name) : `${list.slice(0, 2).map((w) => esc(w.name)).join(', ')}${list.length > 2 ? ' +' : ''} split`;
   };
   const runWin = (i) => { const n = winNames(i); return n ? `<b class="rwin">${n}</b>` : ''; };
-  for (let r = 0; r < runs; r++) {
+  // Run more than once on one board: the cards the runs share are drawn once, and each run's own cards
+  // stack in their column, each later run over the one before, so every card stays full size and every
+  // run's number and suit still show. Who won each run is named beside its row.
+  const stackRuns = runs > 1 && bpr === 1;
+  if (stackRuns) {
+    const sharedN = Math.min(5, h.sharedCount ?? 0);
+    const used = R.boardUsed.slice(0, runs);
+    let cols = '';
+    for (let j = 0; j < 5; j++) {
+      const stack = j >= sharedN;
+      const n = stack ? runs : 1;
+      let cards = '';
+      for (let r = 0; r < n; r++) {
+        const c = (boards[r] || [])[j];
+        const under = r < n - 1 ? ' stk' : '';
+        if (!c) { cards += `<span class="card slot${under}" aria-hidden="true" style="--r:${r}"></span>`; continue; }
+        const isNew = fresh(`r${r}${j}${c}`);
+        let style = `--r:${r}`;
+        if (isNew) { const ms = boardStart + turned * 240; turned++; app.dealt.push({ ms, kind: 'board' }); style += `;--dd:${ms}ms`; }
+        // a shared card is lit when any run's winner used it
+        const u = stack ? (used[r] ? [used[r]] : []) : used.filter(Boolean);
+        const mark = u.length ? (u.some((x) => x.has(c)) ? 'win' : 'dim') : '';
+        cards += cardHTML(c, [isNew ? 'flip' : '', under, mark].join(' '), style);
+      }
+      cols += `<div class="bcol${stack ? ' multi' : ''}">${cards}</div>`;
+    }
+    const tags = Array.from({ length: runs }, (_, r) => `<span class="rtag" style="--r:${r}"><i><span class="rw">Run </span>${r + 1}</i>${runWin(r)}</span>`).join('');
+    grid = `<div class="board runs" aria-label="Runs ${runs}"><div class="rtags" aria-hidden="true">${tags}</div>${cols}</div>`;
+  }
+  for (let r = 0; r < (stackRuns ? 0 : runs); r++) {
     // one board a run: the winner under the run's name; two boards a run: under each board instead
     if (runs > 1) grid += `<span class="run">Run ${r + 1}${bpr > 1 ? '' : runWin(r)}</span>`;
     for (let side = 0; side < bpr; side++) {
@@ -956,7 +984,7 @@ function centerHTML(s, R) {
       grid += `<div class="board${cap ? ' capd' : ''}" aria-label="${esc(boardName(i, bpr, boards.length) || 'Board')}">${slots}${cap ? `<small class="bwin">${cap}</small>` : ''}</div>`;
     }
   }
-  const cols = stacked ? 'auto auto' : `${runs > 1 ? 'auto ' : ''}repeat(${bpr}, auto)`;
+  const cols = stackRuns ? 'auto' : stacked ? 'auto auto' : `${runs > 1 ? 'auto ' : ''}repeat(${bpr}, auto)`;
   let below = '';
   let above = '';
   if (h.phase === 'done' && h.results) {
@@ -977,7 +1005,7 @@ function centerHTML(s, R) {
   const bombWhy = h.bombReason === 'manual' ? 'called by the host' : h.bombReason === 'every' ? 'scheduled' : h.bombReason === 'percent' ? 'random' : '';
   const bomb = h.isBomb ? `<span class="bomb" title="${esc(bombWhy)}">Bomb pot</span>` : '';
   // what goes under the board hangs below it, so the board does not move when it comes and goes
-  return `${above}<div class="boards k${Math.min(runs, 4)} b${bpr}${stacked ? ' stacked' : ''}${wins && bpr > 1 && runs > 1 ? ' capped' : ''}" style="grid-template-columns:${cols}">${grid}</div>
+  return `${above}<div class="boards ${stackRuns ? `kr` : `k${Math.min(runs, 4)}`} b${bpr}${stacked ? ' stacked' : ''}${stackRuns ? ' stackruns' : ''}${wins && bpr > 1 && runs > 1 ? ' capped' : ''}" style="grid-template-columns:${cols}${stackRuns ? `;--k:${runs}` : ''}">${grid}</div>
     <div class="below">${below}<div class="meta">${bomb}<span>${esc(gameShort(h.gameType))} hand ${h.number}</span></div></div>`;
 }
 
@@ -1002,6 +1030,8 @@ function resultLines(h) {
     }
   }));
   const lines = [];
+  // run more than once on one board, each board is a run, and the line says so
+  const word = (h.boardsPerRun || 1) === 1 && nb > 1 ? 'runs' : 'boards';
   if (nb > 2) {
     // three or more boards: one line per winner, so the felt stays readable (the log has every board)
     const tot = new Map();
@@ -1014,10 +1044,10 @@ function resultLines(h) {
     const list = [...tot.values()].sort((a, b) => b.amount - a.amount);
     if (list.length === 1) {
       const x = list[0];
-      lines.push(`<b>${esc(x.name)}</b> wins ${fmt(x.amount)} ${x.boards === nb ? `on all ${nb} boards` : `on ${x.boards} of ${nb} boards`}`);
+      lines.push(`<b>${esc(x.name)}</b> wins ${fmt(x.amount)} ${x.boards === nb ? `on all ${nb} ${word}` : `on ${x.boards} of ${nb} ${word}`}`);
     } else if (list.length) {
       const parts = list.map((x) => `<b>${esc(x.name)}</b> ${fmt(x.amount)}`);
-      lines.push(`${parts.slice(0, -1).join(', ')} and ${parts.at(-1)} over ${nb} boards`);
+      lines.push(`${parts.slice(0, -1).join(', ')} and ${parts.at(-1)} over ${nb} ${word}`);
     }
   } else {
     per.forEach((m, i) => {
@@ -1118,7 +1148,7 @@ function presetList(L) {
 // its size, so the table never shifts as the turn moves round: on your turn the buttons work; otherwise
 // the same places hold pre-clicks while you are in the hand (Call or Call any, Check, Check/Fold or Fold),
 // or sit greyed out. RAISE opens a panel over the table with a big slider, the bet sizes and the amount.
-const EXTRA = 10; // seconds each Activate extra time takes off the time bank (EXTRA_CHUNK on the server)
+const EXTRA = 10; // seconds each Extra time takes off the time bank (EXTRA_CHUNK on the server)
 function slot(cls, label, key, { act = null, pre = null, on = false, preAmount = null } = {}) {
   const live = act || pre;
   const attrs = act ? ` data-act="${act}"` : pre ? ` data-pre="${pre}" aria-pressed="${on}"${preAmount !== null ? ` data-pre-amount="${preAmount}"` : ''}` : ' disabled';
@@ -1134,7 +1164,7 @@ function turnRow(s, mine) {
   const v = VC.voice;
   // on a phone the buttons under the table give way on your turn, so the mute comes along
   const mute = v.on ? `<button type="button" class="btn act-mute ${v.muted ? 'muted' : 'live'}" data-voice="mute" aria-pressed="${v.muted}" title="${v.muted ? 'Unmute' : 'Mute'}">${v.muted ? MIC_OFF : MIC}</button>` : '';
-  return `<div class="turn-row">${mute}<span class="yt"><i aria-hidden="true"></i>Your turn <b data-actclock></b></span>${extra ? `<button type="button" class="xt" data-extra>Activate extra time (${extra}s)<kbd aria-hidden="true">T</kbd></button>` : ''}</div>`;
+  return `<div class="turn-row">${mute}<span class="yt"><i aria-hidden="true"></i>Your turn <b data-actclock></b></span>${extra ? `<button type="button" class="xt" data-extra title="Take ${extra} seconds from your time bank">Extra time <b>+${extra}s</b><kbd aria-hidden="true">T</kbd></button>` : ''}</div>`;
 }
 
 // the raise panel: what to raise to, the bet sizes, and a big slider
@@ -1289,8 +1319,8 @@ function showPanel(s) {
   const left = hole.filter((c, i) => c && !shown.has(i)).length;
   if (!left) return '';
   const one = (c, i) => (!c || shown.has(i)
-    ? `<span class="sp-one done" title="Shown">${c ? `${esc(rankLabel(c))}${pipSVG(c[1])}` : ''}</span>`
-    : `<button type="button" class="sp-one" data-show="${i}" title="Show this card" aria-label="Show ${esc(rankLabel(c))}${esc(SUIT[c[1]])}">${esc(rankLabel(c))}${pipSVG(c[1])}<kbd aria-hidden="true">${i + 1}</kbd></button>`);
+    ? `<span class="sp-one done${c ? ` s-${c[1]}` : ''}" title="Shown">${c ? `${esc(rankLabel(c))}${pipSVG(c[1])}` : ''}</span>`
+    : `<button type="button" class="sp-one s-${c[1]}" data-show="${i}" title="Show this card" aria-label="Show ${esc(rankLabel(c))}${esc(SUIT[c[1]])}">${esc(rankLabel(c))}${pipSVG(c[1])}<kbd aria-hidden="true">${i + 1}</kbd></button>`);
   return `<div class="show-panel n${hole.length}" role="group" aria-label="Show your cards"><button type="button" class="sp-all" data-show="all">${left === hole.length ? 'Show all cards' : 'Show the rest'}<kbd aria-hidden="true">S</kbd></button><div class="sp-row">${hole.map(one).join('')}</div></div>`;
 }
 
