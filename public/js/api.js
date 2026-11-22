@@ -13,6 +13,13 @@ export const api = {
     const r = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
     let j = {};
     try { j = await r.json(); } catch { /* empty body */ }
+    if (r.status === 401 && headers.authorization && !path.startsWith('/api/auth/')) {
+      // the sign-in has ended (signed out elsewhere, a new password, removed from the club): back to
+      // the sign-in page; what was asked for waits, as the page is going anyway
+      this.token = null;
+      location.reload();
+      return new Promise(() => {});
+    }
     if (!r.ok) {
       const e = new Error(j.error || `Request failed (${r.status})`);
       e.status = r.status;

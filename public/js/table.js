@@ -59,7 +59,12 @@ function connect() {
     VC.voiceReconnected();
     socket.emit('table:join', { tableId: app.tableId }, (ack) => { if (!ack || !ack.ok) fatal(ack?.error || 'Could not open this table'); });
   });
-  socket.on('disconnect', () => setConn(false));
+  socket.on('disconnect', (reason) => {
+    setConn(false);
+    // closed by the server (signed out, removed from the club, the site moved): the library does not
+    // come back on its own after that, so ask again; the answer says what happened (connect_error)
+    if (reason === 'io server disconnect') setTimeout(() => socket.connect(), 500);
+  });
   socket.on('table:removed', (p) => { socket.close(); fatal(p?.reason || 'This game was removed.'); });
   socket.on('connect_error', (e) => {
     setConn(false);
@@ -992,50 +997,56 @@ function fitBoard() {
 // cards. Whichever covers least (on a tie the label stays as it is).
 function fitLabels() {
   const seats = [...els.seats.querySelectorAll('.seat')];
-  const labels = seats.map((x) => x.querySelector('.plate > .made')).filter(Boolean);
-  if (!labels.length) return;
+  if (!seats.some((x) => x.querySelector('.plate > .made'))) return;
   const hit = (a, c, k = 1) => a.left < c.right - k && c.left < a.right - k && a.top < c.bottom - k && c.top < a.bottom - k;
-  const rectsOf = (x, sel) => [...x.querySelectorAll(sel)].map((el) => el.getBoundingClientRect()).filter((r) => r.width && r.height);
-  const cost = (m, own) => {
-    const r = m.getBoundingClientRect();
+  const box = (r) => ({ left: r.left, right: r.right, top: r.top, bottom: r.bottom });
+  const rect = (el) => box(el.getBoundingClientRect());
+  const real = (r) => r.right > r.left && r.bottom > r.top;
+  // Measured once: what stays put while the labels move (everyone's box and cards, each player's own
+  // name and numbers) and where each label is. A way to place a label is then worked out from those
+  // numbers; the page is measured again only for a label's shape on two lines.
+  const fixed = seats.map((x) => [...x.querySelectorAll('.plate, .fan')].map(rect).filter(real));
+  const who = seats.map((x) => { const w = x.querySelector('.who'); return w ? rect(w) : null; });
+  const labels = seats.map((x) => x.querySelector('.plate > .made'));
+  for (const m of labels) if (m) { m.classList.remove('two'); m.style.marginLeft = m.style.marginTop = ''; }
+  const at = labels.map((m) => (m ? rect(m) : null));
+  const mv = (r, dx, dy) => ({ left: r.left - dx, right: r.right - dx, top: r.top - dy, bottom: r.bottom - dy });
+  const others = (i) => seats.flatMap((x, j) => (j === i ? [] : at[j] ? [...fixed[j], at[j]] : fixed[j]));
+  const cost = (r, i) => {
     let n = r.left < 1 ? 1 : 0;
-    for (const q of rectsOf(own, '.who')) if (hit(r, q, 2)) n++;
-    seats.forEach((x) => { if (x !== own) for (const q of rectsOf(x, '.plate, .fan, .made')) if (hit(r, q)) n++; });
+    if (who[i] && hit(r, who[i], 2)) n++;
+    for (const q of others(i)) if (hit(r, q)) n++;
     return n;
   };
-  const shift = (m, own) => {
-    const who = own.querySelector('.who');
-    const r = m.getBoundingClientRect();
-    const over = who ? r.right - who.getBoundingClientRect().left + 3 : 0;
-    const dx = Math.min(over, r.left - 2);
-    if (dx > 0) m.style.marginLeft = `${-dx}px`;
-  };
+  // left, clear of the player's own name, as far as the window allows
+  const left = (r, i) => { const over = who[i] ? r.right - who[i].left + 3 : 0; return Math.max(0, Math.min(over, r.left - 2)); };
   // up, just clear of whoever is below, by at most two thirds of the label's height
-  const raise = (m, own) => {
-    const r = m.getBoundingClientRect();
+  const up = (r, i) => {
     let need = 0;
-    seats.forEach((x) => { if (x !== own) for (const q of rectsOf(x, '.plate, .fan, .made')) if (hit(r, q) && q.top > r.top) need = Math.max(need, r.bottom - q.top + 2); });
-    if (need > 0 && need <= r.height * 0.65) m.style.marginTop = `${-need}px`;
+    for (const q of others(i)) if (hit(r, q) && q.top > r.top) need = Math.max(need, r.bottom - q.top + 2);
+    return need > 0 && need <= (r.bottom - r.top) * 0.65 ? need : 0;
   };
-  for (const m of labels) {
-    const own = m.closest('.seat');
-    const ways = [[false, false, false], [false, true, false]];
-    if (m.querySelector('.sep')) ways.push([true, false, false], [true, true, false]);
-    ways.push([false, true, true]);
+  labels.forEach((m, i) => {
+    if (!m) return;
+    const one = at[i];
+    let two = null;
+    if (m.querySelector('.sep')) { m.classList.add('two'); two = rect(m); m.classList.remove('two'); }
+    const ways = [{ r: one, dx: 0 }, { r: one, dx: left(one, i) }];
+    if (two) ways.push({ r: two, dx: 0, two: true }, { r: two, dx: left(two, i), two: true });
+    const dx = left(one, i);
+    ways.push({ r: one, dx, dy: up(mv(one, dx, 0), i) });
     let best = null;
-    for (const [two, moved, up] of ways) {
-      m.classList.toggle('two', two);
-      m.style.marginLeft = m.style.marginTop = '';
-      if (moved) shift(m, own);
-      if (up) raise(m, own);
-      const n = cost(m, own);
-      if (!best || n < best.n) best = { n, two, ml: m.style.marginLeft, mt: m.style.marginTop };
+    for (const w of ways) {
+      const r = mv(w.r, w.dx, w.dy || 0);
+      const n = cost(r, i);
+      if (!best || n < best.n) best = { ...w, n, at: r };
       if (!n) break;
     }
-    m.classList.toggle('two', best.two);
-    m.style.marginLeft = best.ml;
-    m.style.marginTop = best.mt;
-  }
+    m.classList.toggle('two', !!best.two);
+    m.style.marginLeft = best.dx ? `${-best.dx}px` : '';
+    m.style.marginTop = best.dy ? `${-best.dy}px` : '';
+    at[i] = best.at;
+  });
 }
 
 // A player's last action sits just outside their box, on the side away from the middle, so it covers

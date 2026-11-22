@@ -99,8 +99,10 @@ export class Clubs {
     return c;
   }
 
-  // Makes the account an active member of the club with the role that matches its site role.
-  join(userId, { save = true } = {}) {
+  // Makes the account an active member of the club with the role that matches its site role. Someone
+  // removed from the club stays out (a restart or a role change does not bring them back) until
+  // restore: their access is turned back on.
+  join(userId, { save = true, restore = false } = {}) {
     const c = this.main();
     const u = this.auth.users[userId];
     if (!c || !u || u.pending) return null;
@@ -110,7 +112,14 @@ export class Clubs {
       c.members[userId] = { userId, role, status: 'active', balance: 0, creditLimit: c.settings.defaultCreditLimit || 0, joinedAt: Date.now() };
     } else {
       m.role = role;
-      if (m.status !== 'active') { m.status = 'active'; m.joinedAt = m.joinedAt || Date.now(); }
+      if (m.status === 'removed' && !restore) return m;
+      if (m.status !== 'active') {
+        const back = m.status === 'removed';
+        m.status = 'active';
+        m.joinedAt = back ? Date.now() : m.joinedAt || Date.now();
+        delete m.removedAt;
+        delete m.removedBy;
+      }
     }
     if (role === 'owner') c.ownerId = userId;
     if (save) this.changed(c.id);
@@ -233,17 +242,38 @@ export class Clubs {
     this.changed(clubId);
   }
 
-  removeMember(actor, clubId, userId) {
+  // Takes someone out of the club. In The Aquarium that also turns their access off, so they are signed
+  // out everywhere; their hands and ledger entries stay, and turning their access back on brings them
+  // back with a zero balance. A balance that is not zero is settled first when settle is set (the
+  // ledger records it), and someone with chips on a table has to leave the table first.
+  removeMember(actor, clubId, userId, { settle = false } = {}) {
     const c = this.club(clubId);
     this.requireManager(c, actor);
     const m = c.members[userId];
-    if (!m) throw new Error('Not a member');
-    if ((this.role(clubId, userId) || m.role) === 'owner') throw new Error('The owner cannot be removed');
-    if (this.isMain(clubId)) throw new Error('Everyone with an account is a member. Turn off their account on the People page instead.');
-    if (m.balance !== 0) throw new Error('Settle the member’s balance to zero before removing them');
-    if ((this.chipsOnTables().get(clubId)?.get(userId) || 0) > 0) throw new Error('That member is seated at a club table');
-    delete c.members[userId];
+    if (!m || m.status !== 'active') throw new Error('Not a member');
+    const role = this.role(clubId, userId) || m.role;
+    if (role === 'owner') throw new Error('The owner cannot be removed');
+    if (userId === actor.id) throw new Error('You cannot remove yourself');
+    if (role === 'manager' && this.role(clubId, actor.id) !== 'owner') throw new Error('Only the owner can remove an admin');
+    const name = this.nameOf(userId);
+    if ((this.chipsOnTables().get(clubId)?.get(userId) || 0) > 0) {
+      throw Object.assign(new Error(`${name} is sitting in a game. Take them off the table first, then remove them.`), { code: 'seated' });
+    }
+    if (m.balance !== 0) {
+      if (!settle) throw Object.assign(new Error('Settle the member’s balance to zero before removing them'), { code: 'balance' });
+      this.tx(c, { type: 'settlement', userId, amount: -m.balance, by: actor, note: m.balance < 0 ? 'Debt settled on removal' : 'Paid out on removal' });
+    }
+    if (this.isMain(clubId)) {
+      m.status = 'removed';
+      m.removedAt = Date.now();
+      m.removedBy = actor.id;
+      this.auth.turnOff(userId);
+    } else delete c.members[userId];
     this.changed(clubId);
+  }
+
+  removed(clubId, userId) {
+    return this.data[clubId]?.members[userId]?.status === 'removed';
   }
 
   setRole(actor, clubId, userId, role) {

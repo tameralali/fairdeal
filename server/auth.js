@@ -162,6 +162,8 @@ export class Auth {
   createInvite(admin, { email, name, clubId = null, days }) {
     this.requireAdmin(admin);
     email = cleanEmail(email);
+    const had = this.users[this.store.data.emails[email]];
+    if (had?.disabled) fail(`${had.name} already has an account with that email, with access off. Open them on the People page to bring them back.`);
     if (this.store.data.emails[email]) fail('Someone already has an account with that email');
     const nm = name ? cleanName(name) : null;
     for (const i of Object.values(this.invites)) {
@@ -346,9 +348,18 @@ export class Auth {
     if (!u || !u.username) fail('No such account', 404);
     if (u.role === 'owner') fail('The owner’s access cannot be turned off');
     if (enabled) delete u.disabled;
-    else { u.disabled = true; this.endSessions(u.id); }
+    else this.turnOff(u.id);
     this.store.save();
     return u;
+  }
+
+  // Signs the account out everywhere and keeps it out (removing someone from the club does this).
+  turnOff(userId) {
+    const u = this.users[userId];
+    if (!u || u.role === 'owner') return;
+    u.disabled = true;
+    this.endSessions(u.id);
+    this.store.save();
   }
 
   people(viewer, clubName = () => null) {

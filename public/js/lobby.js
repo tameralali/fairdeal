@@ -245,7 +245,13 @@ function watch(clubId) {
   if (!clubSocket) {
     clubSocket = window.io({ auth: { token: api.token }, transports: ['websocket', 'polling'] });
     clubSocket.on('connect', () => { if (watching) clubSocket.emit('club:watch', { clubId: watching }); });
-    clubSocket.on('connect_error', (e) => { if (e.message === 'moved') location.reload(); });
+    // closed by the server: the library does not come back on its own, so ask again (see connect_error)
+    clubSocket.on('disconnect', (reason) => { if (reason === 'io server disconnect') setTimeout(() => clubSocket.connect(), 500); });
+    clubSocket.on('connect_error', (e) => {
+      if (e.message === 'moved') location.reload();
+      // signed out elsewhere, or no longer a member: back to the sign-in page instead of trying forever
+      if (e.message === 'auth') { clubSocket.close(); api.token = null; location.reload(); }
+    });
     let t = null;
     clubSocket.on('club:changed', ({ clubId: cid }) => {
       if (cid !== watching) return;
@@ -474,6 +480,8 @@ async function clubHome(id) {
   if (prev) main.removeEventListener('click', prev);
   main._clubClick = onClick;
 
+  const canRemove = (m) => c.isManager && m.userId !== me.user.id && m.role !== 'owner' && (m.role !== 'manager' || me.user.role === 'owner');
+
   function memberSheet(m) {
     const mine = m.userId === me.user.id;
     const stat = (label, v) => `<div><small>${label}</small><b>${v}</b></div>`;
@@ -492,6 +500,7 @@ async function clubHome(id) {
           <button class="btn" data-a="chips">Add to or take from balance</button>
           <button class="btn" data-a="credit">Credit limit</button>
           ${m.balance ? '<button class="btn" data-a="settle">Settle up</button>' : ''}
+          ${canRemove(m) ? '<button class="btn danger" data-a="remove">Remove from the club</button>' : ''}
         </div>` : ''}
       </div>`,
       foot: `<button class="btn ghost" data-a="entries">${mine ? 'Show my' : 'Show their'} ledger entries</button><button class="btn primary" data-close>Done</button>`,
@@ -515,6 +524,7 @@ async function clubHome(id) {
       if (a === 'chips') memberChips(m);
       if (a === 'credit') memberCredit(m);
       if (a === 'settle') memberSettle(m);
+      if (a === 'remove' && (await removeFromClub(id, m, F))) route();
       if (a === 'entries') {
         ui.member = m.userId;
         ui.ledgerLimit = 15;
@@ -1212,6 +1222,27 @@ async function linkPage(token) {
   setTimeout(() => main.querySelector('[data-accept] input:not([type=hidden])')?.focus(), 30);
 }
 
+// Takes someone out of the club after saying what that does, and what happens to a balance that is
+// not zero (it is settled, and the ledger says so). m: the member as the club page lists it, with the
+// balance and the chips on tables that admins see. Resolves to whether they were removed.
+async function removeFromClub(clubId, m, F) {
+  if (m.onTables > 0) {
+    toast(`${m.name} is sitting in a game. Take them off the table first (Players, in the game's menu), then remove them.`, 'error');
+    return false;
+  }
+  const bal = m.balance || 0;
+  const money = bal > 0 ? ` ${m.name} has ${F(bal)} with the club: removing them settles it, and the ledger records it as paid out to them.`
+    : bal < 0 ? ` ${m.name} owes the club ${F(-bal)}: removing them settles it, and the ledger records the debt as paid.` : '';
+  const ok = await confirmDialog(`${m.name} is signed out and can no longer open The Aquarium. Their past hands and ledger entries stay, and you can bring them back from the People page.${money}`,
+    { title: `Remove ${m.name} from the club?`, ok: `Remove ${m.name}`, danger: true });
+  if (!ok) return false;
+  try {
+    await api.post(`/api/clubs/${clubId}/members/${encodeURIComponent(m.userId)}/remove`, { settle: bal !== 0 });
+    toast(`${m.name} was removed from the club`);
+    return true;
+  } catch (x) { toast(x.message, 'error'); return false; }
+}
+
 // ---------- people (admins) ----------
 const STATUS = { pending: 'Waiting', used: 'Joined', expired: 'Expired', revoked: 'Cancelled' };
 
@@ -1223,7 +1254,7 @@ async function adminPage() {
   catch (e) { main.innerHTML = `<section class="panel link-panel"><h1>Admins only</h1><p class="muted">${esc(e.message)}</p><a href="/">Back to the club</a></section>`; return; }
   const owner = data.me.role === 'owner';
   const ago = (t) => (t ? timeAgo(t) : '<span class="faint">never</span>');
-  const role = (u) => `${u.role === 'member' ? 'Member' : `<span class="role">${u.role}</span>`}${u.disabled ? ' <span class="off">access off</span>' : ''}`;
+  const role = (u) => `${u.role === 'member' ? 'Member' : `<span class="role">${u.role}</span>`}${u.removed ? ' <span class="off">removed</span>' : u.disabled ? ' <span class="off">access off</span>' : ''}`;
   const waiting = data.invites.filter((i) => i.status === 'pending').length;
   main.innerHTML = `
     <section class="club-band admin-band">
@@ -1287,22 +1318,26 @@ function personSheet(u, viewerIsOwner) {
   const self = u.id === me.user.id;
   const canReset = !u.disabled && (viewerIsOwner || u.role === 'member' || self);
   const canManage = viewerIsOwner && u.role !== 'owner';
+  const canRemove = !u.removed && !self && u.role !== 'owner' && (viewerIsOwner || u.role === 'member');
   const dlg = dialog({
     title: u.name, className: 'narrow',
     body: `<div class="stack">
       <div class="person-facts">
         <div><small>Username</small><b>@${esc(u.username)}</b></div>
         <div><small>Email</small><b>${esc(u.email || 'none')}</b></div>
-        <div><small>Role</small><b>${u.role === 'owner' ? 'Owner' : u.role === 'admin' ? 'Admin' : 'Member'}${u.disabled ? ', access off' : ''}</b></div>
+        <div><small>Role</small><b>${u.role === 'owner' ? 'Owner' : u.role === 'admin' ? 'Admin' : 'Member'}${u.removed ? ', removed from the club' : u.disabled ? ', access off' : ''}</b></div>
         <div><small>Invited by</small><b>${esc(u.invitedBy || 'nobody')}</b></div>
       </div>
       <div class="sheet-actions">
-        ${canManage ? `<button class="btn" data-a="role">${u.role === 'admin' ? 'Make them a member' : 'Make them an admin'}</button>` : ''}
+        ${canManage && !u.removed ? `<button class="btn" data-a="role">${u.role === 'admin' ? 'Make them a member' : 'Make them an admin'}</button>` : ''}
         ${canReset ? `<button class="btn" data-a="reset">${u.email ? 'Email a password reset link' : 'Make a password reset link'}</button>` : ''}
-        ${canManage ? `<button class="btn ${u.disabled ? '' : 'danger'}" data-a="access">${u.disabled ? 'Turn their access back on' : 'Turn their access off'}</button>` : ''}
+        ${canManage ? `<button class="btn ${u.disabled ? '' : 'danger'}" data-a="access">${u.removed ? 'Bring them back' : u.disabled ? 'Turn their access back on' : 'Turn their access off'}</button>` : ''}
+        ${canRemove ? '<button class="btn danger" data-a="remove">Remove from the club</button>' : ''}
       </div>
       ${!canManage && !viewerIsOwner && u.role !== 'member' ? '<p class="hint">Only the owner changes admins.</p>' : ''}
-      ${canManage ? '<p class="hint">Admins invite people, send members password reset links, start games and look after the club ledger. Turning access off signs them out everywhere; their balances stay as they are.</p>' : ''}
+      ${canManage ? `<p class="hint">Admins invite people, send members password reset links, start games and look after the club ledger. ${u.removed
+    ? 'Bringing them back turns their access on and puts them back in the club, with a zero balance.'
+    : 'Turning access off signs them out everywhere and keeps their balance. Removing them also takes them off the club’s list, once their balance is settled.'}</p>` : ''}
     </div>`,
     foot: '<button class="btn primary" data-close>Done</button>',
   });
@@ -1319,9 +1354,17 @@ function personSheet(u, viewerIsOwner) {
       if (a === 'access') {
         if (!u.disabled && !(await confirmDialog(`${u.name} is signed out and cannot open The Aquarium until you turn their access back on.`, { title: 'Turn their access off?', ok: 'Turn access off', danger: true }))) return;
         await api.post(`/api/admin/users/${u.id}/access`, { enabled: !!u.disabled });
-        toast(u.disabled ? 'Access turned back on' : 'Access turned off');
+        toast(u.removed ? `${u.name} is back in the club` : u.disabled ? 'Access turned back on' : 'Access turned off');
         dlg.close();
         adminPage();
+      }
+      if (a === 'remove') {
+        // the club page's list has the balance and the chips on tables
+        const { club } = await api.get(`/api/clubs/${me.clubId}`);
+        const m = club.members.find((x) => x.userId === u.id);
+        if (!m) { toast(`${u.name} is not in the club`, 'error'); return; }
+        dlg.close();
+        if (await removeFromClub(me.clubId, m, (v) => fmtChips(v, club.settings.decimals))) adminPage();
       }
       if (a === 'reset') {
         const r = await api.post(`/api/admin/users/${u.id}/reset`);

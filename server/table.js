@@ -21,6 +21,10 @@ export const DELAYS = {
   rit: 45000, ritSettle: 15000, autoAct: 400, away: 5000, call: 30 * 60000,
 };
 export const BANK_REFILL = { hands: 10, seconds: 5 };
+// how often tables are looked over (a stalled hand moved on, finished games' memory let go), and how
+// long a finished game's hands stay in memory after they were last opened
+export const SWEEP_MS = 5000;
+export const RELEASE_MS = 10 * 60000;
 // extra time, asked for on your turn: at most this many seconds off the time bank each time
 export const EXTRA_CHUNK = 10;
 
@@ -351,8 +355,10 @@ export class Table {
       const logs = this.pendingLog;
       this.pendingLog = [];
       for (const s of this.sockets) {
-        if (logs.length) s.emit('log', logs);
-        s.emit('state', this.stateFor(s.data.user.id));
+        try {
+          if (logs.length) s.emit('log', logs);
+          s.emit('state', this.stateFor(s.data.user.id));
+        } catch (e) { console.error(`[table ${this.id}] could not send the table to ${s.data.user.id}`, e); }
       }
     });
   }
@@ -377,6 +383,7 @@ export class Table {
   }
 
   getRecords() {
+    this.recordsUsedAt = Date.now();
     if (!this.records) this.records = this.store.readHands(this.id);
     return this.records;
   }
@@ -387,6 +394,21 @@ export class Table {
     this.sockets.add(socket);
     const back = this.awayTimers.get(socket.data.user.id);
     if (back) { clearTimeout(back); this.awayTimers.delete(socket.data.user.id); }
+    // Someone who was playing when the server restarted is dealt in again as soon as their page is
+    // back, as if they had pressed I'm back, if that is within a quarter of an hour of the restart.
+    const p = this.players.get(socket.data.user.id);
+    if (p && p.backOnReturn) {
+      const fresh = Date.now() - p.backOnReturn < 15 * 60000;
+      delete p.backOnReturn;
+      if (fresh && p.sittingOut && this.status === 'running') {
+        p.sittingOut = false;
+        p.sitOutNext = false;
+        p.away = false;
+        this.log(`${p.name} is back`, 'seat');
+        this.snapshot();
+        this.maybeStartHand();
+      }
+    }
     socket.emit('log:reset', this.loadLog().slice(-400));
     socket.emit('state', this.stateFor(socket.data.user.id));
     this.broadcast();
@@ -437,6 +459,37 @@ export class Table {
     for (const s of this.sockets) s.emit('table:removed', { reason: 'This game was cleared from the history.' });
     this.sockets.clear();
     this.voice.clear();
+  }
+
+  // Every few seconds (see TableManager). A hand that has stopped moving (no clock running for anyone,
+  // nothing pending: a step lost to an error) is moved on, and a game that should be dealing deals.
+  // Seen twice in a row before anything is done, so a step that is just about to happen is left alone.
+  watchdog() {
+    if (this.status !== 'running' || this.paused) { this.stalls = 0; return; }
+    const h = this.hand;
+    const live = h && h.phase !== 'done';
+    // a turn long past its time should have been played by now (its clock is kept after it goes off)
+    const overdue = !!this.turn && Date.now() > this.turn.deadline + 15000;
+    const moving = live ? !overdue && !!(this.timers.action || this.timers.advance || this.timers.rit) : !!this.timers.next;
+    if (moving || (!live && this.waitingReason())) { this.stalls = 0; return; }
+    this.stalls = (this.stalls || 0) + 1;
+    if (this.stalls < 2) return;
+    this.stalls = 0;
+    console.error(`[table ${this.id}] ${live ? `hand ${h.number} had stopped (${h.phase})` : 'the next hand had not started'}; moving it on`);
+    if (live) {
+      clearTimeout(this.timers.action);
+      this.timers.action = null;
+      this.turn = null;
+      this.afterHandChange();
+    } else this.maybeStartHand();
+  }
+
+  // What a game that is over keeps in memory: its hands and log are read again from disk if someone
+  // opens them, so after a while without use they are let go.
+  release(idleMs) {
+    if (this.status !== 'ended' || this.sockets.size) return;
+    if (this.records && Date.now() - (this.recordsUsedAt || 0) > idleMs) this.records = null;
+    if (this.logEntries && !this.pendingLog.length) this.logEntries = null;
   }
 
   // ---------- voice chat ----------
@@ -926,9 +979,12 @@ export class Table {
     const left = this.session.endsAt - Date.now();
     for (const m of [30, 10, 5, 1]) {
       const at = left - m * 60000;
-      if (at > 0) this.timers.session.push(setTimeout(this.safe(() => this.log(`${m} minute${m > 1 ? 's' : ''} left in this game`, 'game')), at));
+      if (at > 0 && at < 2 ** 31 - 1) this.timers.session.push(setTimeout(this.safe(() => this.log(`${m} minute${m > 1 ? 's' : ''} left in this game`, 'game')), at));
     }
-    this.timers.session.push(setTimeout(this.safe(() => this.onSessionTime()), Math.max(0, left)));
+    const MAX = 2 ** 31 - 1; // the longest a timer can wait; a longer one would go off at once
+    this.timers.session.push(left > MAX
+      ? setTimeout(this.safe(() => this.scheduleSession()), MAX)
+      : setTimeout(this.safe(() => this.onSessionTime()), Math.max(0, left)));
   }
 
   onSessionTime() {
@@ -1401,6 +1457,9 @@ export class Table {
 
   chooseRuns(user, runs) {
     const hand = this.hand;
+    // a pick that arrives just after the vote was settled (someone picked once, time ran out) is let go
+    // quietly: the table already shows how it runs
+    if (hand && hand.phase !== 'rit' && hand.rit?.result) return { late: true };
     if (!hand || hand.phase !== 'rit') fail('Nothing to choose right now');
     hand.setRitChoice(user.id, runs);
     this.afterHandChange();
@@ -1773,6 +1832,8 @@ export class TableManager {
     this.tables = new Map();
     clubs.chipsOnTables = () => this.chipsOnTablesByClub();
     this.stats = new StatsBook();
+    this.sweeper = setInterval(() => this.sweep(), SWEEP_MS);
+    this.sweeper.unref?.();
     // Once: tables and presets on the felt that used to be the default get the new default felt.
     const meta = (store.data.meta ||= {});
     if (!meta.felt2) {
@@ -1789,9 +1850,13 @@ export class TableManager {
         if (t.unit === null) { t.unit = t.decimals; t.snapshot(); }
         this.tables.set(t.id, t);
         if (t.status === 'running') {
+          // everyone sits out until their page is back (it reconnects on its own): see join
           let any = false;
-          for (const p of t.players.values()) { if (!p.sittingOut) any = true; p.sittingOut = true; }
-          if (any) t.log('The server restarted. Seated players were set to away; click "I’m back" to continue.', 'game');
+          for (const p of t.players.values()) {
+            if (!p.sittingOut) { any = true; p.backOnReturn = Date.now(); }
+            p.sittingOut = true;
+          }
+          if (any) t.log('The server restarted. The hand being played was called off and stacks are as they were before it. Players are dealt in again as their page reconnects.', 'game');
           t.scheduleSession();
           if (t.session.endsAt && Date.now() >= t.session.endsAt) t.endGame('time');
         }
@@ -1910,6 +1975,26 @@ export class TableManager {
       .sort((a, b) => b.createdAt - a.createdAt)
       .slice(0, 30)
       .map((t) => t.summary(userId));
+  }
+
+  sweep() {
+    for (const t of this.tables.values()) {
+      try { t.watchdog(); t.release(RELEASE_MS); } catch (e) { console.error(`[table ${t.id}] sweep`, e); }
+    }
+  }
+
+  close() { clearInterval(this.sweeper); }
+
+  // Someone removed from the club leaves any seat they still had (one with no chips on it: with chips
+  // they have to be taken off the table first) and drops any request to sit down or add chips.
+  dropFromSeats(userId) {
+    for (const t of this.tables.values()) {
+      const had = t.requests.length;
+      t.requests = t.requests.filter((r) => r.userId !== userId);
+      const p = t.players.get(userId);
+      if (p && !t.inHand(userId) && t.currentChips(p) === 0) t.removePlayer(p, 'kicked');
+      else if (t.requests.length !== had) { t.snapshot(); t.broadcast(); }
+    }
   }
 
   chipsOnTablesByClub() {

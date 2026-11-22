@@ -1,7 +1,9 @@
 // HTTP + Socket.io server.
 import express from 'express';
+import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Server } from 'socket.io';
 import { Store } from './store.js';
@@ -12,8 +14,64 @@ import { exportKeyFromEnv, keyMatches, readDataDir, importIfNeeded } from './mig
 import { mailerFromEnv, inviteEmail, resetEmail } from './mail.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const SOCKET_CLIENT = path.join(path.dirname(createRequire(import.meta.url).resolve('socket.io/package.json')), 'client-dist', 'socket.io.min.js');
 
-export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT, 'data'), exportKey = exportKeyFromEnv(), mailer = mailerFromEnv() } = {}) {
+// Scripts and styles carry the deployed commit in their address (?v=), and browsers keep them for a
+// year, so a page that opens again loads none of them over the network; a deploy changes the
+// addresses. The pages themselves are checked every time, so a new deploy shows at once. Fonts and
+// sounds never change and are kept for a month. Without a commit (running locally) nothing is kept.
+// The modules a page's script loads, itself included: its imports, their imports and so on.
+// Addresses are as the browser sees them (/js/..., /shared/...).
+function moduleGraph(entry) {
+  const fileOf = (u) => (u.startsWith('/shared/') ? path.join(ROOT, u) : path.join(ROOT, 'public', u));
+  const seen = new Set();
+  const visit = (u) => {
+    if (seen.has(u) || !fs.existsSync(fileOf(u))) return;
+    seen.add(u);
+    const src = fs.readFileSync(fileOf(u), 'utf8');
+    for (const m of src.matchAll(/^\s*(?:import|export)\s+(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]/gm)) {
+      const spec = m[1];
+      if (spec.startsWith('/')) visit(spec);
+      else if (spec.startsWith('.')) visit(new URL(spec, `http://x${u}`).pathname);
+    }
+  };
+  visit(entry);
+  return seen;
+}
+
+function assets(version) {
+  const v = version ? `?v=${version}` : '';
+  const jsUnder = (dir, base) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory()
+    ? jsUnder(path.join(dir, e.name), `${base}${e.name}/`) : e.name.endsWith('.js') ? [`${base}${e.name}`] : []));
+  const pages = new Map();
+  const html = (file) => {
+    if (version && pages.has(file)) return pages.get(file);
+    let out = fs.readFileSync(path.join(ROOT, 'public', file), 'utf8');
+    if (version) {
+      out = out
+        .replace(/src="\/socket\.io\/socket\.io\.js"/g, `src="/vendor/socket.io.min.js${v}"`)
+        .replace(/(src|href)="(\/(?:js|css|shared)\/[^"?]+\.(?:js|css))"/g, `$1="$2${v}"`);
+      // every module, however it is imported, resolves to its versioned address, so each loads once
+      const imports = {};
+      for (const f of [...jsUnder(path.join(ROOT, 'public', 'js'), '/js/'), ...jsUnder(path.join(ROOT, 'shared'), '/shared/')]) imports[f] = f + v;
+      // and the page asks for all of its modules at once, rather than finding them import by import
+      const entry = out.match(/<script type="module" src="([^"?]+)/)?.[1];
+      const preload = entry ? [...moduleGraph(entry)].filter((m) => m !== entry && imports[m]).map((m) => `<link rel="modulepreload" href="${m}${v}">`) : [];
+      out = out.replace('<script', `<script type="importmap">${JSON.stringify({ imports })}</script>\n  ${preload.join('\n  ')}${preload.length ? '\n  ' : ''}<script`);
+      pages.set(file, out);
+    }
+    return out;
+  };
+  const headers = (res, file) => {
+    const ext = path.extname(file);
+    if (ext === '.woff2' || ext === '.mp3') res.setHeader('Cache-Control', 'public, max-age=2592000');
+    else if (version && res.req.query.v === version && (ext === '.js' || ext === '.css')) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    else res.setHeader('Cache-Control', 'no-cache');
+  };
+  return { html, headers };
+}
+
+export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT, 'data'), exportKey = exportKeyFromEnv(), mailer = mailerFromEnv(), assetVersion = (process.env.RENDER_GIT_COMMIT || '').slice(0, 12) || null } = {}) {
   const store = new Store(dataDir);
   const auth = new Auth(store);
   // until someone claims the site, a one-time owner link is made at each start (printed in the log)
@@ -56,14 +114,18 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     }
     res.json(payload);
   });
-  app.use('/shared', express.static(path.join(ROOT, 'shared')));
-  app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'] }));
-  const page = (f) => (req, res) => res.sendFile(path.join(ROOT, 'public', f));
+  const files = assets(assetVersion);
+  const page = (f) => (req, res) => { res.setHeader('Cache-Control', 'no-cache'); res.type('html').send(files.html(f)); };
+  app.get(['/', '/index.html'], page('index.html'));
+  app.get(['/table.html', '/hands.html', '/verify.html'], (req, res) => page(req.path.slice(1))(req, res));
+  app.get('/vendor/socket.io.min.js', (req, res) => { files.headers(res, SOCKET_CLIENT); res.sendFile(SOCKET_CLIENT, { cacheControl: false }); });
   app.get('/t/:id', page('table.html'));
   // a game's hand history and replayer in a tab of its own (Open in new tab)
   app.get('/hands/:id', page('hands.html'));
   app.get(['/club/:id', '/join/:code', '/invite/:token', '/reset/:token', '/admin', '/fair', '/g/:id'], page('index.html'));
   app.get('/verify', page('verify.html'));
+  app.use('/shared', express.static(path.join(ROOT, 'shared'), { cacheControl: false, setHeaders: files.headers }));
+  app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'], index: false, cacheControl: false, setHeaders: files.headers }));
   app.get('/healthz', (req, res) => res.json({ ok: true }));
   // Which code is running, for the fair dealing page: Render sets RENDER_GIT_COMMIT to the deployed commit.
   app.get('/api/version', (req, res) => res.json({
@@ -159,9 +221,11 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     const msg = inviteEmail({ link, inviter: user.name, club: null, name: r.invite.name, expiresAt: r.invite.expiresAt });
     return deliver(r.invite, r.invite.email, msg).then((m) => ({ ...m, link, email: r.invite.email, expiresAt: r.invite.expiresAt }));
   };
-  app.get('/api/admin/people', api((req, user) => ({
-    ...auth.people(user, clubName), me: auth.publicUser(user), mail: { on: !!mailer, from: mailer?.address || null },
-  })));
+  app.get('/api/admin/people', api((req, user) => {
+    const out = auth.people(user, clubName);
+    for (const u of out.users) u.removed = clubs.removed(clubs.mainId(), u.id); // taken out of the club
+    return { ...out, me: auth.publicUser(user), mail: { on: !!mailer, from: mailer?.address || null } };
+  }));
   app.post('/api/admin/invites', api(async (req, user) => {
     const { email, name, days } = req.body || {};
     return sendInvite(req, user, auth.createInvite(user, { email, name, clubId: null, days }));
@@ -173,9 +237,11 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     clubs.join(u.id); // admins manage the club ledger
     return { user: auth.publicUser(u) };
   }));
+  const signOutSockets = (userId) => { for (const sock of io.sockets.sockets.values()) if (sock.data.user?.id === userId) sock.disconnect(true); };
   app.post('/api/admin/users/:id/access', api((req, user) => {
     const u = auth.setAccess(user, req.params.id, !!req.body?.enabled);
-    if (u.disabled) for (const sock of io.sockets.sockets.values()) if (sock.data.user?.id === u.id) sock.disconnect(true);
+    if (u.disabled) signOutSockets(u.id);
+    else clubs.join(u.id, { restore: true }); // someone removed from the club comes back with access
     return { ok: true };
   }));
   app.post('/api/admin/users/:id/reset', api(async (req, user) => {
@@ -311,7 +377,10 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     return clubView(req.params.id, user);
   }));
   memberRoute('decide', (u, c, m, b) => clubs.decideMember(u, c, m, !!b.approve));
-  memberRoute('remove', (u, c, m) => clubs.removeMember(u, c, m));
+  memberRoute('remove', (u, c, m, b) => {
+    clubs.removeMember(u, c, m, { settle: !!b.settle });
+    if (clubs.isMain(c)) { tables.dropFromSeats(m); signOutSockets(m); } // gone from any seat they had with no chips
+  });
   memberRoute('role', (u, c, m, b) => clubs.setRole(u, c, m, b.role));
   memberRoute('chips', (u, c, m, b) => clubs.adjustChips(u, c, m, b.amount, b.note));
   memberRoute('credit', (u, c, m, b) => clubs.setCreditLimit(u, c, m, b.limit));
@@ -402,6 +471,7 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     },
     close() {
       store.flush();
+      tables.close();
       for (const t of tables.tables.values()) {
         for (const k of ['action', 'advance', 'next', 'rit']) clearTimeout(t.timers[k]);
         for (const x of t.timers.session) clearTimeout(x);
@@ -434,4 +504,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const shutdown = () => { try { srv.store.flush(); } finally { process.exit(0); } };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+  // A mistake in one place is written to the log and the games carry on: stopping the server would end
+  // every hand being played (they are dealt again from the start after a restart).
+  process.on('uncaughtException', (e) => console.error('[uncaught]', e));
+  process.on('unhandledRejection', (e) => console.error('[unhandled rejection]', e));
 }
