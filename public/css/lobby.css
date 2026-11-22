@@ -226,10 +226,14 @@
 @media (max-width: 560px) {
   .lob-head { flex-wrap: wrap; gap: 6px 10px; padding: 12px 0; margin-bottom: 18px; }
   .lob-head .pre, .lob-head .uname { display: none; }
-  .lob-head .who { gap: 2px; }
+  .lob-head .who { gap: 2px; flex-wrap: wrap; justify-content: flex-end; }
   .lob-head .wordmark span { white-space: nowrap; }
   .cb-name h1 { font-size: 2rem; }
   .cb-bal b { font-size: 26px; }
+  /* a big balance on a small phone: the figures and the account buttons take a second line rather than
+     running off the screen */
+  .club-band { grid-template-columns: minmax(0, 1fr); }
+  .cb-bal { flex-wrap: wrap; column-gap: 8px; row-gap: 10px; } /* spaced out as before when they fit */
 }
 
 /* ---------- invite, owner setup and reset pages ---------- */

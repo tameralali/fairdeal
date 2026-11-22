@@ -7,6 +7,14 @@ import { GAME_TYPES } from '/shared/cards.js';
 export const MAX_STEPS = 8;
 const LAST_KEY = 'aq:lastGame';
 
+// A game started from a preset is named for its night, the way the group says it: "Sunday 22 Nov
+// floppies", by the starter's own clock. A name like that kept from an earlier game moves to today.
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+export const datedName = (d = new Date()) => `${DAY_NAMES[d.getDay()]} ${d.getDate()} ${MONTH_NAMES[d.getMonth()]} floppies`;
+const DATED = new RegExp(`^(${DAY_NAMES.join('|')}) \\d{1,2} (${MONTH_NAMES.join('|')}) floppies$`);
+export const isDatedName = (n) => DATED.test(String(n || '').trim());
+
 // A step of the format plays one game for a number of orbits or a number of hands.
 const step = (game, unit = 'orbits', count = 1, doubleBoard = false) => ({ game, unit, count, doubleBoard });
 export const MAX_COUNT = { orbits: 50, hands: 500 };
@@ -439,7 +447,7 @@ export async function startGameDialog({ user, presetId = null } = {}) {
   try { presets = (await api.get('/api/presets')).presets; } catch { /* members have no presets */ }
   const last = loadLast();
   let activeId = presetId && presets.some((p) => p.id === presetId) ? presetId : null;
-  const fromPreset = (p) => ({ name: p.tableName || p.name, settings: structuredClone(p.settings) });
+  const fromPreset = (p) => ({ name: datedName(), settings: structuredClone(p.settings) });
   const dlg = dialog({
     title: 'Start a game', className: 'wide start-game', body: '',
     foot: '<button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-create>Start game</button>',
@@ -465,7 +473,7 @@ export async function startGameDialog({ user, presetId = null } = {}) {
     refit();
     if (values.settings?.minPlayers) { el('minPlayers').value = String(Math.min(values.settings.minPlayers, Number(el('seats').value))); }
   };
-  const start = activeId ? fromPreset(presets.find((p) => p.id === activeId)) : { name: last?.name || '', settings: last?.decimals === 2 ? last.settings : {} };
+  const start = activeId ? fromPreset(presets.find((p) => p.id === activeId)) : { name: isDatedName(last?.name) ? datedName() : last?.name || '', settings: last?.decimals === 2 ? last.settings : {} };
   draw(start);
 
   dlg.el.addEventListener('click', async (e) => {
@@ -487,7 +495,7 @@ export async function startGameDialog({ user, presetId = null } = {}) {
           r = await api.req('PUT', `/api/presets/${encodeURIComponent(activeId)}`, { name: cur.name, tableName: v.name, settings: v.settings });
           toast(`Saved “${cur.name}”`);
         } else {
-          const name = await askPresetName(v.name || 'Main game');
+          const name = await askPresetName(v.name && !isDatedName(v.name) ? v.name : 'Main game');
           if (!name) return;
           r = await api.post('/api/presets', { name, tableName: v.name, settings: v.settings });
           toast(`Saved “${name}”`);

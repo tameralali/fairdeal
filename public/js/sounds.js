@@ -169,10 +169,17 @@ const SOUNDS = {
       tone(t + d, { freq: f * 2, dur: 0.18, gain: 0.025 });
     });
   },
-  // half of your clock has gone: one light beep
+  // half of your clock has gone: a clear, high beep
   hurry(t) {
-    tone(t, { freq: 1174.66, dur: 0.18, gain: 0.075 });
-    tone(t, { freq: 2349.32, dur: 0.06, gain: 0.012 });
+    tone(t, { freq: 1567.98, dur: 0.2, gain: 0.3 });
+    tone(t, { freq: 3135.96, dur: 0.07, gain: 0.05 });
+  },
+  // most of your clock has gone: the beep twice, quickly
+  hurry2(t) {
+    for (const d of [0, 0.16]) {
+      tone(t + d, { freq: 1760, dur: 0.14, gain: 0.32 });
+      tone(t + d, { freq: 3520, dur: 0.05, gain: 0.05 });
+    }
   },
   // someone asks the host for a seat or chips
   request(t) {

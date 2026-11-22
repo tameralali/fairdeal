@@ -10,7 +10,7 @@ import { DELAYS } from '../server/table.js';
 import { verifyHandRecord, webCryptoAdapter } from '../shared/fairness.js';
 import { buildReplay } from '../shared/replay.js';
 
-Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10, away: 150 });
+Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, runBreak: 2, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10, away: 150 });
 
 let srv, url, dataDir, siteOwner;
 const wc = webCryptoAdapter();
@@ -539,6 +539,55 @@ test('run it: matching picks settle it at once; different picks get a short time
     assert.ok((await bb.emit('rit', { runs: 3 })).ok);
     assert.equal(h2.rit.result, 3);
     assert.equal(h2.runCount, 3);
+    ba.close();
+    bb.close();
+  } finally {
+    Object.assign(DELAYS, keep);
+  }
+});
+
+test('an all-in runout waits before its first card and between cards, and longer before each further run', { timeout: 60000 }, async () => {
+  const keep = { ...DELAYS };
+  const F = 150, R = 150, B = 450;
+  Object.assign(DELAYS, { runoutFirst: F, runout: R, runBreak: B, showdown: 20, rit: 8000 });
+  try {
+    const a = await admin('Rex', { fund: 500000 });
+    const b = await member('Una', null, { fund: 500000 });
+    const { id } = await call('POST', '/api/tables', { settings: { autoApprove: true, autoStart: true, smallBlind: 5, bigBlind: 10, rit: { enabled: true, maxRuns: 2 } } }, a.token);
+    const ba = new Bot('Rex', a, 31);
+    const bb = new Bot('Una', b, 32);
+    ba.passive = bb.passive = true;
+    await ba.connect(id);
+    await bb.connect(id);
+    assert.ok((await ba.emit('seat:request', { seat: 0, buyIn: 1000 })).ok);
+    assert.ok((await bb.emit('seat:request', { seat: 1, buyIn: 1000 })).ok);
+    const t = srv.tables.get(id);
+    await until(() => t.hand && t.hand.phase === 'betting' && t.hand.actor(), 8000, 'a hand to start');
+    const h = t.hand;
+    const first = h.actor().id === a.user.id ? ba : bb;
+    const second = first === ba ? bb : ba;
+    assert.ok((await first.emit('action', { type: 'allin' })).ok);
+    assert.ok((await second.emit('action', { type: 'call' })).ok);
+    await until(() => h.phase === 'rit', 3000, 'the vote');
+    await until(() => ba.state.hand?.rit?.canChoose && bb.state.hand?.rit?.canChoose, 3000, 'both can pick');
+    // when each street of each run lands
+    const lands = [];
+    let last = '';
+    const poll = setInterval(() => {
+      const key = h.boards.map((x) => x.length).join(',');
+      if (key !== last) { lands.push({ at: Date.now(), key }); last = key; }
+    }, 2);
+    assert.ok((await ba.emit('rit', { runs: 2 })).ok);
+    assert.ok((await bb.emit('rit', { runs: 2 })).ok);
+    await until(() => h.phase === 'done', 10000, 'the hand to end');
+    clearInterval(poll);
+    const steps = ['0,0', '3,0', '4,0', '5,0', '5,3', '5,4', '5,5'];
+    const at = steps.map((k) => lands.find((x) => x.key === k)?.at);
+    assert.ok(at.every(Number.isFinite), `each street lands in turn: ${lands.map((x) => x.key).join(' ')}`);
+    const gaps = at.slice(1).map((x, i) => x - at[i]);
+    assert.ok(gaps[0] >= F - 5 && gaps[0] < F + B - 100, `the wait before the first card: ${gaps}`);
+    for (const i of [1, 2, 4, 5]) assert.ok(gaps[i] >= R - 5 && gaps[i] < R + B - 100, `the wait between cards: ${gaps}`);
+    assert.ok(gaps[3] >= R + B - 5, `the longer wait before the second run: ${gaps}`);
     ba.close();
     bb.close();
   } finally {

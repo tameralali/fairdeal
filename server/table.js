@@ -16,7 +16,9 @@ const VOICE_MAX = 10; // each person in voice sends to each other one, so it sta
 // After a hand the result stays up for 9 seconds, folded or shown down, before the next deal: PokerNow's
 // slowest showdown setting (it offers 3, 6 or 9), time to show cards or say something.
 export const DELAYS = {
-  street: 1400, runoutFirst: 2400, runout: 2200, showdown: 1400,
+  // an all-in runout takes its time: 3.4 seconds before its first card, 3.7 between its cards, and
+  // 2 more before each further run starts
+  street: 1400, runoutFirst: 3400, runout: 3700, runBreak: 2000, showdown: 1400,
   afterUncontested: 9000, afterShowdown: 9000, perExtraRun: 1500, perExtraBoard: 1000,
   rit: 45000, ritSettle: 15000, autoAct: 400, away: 5000, call: 30 * 60000,
 };
@@ -356,11 +358,22 @@ export class Table {
     this.broadcast();
   }
 
+  // When each player went away (ran out of time, left the page or sat out), for the timer on their
+  // seat; cleared when they are back.
+  stampAway() {
+    for (const p of this.players.values()) {
+      const off = p.away || p.sittingOut || p.sitOutNext;
+      if (off && !p.awaySince) p.awaySince = Date.now();
+      else if (!off && p.awaySince) p.awaySince = null;
+    }
+  }
+
   broadcast() {
     if (this.broadcastQueued) return;
     this.broadcastQueued = true;
     setImmediate(() => {
       this.broadcastQueued = false;
+      this.stampAway();
       const logs = this.pendingLog;
       this.pendingLog = [];
       for (const s of this.sockets) {
@@ -385,7 +398,7 @@ export class Table {
       fairPending: this.fair ? savedCommitment(this.fair.pending) : undefined,
       players: [...this.players.values()].map((p) => ({
         userId: p.userId, name: p.name, seat: p.seat, stack: p.stack, sittingOut: p.sittingOut,
-        timeBanks: p.timeBanks, bankHands: p.bankHands || 0, joinedAt: p.joinedAt, leaveAt: p.leaveAt || null, straddle: !!p.straddle,
+        timeBanks: p.timeBanks, bankHands: p.bankHands || 0, awaySince: p.awaySince || null, joinedAt: p.joinedAt, leaveAt: p.leaveAt || null, straddle: !!p.straddle,
       })),
     };
     this.store.save();
@@ -1380,7 +1393,10 @@ export class Table {
     }
     if (hand.pending && !this.timers.advance) {
       let delay = DELAYS.street;
-      if (hand.pending === 'runout') delay = hand.runIndex === 0 && hand.boards[0].length === hand.splitAt ? DELAYS.runoutFirst : DELAYS.runout;
+      if (hand.pending === 'runout') {
+        const fresh = hand.boards[hand.runIndex * hand.bpr]?.length === hand.splitAt; // this run has no card of its own yet
+        delay = hand.runIndex === 0 && fresh ? DELAYS.runoutFirst : DELAYS.runout + (hand.runIndex > 0 && fresh ? DELAYS.runBreak : 0);
+      }
       if (hand.pending === 'showdown') delay = DELAYS.showdown;
       this.timers.advance = setTimeout(this.safe(() => {
         this.timers.advance = null;
@@ -1756,7 +1772,7 @@ export class Table {
       const p = uid && this.players.get(uid);
       seats.push(p ? {
         seat: i, userId: p.userId, name: p.name, stack: p.stack, sittingOut: p.sittingOut, sitOutNext: p.sitOutNext, straddle: !!p.straddle,
-        leaving: p.leaveAfterHand, leaveAt: p.leaveAt || null, connected: this.isConnected(uid), timeBanks: p.timeBanks || 0,
+        leaving: p.leaveAfterHand, leaveAt: p.leaveAt || null, connected: this.isConnected(uid), timeBanks: p.timeBanks || 0, awaySince: p.awaySince || null,
         isHost: this.isHost(uid), pendingChips: p.pendingChips, away: p.away,
       } : null);
     }

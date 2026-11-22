@@ -771,7 +771,99 @@ function runsInfo(h, wins) {
 }
 
 const pctText = (ch) => { const n = Math.round(ch); return `${n === 0 && ch > 0 ? '<1' : n === 100 && ch < 100 ? '>99' : n}%`; };
+// odds over 50% are green, under 50% red, an even 50% neither
+const eqTone = (ch) => { const n = Math.round(ch); return n > 50 ? 'up' : n < 50 ? 'down' : 'even'; };
 
+// Once a run's cards are all down, each player's share of it as a percent: 100 for its one winner,
+// split between ties, and half a share for each board when there are two.
+function runShares(h, r) {
+  const boards = h.boards || [h.board];
+  const bpr = h.boardsPerRun || 1;
+  const omaha = GAME_TYPES[h.gameType].omaha;
+  const live = h.players.filter((p) => !p.folded && p.hole && p.hole.length && p.hole.every(Boolean));
+  if (live.length < 2) return null;
+  const out = new Map(live.map((p) => [p.seat, 0]));
+  for (const b of boards.slice(r * bpr, r * bpr + bpr)) {
+    if (!b || b.length < 5) return null;
+    let best = -1;
+    let win = [];
+    for (const p of live) {
+      const res = bestHand(p.hole, b, omaha);
+      const sc = res ? res.score : -1;
+      if (sc > best) { best = sc; win = [p.seat]; } else if (sc === best) win.push(p.seat);
+    }
+    for (const seat of win) out.set(seat, out.get(seat) + 100 / bpr / win.length);
+  }
+  return out;
+}
+
+// The last run whose cards are all down, or -1.
+function lastRunDone(h) {
+  const boards = h.boards || [h.board];
+  const bpr = h.boardsPerRun || 1;
+  let last = -1;
+  for (let r = 0; r < Math.max(1, Math.round(boards.length / bpr)); r++) {
+    if (boards.slice(r * bpr, r * bpr + bpr).every((b) => b && b.length >= 5)) last = r;
+  }
+  return last;
+}
+
+// The odds on each seat: the chance of winning the run being dealt while its cards are to come. When a
+// run's last card is down, its winner goes to 100% (the others to 0) and that stays up for a moment
+// before the next run's odds, or until the next hand after the last run. The numbers count from
+// where they were to where they go (animateOdds).
+const EQ_HOLD = 1800;
+function seatOdds(h) {
+  if (!h) return null;
+  // runs already over when this hand is first seen (a reload mid-runout) are not held again
+  if (!app.eq || app.eq.hand !== h.number) app.eq = { hand: h.number, shown: new Map(), had: false, done: lastRunDone(h), at: 0, final: null, timer: null, raf: 0 };
+  const e = app.eq;
+  const live = allInChances(h);
+  if (live) e.had = true;
+  if (e.had) {
+    const r = lastRunDone(h);
+    if (r > e.done) {
+      const shares = runShares(h, r);
+      if (shares) { e.done = r; e.at = Date.now(); e.final = shares; }
+    }
+  }
+  const held = e.final && (!live || Date.now() - e.at < EQ_HOLD);
+  if (held && live) {
+    clearTimeout(e.timer);
+    e.timer = setTimeout(() => { if (app.state && app.state.hand && app.state.hand.number === e.hand) renderTable(app.state); }, EQ_HOLD - (Date.now() - e.at) + 30);
+  }
+  return held ? e.final : live;
+}
+
+// Counts each seat's odds from what it showed to its new number, the colour following the number.
+const EQ_COUNT = 650;
+function animateOdds() {
+  const e = app.eq;
+  if (!e) return;
+  cancelAnimationFrame(e.raf);
+  const items = [...document.querySelectorAll('.plate .eq[data-eq-seat]')].map((el) => ({ el, seat: Number(el.dataset.eqSeat), from: Number(el.dataset.from), to: Number(el.dataset.to) }));
+  for (const x of items) e.shown.set(x.seat, x.from);
+  const moving = items.filter((x) => Math.abs(x.to - x.from) > 0.05);
+  for (const x of items) if (!moving.includes(x)) e.shown.set(x.seat, x.to);
+  if (!moving.length) return;
+  const start = performance.now();
+  const step = (now) => {
+    const k = Math.min(1, (now - start) / EQ_COUNT);
+    const ease = 1 - (1 - k) ** 3;
+    for (const x of moving) {
+      const v = x.from + (x.to - x.from) * ease;
+      e.shown.set(x.seat, v);
+      x.el.textContent = pctText(v);
+      x.el.classList.remove('up', 'down', 'even');
+      x.el.classList.add(eqTone(v));
+    }
+    if (k < 1) e.raf = requestAnimationFrame(step);
+  };
+  e.raf = requestAnimationFrame(step);
+}
+
+// Away, where the cards would be: in red, with how long they have been away (kept up by tick)
+const awayMark = (since) => `<span class="awaymark" role="img" aria-label="Away"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 14.8A8 8 0 0 1 9.2 4.5a8 8 0 1 0 10.3 10.3z"/></svg><span>Away</span>${since ? `<b data-away-since="${since}">${clock(Math.max(1000, now() - since))}</b>` : ''}</span>`;
 const FOLD_MARK = '<span class="foldmark" aria-label="Folded"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg><span>Fold</span></span>';
 
 function renderTable(s) {
@@ -809,9 +901,8 @@ function renderTable(s) {
   const hp = new Map((h?.players || []).map((p) => [p.seat, p]));
   const R = resultInfo(h);
   // each player's chance of winning the run being dealt, on their seat (a hand run more than once
-  // also lists each runout's odds beside it)
-  const chances = allInChances(h);
-  const best = chances ? Math.max(...chances.values()) : 0;
+  // also lists each runout's odds beside it), going to 100% for a run's winner once its cards are down
+  const chances = seatOdds(h);
   const myReq = s.me.requests.find((r) => r.type === 'seat');
   const pendingSeats = new Set((s.requests || []).filter((r) => r.type === 'seat').map((r) => r.seat));
   const nowMs = Date.now();
@@ -883,8 +974,8 @@ function renderTable(s) {
       else if (p.folded) fan = FOLD_MARK;
       const ch = chances && chances.get(seat);
       if (ch !== undefined && ch !== null) {
-        const shown = Math.round(ch);
-        extra += `<span class="eq ${ch >= best - 0.01 ? 'up' : 'down'} n${count}" title="Chance of winning this run, from the cards on the table">${shown === 0 && ch > 0 ? '<1' : shown === 100 && ch < 100 ? '>99' : shown}%</span>`;
+        const from = app.eq.shown.has(seat) ? app.eq.shown.get(seat) : ch;
+        extra += `<span class="eq ${eqTone(from)} n${count}" data-eq-seat="${seat}" data-from="${from}" data-to="${ch}" title="Chance of winning this run, from the cards on the table">${pctText(from)}</span>`;
       }
       const seeAll = p.hole && p.hole.length && p.hole.every(Boolean);
       if (seeAll && (!p.folded || p.shown) && (isMe ? prefs.handStrength || !live : true) && (isMe || !live || chances || p.shown)) {
@@ -899,19 +990,20 @@ function renderTable(s) {
       }
     }
 
+    // Away (ran out of time, left the page or sat out): everyone sees it where the cards would be,
+    // with how long, until they are back; cards still in a hand show first
+    const away = info.away || info.sittingOut || info.sitOutNext;
+    if (away && !fan.startsWith('<div class="fan')) fan = awayMark(info.awaySince);
+
     let tag = '';
     let tagCls = '';
     // during the run-it vote each player's pick shows on their seat, for the whole table
     const ritPick = h && h.phase === 'rit' && h.rit ? (h.rit.picks || []).find((x) => x.seat === seat) : null;
-    // Away: ran out of time, left the page or sat out; everyone sees it on the seat until they are back
-    const away = info.away || info.sittingOut || info.sitOutNext;
     if (won) { tag = '+' + fmt(won); tagCls = 'win'; }
     else if (ritPick) { tag = ritPick.pick === null ? 'Picking' : ritPick.pick === 'any' ? 'Any number' : cap(TIMES[ritPick.pick]); tagCls = ritPick.pick === null ? 'out' : 'pick'; }
-    else if (info.away && !actor) { tag = 'Away'; tagCls = 'away'; }
-    else if (p && live && p.lastAction && !p.allIn && !(p.folded && !isMe)) { tag = p.lastAction; tagCls = p.lastAction.toLowerCase().replace(/[^a-z]/g, ''); }
+    else if (p && live && p.lastAction && !p.allIn && !(p.folded && !isMe) && !away) { tag = p.lastAction; tagCls = p.lastAction.toLowerCase().replace(/[^a-z]/g, ''); }
     else if (info.leaving) { tag = 'Leaving'; tagCls = 'out'; }
-    else if (away && !(p && live && !p.folded)) { tag = 'Away'; tagCls = 'away'; }
-    else if (!p && info.stack === 0) { tag = 'Out of chips'; tagCls = 'out'; }
+    else if (!p && info.stack === 0 && !away) { tag = 'Out of chips'; tagCls = 'out'; }
     let timer = '';
     if (actor && h.turn) {
       timer = `<div class="timer ${h.turn.usingBank ? 'bank' : ''}"><i data-deadline="${h.turn.deadline}" data-total="${h.turn.total || 30000}"></i></div>`;
@@ -953,6 +1045,7 @@ function renderTable(s) {
   fitTags();
   fitBets();
   fitMark();
+  animateOdds();
 }
 
 // The board never goes under a player: where a seat's box or cards would reach over it, the middle of
@@ -1062,7 +1155,9 @@ function fitTags() {
   const hit = (a, c) => a.left < c.right - 1 && c.left < a.right - 1 && a.top < c.bottom - 1 && c.top < a.bottom - 1;
   const rectsOf = (x, sel) => [...x.querySelectorAll(sel)].map((el) => el.getBoundingClientRect()).filter((r) => r.width && r.height);
   const parts = seats.map((x) => rectsOf(x, '.plate, .fan, .made, .eq'));
-  const top = els.top && els.top.offsetHeight ? els.top.getBoundingClientRect() : null;
+  // the bar along the top: on a computer its parts sit on their own (the bar itself takes no room),
+  // so each part counts, the game and blinds, the tags under them and the buttons
+  const top = els.top ? [...els.top.querySelectorAll(':scope > *, :scope > * > *')].map((el) => el.getBoundingClientRect()).filter((q) => q.width && q.height) : [];
   const cost = (tag, own) => {
     const r = tag.getBoundingClientRect();
     let n = 0;
@@ -1072,7 +1167,7 @@ function fitTags() {
       const t = x.querySelector('.plate > .tag');
       if (t && hit(r, t.getBoundingClientRect())) n++;
     });
-    if (r.top < 0 || r.bottom > window.innerHeight || (top && hit(r, top))) n += 2;
+    if (r.top < 0 || r.bottom > window.innerHeight || top.some((q) => hit(r, q))) n += 2;
     return n;
   };
   for (const tag of tags) {
@@ -1209,8 +1304,7 @@ function centerHTML(s, R) {
         body = `<span class="rbody"><b class="rwin">${who}</b>${x.hand ? `<small class="rhand">${esc(x.hand)}</small>` : ''}</span>`;
       } else if (x.odds && x.odds.size) {
         const list = [...x.odds].sort((a, b) => b[1] - a[1]).slice(0, 3);
-        const top = list[0][1];
-        body = `<span class="rbody rodds">${list.map(([seat, ch]) => `<span class="${ch >= top - 0.01 ? 'fav' : ''}"><b>${esc(nameOf(seat))}</b> ${pctText(ch)}</span>`).join('')}</span>`;
+        body = `<span class="rbody rodds">${list.map(([seat, ch]) => `<span class="${eqTone(ch)}"><b>${esc(nameOf(seat))}</b> ${pctText(ch)}</span>`).join('')}</span>`;
       }
       return `<span class="rtag${x.done ? ' done' : x.odds ? ' odds' : ''}" style="--r:${r}"><i><span class="rw">Run </span>${r + 1}</i>${body}</span>`;
     }).join('');
@@ -1687,16 +1781,21 @@ function tick() {
     const left = h.turn.deadline - t;
     ac.textContent = `${Math.max(0, Math.ceil(left / 1000))}s${h.turn.usingBank ? ' with extra time' : ''}`;
     ac.classList.toggle('low', left < 8000);
+    // a nudge when half of your clock has gone, and a second when only a fifth is left (each time
+    // bank's clock gets its own two)
     const total = h.turn.total || 0;
     const key = `${h.number}|${h.turn.deadline}`;
-    if (total >= 5000 && left > 0 && left <= total / 2 && app.hurried !== key) {
-      app.hurried = key;
-      if (prefs.sound) playSound('hurry');
+    if (total >= 5000 && left > 0) {
+      if (app.hurried?.key !== key) app.hurried = { key, half: false, late: false };
+      const hu = app.hurried;
+      if (left <= total * 0.2 && !hu.late) { hu.late = hu.half = true; if (prefs.sound) playSound('hurry2'); }
+      else if (left <= total * 0.5 && !hu.half) { hu.half = true; if (prefs.sound) playSound('hurry'); }
     }
   }
   for (const rc of document.querySelectorAll('[data-ritclock]')) {
     if (h && h.ritDeadline) rc.textContent = `${Math.max(0, Math.ceil((h.ritDeadline - t) / 1000))}s left`;
   }
+  for (const el of document.querySelectorAll('[data-away-since]')) el.textContent = clock(Math.max(1000, t - Number(el.dataset.awaySince)));
   for (const el of document.querySelectorAll('[data-leave-at]')) {
     const left = Number(el.dataset.leaveAt) - t;
     el.textContent = left > 0 ? clock(left) : '0:00';
