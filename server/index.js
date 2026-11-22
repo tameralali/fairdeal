@@ -121,6 +121,7 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
   app.get('/vendor/socket.io.min.js', (req, res) => { files.headers(res, SOCKET_CLIENT); res.sendFile(SOCKET_CLIENT, { cacheControl: false }); });
   app.get('/t/:id', page('table.html'));
   // a game's hand history and replayer in a tab of its own (Open in new tab)
+  app.get('/hands', page('hands.html')); // every hand of every game
   app.get('/hands/:id', page('hands.html'));
   app.get(['/club/:id', '/join/:code', '/invite/:token', '/reset/:token', '/admin', '/fair', '/g/:id'], page('index.html'));
   app.get('/verify', page('verify.html'));
@@ -349,6 +350,17 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     const v = clubs.view(req.params.id, user);
     if (!v.myStatus || v.myStatus !== 'active') throw new Error('Not a member');
     return { stats: tables.clubStats(req.params.id, user, { game: String(req.query.game || 'all'), seeAll: v.seeAll, ...period(req.query) }) };
+  }));
+  // Every hand of every game, for the hand history of the whole club: amounts in cents, and only the
+  // hole cards this member may see. version changes when a hand finishes or changes anywhere.
+  app.get('/api/clubs/:id/hands', api((req, user) => {
+    const v = clubs.view(req.params.id, user);
+    if (!v.myStatus || v.myStatus !== 'active') throw new Error('Not a member');
+    return { ...tables.clubHands(req.params.id, user), seeAll: v.seeAll, me: user.id };
+  }));
+  app.get('/api/clubs/:id/hands/version', api((req, user) => {
+    if (!clubs.role(req.params.id, user.id)) throw new Error('Not a member');
+    return { version: tables.handsVersion(req.params.id) };
   }));
   app.get('/api/clubs/:id/results', api((req, user) => {
     const v = clubs.view(req.params.id, user);

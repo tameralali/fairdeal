@@ -5,6 +5,8 @@
 // Bomb pots have no preflop betting, so they count toward hands, results and postflop stats only.
 // Hands recorded before actions were logged count toward hands and results only.
 
+import { FAIRNESS_V2 } from '../shared/fairness.js';
+
 const POSTFLOP = new Set(['flop', 'turn', 'river']);
 const isRaise = (a) => a === 'raise' || a === 'bet';
 
@@ -187,30 +189,90 @@ export function summarize(t) {
   };
 }
 
-// Keeps each hand's counts in memory, per table, so stats stay cheap to serve while a game runs.
-// Tables whose hands are not loaded are read from disk once; their counts are kept, not the hands.
+// What the list of every hand in the club needs from one hand, amounts in cents (scale as for
+// handLines). Each player's hole cards are kept as one string ('AsKd') so a viewer can be given the
+// ones they may see (handView), the same ones the game's own hand history shows them.
+export function handSummary(rec, scale = 1) {
+  return {
+    handNumber: rec.handNumber, at: rec.startedAt || 0, gameType: rec.gameType, isBomb: !!rec.isBomb,
+    runCount: rec.runCount || 1, doubleBoard: !!rec.doubleBoard,
+    pot: (rec.results?.pots || []).reduce((sum, p) => sum + p.amount, 0) * scale,
+    showdown: !rec.results?.uncontested, allIn: (rec.actions || []).some((a) => a.allIn),
+    straddle: (rec.posts || []).some((p) => p.a === 'st'), replay: Array.isArray(rec.actions),
+    bounty: rec.bounty ? { userId: rec.bounty.userId, total: rec.bounty.total * scale } : null,
+    sealed: rec.fairness?.version === FAIRNESS_V2,
+    players: rec.players.map((p) => ({
+      id: p.userId || p.id, net: (p.endStack - p.startStack) * scale,
+      holes: (rec.dealt?.holes?.[p.seat] || []).join(''), shown: !!p.shown, showIdx: p.showIdx?.length ? p.showIdx.slice() : null,
+    })),
+  };
+}
+
+// One hand of handSummary for one viewer: their own cards, cards a player showed (only those of a
+// partial show), and every card once the game has opened its deck (open), as visibleHoles does.
+export function handView(s, tableId, viewerId, open) {
+  const nets = {};
+  const cards = {};
+  for (const p of s.players) {
+    nets[p.id] = p.net;
+    if (!p.holes) continue;
+    const all = p.holes.match(/../g);
+    if (open || p.id === viewerId || p.shown) cards[p.id] = all;
+    else if (p.showIdx) cards[p.id] = all.map((c, i) => (p.showIdx.includes(i) ? c : null));
+  }
+  return {
+    tableId, handNumber: s.handNumber, at: s.at, gameType: s.gameType, isBomb: s.isBomb, runCount: s.runCount, doubleBoard: s.doubleBoard,
+    pot: s.pot, showdown: s.showdown, allIn: s.allIn, straddle: s.straddle, replay: s.replay, bounty: s.bounty,
+    revealed: s.sealed || open, nets, cards,
+  };
+}
+
+// Hands played in whole chips count a chip as a dollar: 100 cents.
+const scaleOf = (rec, table) => ((rec.decimals ?? table.decimals) ? 1 : 100);
+
+// Keeps each hand's counts in memory, per table, so stats stay cheap to serve while a game runs,
+// along with each hand's summary for the list of every hand. Tables whose hands are not loaded are
+// read from disk once; their counts and summaries are kept, not the hands.
 export class StatsBook {
   constructor() {
-    this.byTable = new Map(); // tableId -> { count, lines }
+    this.byTable = new Map(); // tableId -> { count, lines, sums, names }
     this.version = 0;
   }
 
-  linesFor(table) {
+  entry(table) {
     let c = this.byTable.get(table.id);
     const loaded = table.records; // set once a table has played or been browsed since the server started
-    if (c && !loaded) return c.lines;
+    if (c && !loaded) return c;
     const list = loaded || table.store.readHands(table.id);
-    if (!c || c.count > list.length) c = { count: 0, lines: [] };
+    if (!c || c.count > list.length) c = { count: 0, lines: [], sums: [], names: new Map() };
     for (let i = c.count; i < list.length; i++) {
       const r = list[i];
-      c.lines.push({ ...handLines(r, (r.decimals ?? table.decimals) ? 1 : 100), tableId: table.id });
+      c.lines.push({ ...handLines(r, scaleOf(r, table)), tableId: table.id });
+      c.sums.push(handSummary(r, scaleOf(r, table)));
+      for (const p of r.players) c.names.set(p.userId || p.id, p.name);
     }
     c.count = list.length;
     this.byTable.set(table.id, c);
-    return c.lines;
+    return c;
   }
 
+  linesFor(table) { return this.entry(table).lines; }
+
+  summariesFor(table) { return this.entry(table).sums; }
+
   added() { this.version++; }
+
+  // A hand already counted changed (cards shown after it, a 7-2 bounty claimed by showing them):
+  // its counts and summary are worked out again from the changed record.
+  changed(table, rec) {
+    const c = this.byTable.get(table.id);
+    const i = c ? c.sums.findIndex((x) => x.handNumber === rec.handNumber) : -1;
+    if (i >= 0) {
+      c.lines[i] = { ...handLines(rec, scaleOf(rec, table)), tableId: table.id };
+      c.sums[i] = handSummary(rec, scaleOf(rec, table));
+    }
+    this.version++;
+  }
 
   clear() { this.byTable.clear(); this.version++; }
 }

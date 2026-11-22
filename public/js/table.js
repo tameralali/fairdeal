@@ -14,7 +14,7 @@ import * as H from './hand-history.js';
 import * as VC from './voice.js';
 import { boardName, stepLabel } from './game-form.js';
 
-import { BRAND_HEX } from './api.js';
+import { wordmarkHTML } from './brand.js';
 const TIMES = ['', 'once', 'twice', 'three times', 'four times'];
 const els = {};
 
@@ -542,7 +542,7 @@ function renderTop(s) {
   }
   els.top.innerHTML = `
     <span class="conn ${app.connected ? '' : 'off'}" title="${app.connected ? 'Connected' : 'Reconnecting'}"></span>
-    <a class="wordmark" href="/" title="Back to the club">${sealSVG(BRAND_HEX, 26, 'The Aquarium')}<span>The <b>Aquarium</b></span></a>
+    <a class="wordmark" href="/" title="Back to the club">${wordmarkHTML(26)}</a>
     <div class="tb-title"><strong>${esc(t.name)}</strong><a href="/">${esc(t.clubName || 'The Aquarium')}</a></div>
     <div class="tb-game">
       <span class="pill brass" title="${esc(GAME_TYPES[game]?.name || '')}">${esc(gameShort(game))}</span>${dbNow ? '<span class="pill soft" title="Two boards, each pot split between them">Double board</span>' : ''}
@@ -635,7 +635,7 @@ function pnTopHTML(s, { game, dbNow, rot, status, ends, reqs }) {
   }
   const sound = soundOn();
   return `
-    <a class="pn-brand wordmark" href="/" title="Back to the club"><span class="conn ${app.connected ? '' : 'off'}" title="${app.connected ? 'Connected' : 'Reconnecting'}"></span>${sealSVG(BRAND_HEX, 24, 'The Aquarium')}<span>The <b>Aquarium</b></span></a>
+    <a class="pn-brand wordmark" href="/" title="Back to the club"><span class="conn ${app.connected ? '' : 'off'}" title="${app.connected ? 'Connected' : 'Reconnecting'}"></span>${wordmarkHTML(24)}</a>
     <nav class="pn-menu" aria-label="Table">${side}</nav>
     <div class="pn-info">
       <div class="pn-game">${games}<span class="pn-tilde" aria-hidden="true">~</span><span class="pn-blinds" title="Small and big blind">${fmt(st.smallBlind)} / ${fmt(st.bigBlind)}</span>${bomb}</div>

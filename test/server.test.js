@@ -47,6 +47,23 @@ async function member(name, username = null, { fund = 0 } = {}) {
   if (fund) await call('POST', `/api/clubs/${m.clubId}/members/${m.user.id}/chips`, { amount: fund, note: 'Cash' }, siteOwner.token);
   return m;
 }
+// The hands of one game in the club's list of every hand, as one member gets them.
+async function clubHandsOf(tableId, m) {
+  const all = await call('GET', `/api/clubs/${siteOwner.clubId}/hands`, null, m.token);
+  return { ...all, mine: all.hands.filter((h) => h.tableId === tableId) };
+}
+// The club's list of every hand agrees with the game's own hand list: the same hands, results and
+// pot, and the same hole cards for this viewer.
+function sameHands(club, game, label) {
+  assert.equal(club.length, game.length, `${label}: every hand of the game`);
+  for (const g of game) {
+    const c = club.find((x) => x.handNumber === g.handNumber);
+    assert.ok(c, `${label}: hand ${g.handNumber}`);
+    for (const k of ['pot', 'runCount', 'doubleBoard', 'isBomb', 'showdown', 'allIn', 'revealed', 'gameType']) assert.deepEqual(c[k], g[k], `${label}: hand ${g.handNumber} ${k}`);
+    assert.deepEqual(c.nets, g.nets, `${label}: hand ${g.handNumber} results`);
+    assert.deepEqual(c.cards, g.cards, `${label}: hand ${g.handNumber} cards`);
+  }
+}
 async function admin(name, opts) {
   const m = await member(name, null, opts);
   await call('POST', `/api/admin/users/${m.user.id}/role`, { role: 'admin' }, siteOwner.token);
@@ -285,6 +302,17 @@ test('a game: approvals, mixed games, bombs, multi-runs, ledger, stats, hand lis
   const big = list.slice().sort((a, b) => b.pot - a.pot)[0];
   assert.equal(big.pot, Math.max(...recs.map((x) => x.results.pots.reduce((s2, p) => s2 + p.amount, 0))));
   for (const h of list.slice(0, 5)) assert.equal(Object.values(h.nets).reduce((a, b) => a + b, 0), 0, 'a hand moves money between players only');
+  // the club's list of every hand has this game's hands, the same as its own list
+  const club = await clubHandsOf(id, auths[1]);
+  sameHands(club.mine, list, 'every hand of the club');
+  const session = club.sessions.find((x) => x.id === id);
+  assert.equal(session.name, 'Thursday game');
+  assert.equal(session.hands, recs.length);
+  assert.equal(session.live, true);
+  for (const a of auths) assert.equal(club.names[a.user.id], a.user.name, 'everyone who played is named');
+  assert.equal(club.seeAll, false, 'a member does not see the whole club');
+  assert.equal(club.me, auths[1].user.id);
+  assert.equal((await call('GET', `/api/clubs/${siteOwner.clubId}/hands/version`, null, auths[1].token)).version, club.version, 'nothing changed');
   // the replayer can step through every hand: money adds up at each step and it ends on the real stacks
   for (const x of recs) {
     const R = buildReplay(x);
@@ -320,10 +348,23 @@ test('seeds stay hidden until the game ends when the reveal policy is per sessio
   assert.equal(record.fairness.serverSeed, null);
   const hidden = record.players.filter((p) => !p.shown && p.userId !== b.user.id);
   for (const p of hidden) assert.equal(record.dealt.holes[p.seat], undefined, 'opponent mucked cards hidden');
+  // the club's list of every hand keeps them hidden too, until the game ends
+  await bots[0].emit('host:pause', { value: true });
+  await until(() => !bots[0].state.hand || bots[0].state.hand.phase === 'done', 10000, 'hand to end');
+  await wait(100);
+  let club = await clubHandsOf(id, b);
+  sameHands(club.mine, (await call('GET', `/api/tables/${id}/hands`, null, b.token)).hands, 'sealed for now');
+  assert.ok(club.mine.every((h) => !h.revealed));
+  const before = club.version;
   await bots[0].emit('host:end', {});
   await until(() => bots[0].state?.table.status === 'ended', 60000, 'end');
   ({ record } = await call('GET', `/api/tables/${id}/hands/2`, null, b.token));
   assert.equal(record.revealed, true);
+  club = await clubHandsOf(id, b);
+  assert.notEqual(club.version, before, 'opening the deck changes the list');
+  sameHands(club.mine, (await call('GET', `/api/tables/${id}/hands`, null, b.token)).hands, 'opened at the end');
+  assert.ok(club.mine.every((h) => h.revealed && Object.keys(h.cards).length === 2), 'every hand open, both players\' cards');
+  assert.equal(club.sessions.find((x) => x.id === id).live, false);
   const v = await verifyAll(id, bots, a.token);
   assert.ok(v.verified > 0);
   bots.forEach((x) => x.close());
@@ -393,6 +434,11 @@ test('folded cards stay hidden for good: every hand checks out, nobody sees anot
         assert.deepEqual(got, all.map((c, k) => (shown.includes(k) ? c : null)));
       }
     }
+  }
+  // the club's list of every hand gives each viewer the same cards as the game's own list
+  for (const b of bots) {
+    const { hands } = await call('GET', `/api/tables/${id}/hands`, null, b.token);
+    sameHands((await clubHandsOf(id, b)).mine, hands, `${b.name}, sealed for good`);
   }
   // Bea showed one card of a hand she folded: everyone sees that card and only that one
   const shownRec = recs.find((r) => r.handNumber === bots[1].shownIn);

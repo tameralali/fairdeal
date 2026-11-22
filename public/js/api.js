@@ -1,5 +1,5 @@
 // REST client, sign-in and chip formatting.
-import { sealSVG } from './seal.js';
+import { wordmarkHTML } from './brand.js';
 import { fmtMoney, parseMoney, moneyInput } from '/shared/money.js';
 
 const KEY = 'fd:token';
@@ -44,7 +44,6 @@ export const api = {
   },
 };
 
-export const BRAND_HEX = '6f3ac1d0a85c2e94b7f1036d4e5a9c8b21f0e7d6c5b4a39281706f5e4d3c2b1a';
 
 // Returns /api/me. The site is invite only, so without a valid sign-in the page shows the
 // members-only sign-in screen and waits there.
@@ -63,7 +62,7 @@ export function gate() {
     const el = document.createElement('div');
     el.className = 'gate';
     el.innerHTML = `<main class="gate-card">
-      <div class="wordmark">${sealSVG(BRAND_HEX, 34, 'The Aquarium')}<span>The <b>Aquarium</b></span></div>
+      <div class="wordmark">${wordmarkHTML(34)}</div>
       <h1>Members only</h1>
       <p class="muted">The Aquarium is a private poker game. Sign in with your username and password. New here? Open the invite link an admin emailed you.</p>
       <form class="stack" data-login>

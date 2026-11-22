@@ -5,7 +5,7 @@ import { GAME_TYPES } from '../shared/cards.js';
 import { isValidContribution, FAIRNESS_VERSION, FAIRNESS_V2 } from '../shared/fairness.js';
 import { newCommitment, settleCommitment, randomId, openV2, savedCommitment, restoreCommitment } from './fair-node.js';
 import { cleanName } from './auth.js';
-import { StatsBook, statsRows, gamesIn, summarize, aggregate } from './stats.js';
+import { StatsBook, statsRows, gamesIn, summarize, aggregate, handView } from './stats.js';
 import { fmtMoney } from '../shared/money.js';
 import { score5 } from '../shared/evaluator.js';
 
@@ -1524,9 +1524,10 @@ export class Table {
         const paid = this.paySevenDeuce(hand, rec);
         if (paid) {
           this.store.appendHandPatch(this.id, rec.handNumber, { bounty: rec.bounty, nets: paid.nets });
-          this.manager.stats.added();
           this.snapshot();
         }
+        // the shown cards, and any bounty, in the list of every hand and in the results
+        this.manager.stats.changed(this, rec);
       }
       this.broadcast();
     }
@@ -1906,6 +1907,35 @@ export class TableManager {
     const out = [];
     for (const t of this.tables.values()) if (t.clubId === clubId) out.push(...this.stats.linesFor(t));
     return out;
+  }
+
+  // Every hand of the club's games for one viewer: what the list of every hand needs (amounts in
+  // cents), with the hole cards this viewer may see, the same as each game's own hand history shows
+  // them. sessions: the games, newest first; names: everyone who played, by id.
+  clubHands(clubId, viewer) {
+    const sessions = [];
+    const hands = [];
+    const names = {};
+    for (const t of this.tables.values()) {
+      if (t.clubId !== clubId || !t.canView(viewer)) continue;
+      const c = this.stats.entry(t);
+      if (!c.sums.length) continue;
+      sessions.push({
+        id: t.id, name: t.name, at: t.createdAt || c.sums[0].at, endedAt: t.endedAt || null, live: t.status !== 'ended',
+        hands: c.sums.length, decimals: t.decimals, felt: t.settings.feltColor || null,
+      });
+      for (const [id, nm] of c.names) if (!names[id]) names[id] = this.auth.users[id]?.name || nm;
+      for (const s of c.sums) hands.push(handView(s, t.id, viewer.id, !s.sealed && s.handNumber <= t.revealedThrough));
+    }
+    sessions.sort((a, b) => b.at - a.at);
+    return { sessions, names, hands, version: this.handsVersion(clubId) };
+  }
+
+  // Changes whenever a hand finishes or changes in one of the club's games, or a game opens its deck.
+  handsVersion(clubId) {
+    let opened = 0;
+    for (const t of this.tables.values()) if (t.clubId === clubId) opened += t.revealedThrough || 0;
+    return `${this.stats.version}.${opened}`;
   }
 
   // Stats for the club page over a period (from and to in ms; either can be left out). Results of other

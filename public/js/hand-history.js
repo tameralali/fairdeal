@@ -1,20 +1,22 @@
-// Hand history: every hand of this game in a list on the left, sorted and filtered, with the chosen
-// player's result and cards on each row, and the replayer on the right. Stepping past the end of a
-// hand carries straight on into the next hand of the list, and so does Play.
-import { esc, dialog } from './ui.js';
+// Hand history: every hand of this game, or of every game of the club, in a list on the left, sorted
+// and filtered, with the chosen player's result and cards on each row, and the replayer on the right.
+// Stepping past the end of a hand carries straight on into the next hand of the list, and so does Play.
+import { esc, dialog, toast } from './ui.js';
+import { api } from './api.js';
 import { cardHTML, backHTML, slotHTML, prefs } from './cards.js';
 import { app, emit, fmt, fmtC, gameShort, gameName } from './table-core.js';
 import { buildReplay, canReplay } from '/shared/replay.js';
+import { fmtMoney } from '/shared/money.js';
 import { boardName } from './game-form.js';
 import { handDetailsInto, checkBadge } from './table-dialogs.js';
+import { FairClient } from './fair-client.js';
+import { SORTS, showChoices, runChoices, isShow, isRuns, handKey, pickHands, resultOf, topWinner } from './hand-filter.js';
 
-const SORTS = [['new', 'Newest first'], ['old', 'Oldest first'], ['pot', 'Biggest pots'], ['won', 'Biggest wins'], ['lost', 'Biggest losses']];
-const FILTERS = [['all', 'All hands'], ['showdown', 'Showdowns'], ['allin', 'All-ins'], ['bomb', 'Bomb pots']];
 const STEP_MS = 1100;
 const HOLD_MS = 2400; // how long the result stays up before Play moves on to the next hand
 const LETTER = { flop: 'F', turn: 'T', river: 'R' };
+const LOOK_EVERY = 30000; // how often a history of every game looks for new hands while it is open
 
-const signed = (n) => `${n > 0 ? '+' : ''}${fmtC(n)}`;
 const when = (at) => new Date(at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 const icon = {
   prevHand: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.5 6 5.5 12l6 6M18.5 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -27,32 +29,54 @@ const icon = {
 };
 
 let current = null; // the open history, so new hands can be added to its list while it is open
+const fairs = new Map(); // every game's check of its hands, for the history of every game
 
-// start: the hand to show first, at step. sort, filter, game and who: how the list opens. who is the
-// player whose hands and results the list shows; empty or 'all' (Everyone) shows every hand with its
-// pot. view 'details' opens on the details. page: the history fills a tab of its own (hands-page.js),
-// with page.actions in its head in place of Close; otherwise its head has Open in new tab, which
-// carries on in a new tab exactly where this one is.
-export async function historyDialog({ start = null, sort = null, who = null, filter = null, game = null, step = 0, view = null, page = null } = {}) {
+// start: the hand to show first (its number, or for every game its key, game.number), at step. sort,
+// filter, game, runs, session and who: how the list opens. who is the player whose hands and results
+// the list shows; empty or 'all' (Everyone) shows every hand with its pot. view 'details' opens on the
+// details. page: the history fills a tab of its own (hands-page.js), with page.actions in its head in
+// place of Close; otherwise its head has Open in new tab, which carries on in a new tab exactly where
+// this one is. club: { id, data } for the hands of every game of the club (data: what
+// /api/clubs/:id/hands answered, if it is at hand already). onClose(choices) hears how the list was
+// left when the history closes.
+export async function historyDialog({ start = null, sort = null, who = null, filter = null, game = null, runs = null, session = null, step = 0, view = null, page = null, club = null, onClose = null } = {}) {
   if (current) current.close();
-  const r = await emit('hands:list');
+  const fetchAll = async () => {
+    if (!club) return emit('hands:list', {}, { quiet: true });
+    try { return { ok: true, ...(await api.get(`/api/clubs/${encodeURIComponent(club.id)}/hands`)) }; }
+    catch (e) { toast(e.message, 'error'); return { ok: false }; }
+  };
+  const r = club?.data ? { ok: true, ...club.data } : club ? await fetchAll() : await emit('hands:list');
   if (!r.ok) return;
-  const me = app.state.me.userId;
-  const ended = app.state.table.status === 'ended';
-  const firstSort = ended ? 'old' : 'new';
+  if (club) {
+    // every game: no table of its own, each hand is drawn with its game's money and felt
+    app.state ||= { me: { userId: r.me }, table: { id: '', name: 'All games', status: 'ended', settings: {} } };
+    app.me ||= { id: r.me };
+  }
+  const me = club ? r.me : app.state.me.userId;
+  const ended = club || app.state.table.status === 'ended';
+  const firstSort = club ? 'new' : ended ? 'old' : 'new';
+  const sessions = new Map((r.sessions || []).map((x) => [x.id, x]));
   const v = {
     all: r.hands, sort: SORTS.some(([k]) => k === sort) ? sort : firstSort,
-    filter: FILTERS.some(([k]) => k === filter) ? filter : 'all',
+    filter: isShow(filter) ? filter : 'all', runs: isRuns(runs) ? String(runs) : 'any',
+    session: session && sessions.has(session) ? session : 'all',
     game: game && r.hands.some((h) => h.gameType === game) ? game : 'all', who: null,
+    names: r.names || null, seeAll: club ? !!r.seeAll : true, version: r.version || null,
     cur: null, mode: view === 'details' ? 'details' : 'replay', rec: null, R: null, i: 0, playing: false, timer: null, cache: new Map(), loading: 0,
   };
   const played = (id) => v.all.some((h) => h.nets[id] !== undefined);
   const names = () => {
-    const out = new Map();
+    const out = new Map(Object.entries(v.names || {}));
     for (const h of v.all) for (const [id, nm] of Object.entries(h.names || {})) if (!out.has(id)) out.set(id, nm);
     return out;
   };
   v.who = who === 'all' ? '' : who && played(who) ? who : played(me) ? me : '';
+  const byKey = (k) => v.all.find((h) => handKey(h) === k) || null;
+  // amounts in the list: cents across every game (each game's own unit otherwise)
+  const money = club ? (a) => fmtMoney(a, 2, 'always', '') : fmtC;
+  const signed = (n) => `${n > 0 ? '+' : ''}${money(n)}`;
+  const sessionName = (h) => (club ? sessions.get(h.tableId)?.name || 'Game' : '');
 
   // the address of this history as it stands, for Open in new tab and for the tab of its own
   const tabURL = () => {
@@ -61,18 +85,20 @@ export async function historyDialog({ start = null, sort = null, who = null, fil
     if (v.mode === 'details') q.set('view', 'details');
     else if (v.R && v.i > 0) q.set('step', v.i);
     q.set('who', v.who || 'all');
+    if (v.session !== 'all') q.set('session', v.session);
     if (v.sort !== firstSort) q.set('sort', v.sort);
     if (v.filter !== 'all') q.set('show', v.filter);
+    if (v.runs !== 'any') q.set('runs', v.runs);
     if (v.game !== 'all') q.set('game', v.game);
-    return `/hands/${encodeURIComponent(app.tableId)}?${q}`;
+    return club ? `/hands?${q}` : `/hands/${encodeURIComponent(app.tableId)}?${q}`;
   };
   const newTab = `<a class="btn small hh-newtab" data-newtab href="${esc(tabURL())}" target="_blank" rel="noopener" title="Open the hand history in its own tab">${icon.newTab}<span class="long">Open in new tab</span><span class="short">New tab</span></a>`;
   const dlg = dialog({
-    title: `Hand history, ${app.state.table.name}`, className: `hh-dlg${page ? ' hh-page' : ''}`, closable: !page,
+    title: club ? 'Hand history, every game' : `Hand history, ${app.state.table.name}`, className: `hh-dlg${page ? ' hh-page' : ''}${club ? ' hh-all' : ''}`, closable: !page,
     actions: page ? page.actions || '' : newTab, body: '<p class="muted" style="padding:1.2rem">Loading…</p>',
   });
   current = { close: () => dlg.close(), refresh };
-  const $ = (s) => dlg.el.querySelector(s);
+  const $ = (q) => dlg.el.querySelector(q);
   // keep the address up to date: the link in the head, or this tab's own address
   const syncURL = () => {
     if (page) { try { history.replaceState(null, '', tabURL()); } catch { /* not allowed */ } return; }
@@ -81,69 +107,56 @@ export async function historyDialog({ start = null, sort = null, who = null, fil
   };
 
   // ----- the list -----
-  const list = () => {
-    let out = v.all.filter((h) => {
-      if (v.game !== 'all' && h.gameType !== v.game) return false;
-      if (v.who && h.nets[v.who] === undefined) return false;
-      if (v.filter === 'showdown') return h.showdown;
-      if (v.filter === 'allin') return h.allIn;
-      if (v.filter === 'bomb') return h.isBomb;
-      return true;
-    });
-    // a player's own result; for everyone, the biggest single win or loss in the hand
-    const vals = (h) => Object.values(h.nets || {});
-    const net = (h) => (v.who ? h.nets[v.who] : v.sort === 'lost' ? Math.min(0, ...vals(h)) : Math.max(0, ...vals(h)));
-    if (v.sort === 'old') out.sort((a, b) => a.handNumber - b.handNumber);
-    else if (v.sort === 'pot') out.sort((a, b) => b.pot - a.pot || b.handNumber - a.handNumber);
-    else if (v.sort === 'won') out = out.filter((h) => net(h) > 0).sort((a, b) => net(b) - net(a) || b.handNumber - a.handNumber);
-    else if (v.sort === 'lost') out = out.filter((h) => net(h) < 0).sort((a, b) => net(a) - net(b) || b.handNumber - a.handNumber);
-    else out.sort((a, b) => b.handNumber - a.handNumber);
-    return out;
-  };
+  const list = () => pickHands(v.all, v);
   const whoName = () => (v.who === me ? 'You' : names().get(v.who) || 'Player');
-  // for everyone: who won the most in the hand, by name
-  const topWinner = (h) => {
-    const [id, amt] = Object.entries(h.nets || {}).sort((a, b) => b[1] - a[1])[0] || [];
-    return id && amt > 0 ? `${id === me ? 'You' : h.names?.[id] || names().get(id) || 'Someone'} +${fmtC(amt)}` : '';
+  const winnerText = (h) => {
+    const w = topWinner(h);
+    return w ? `${w[0] === me ? 'You' : h.names?.[w[0]] || names().get(w[0]) || 'Someone'} +${money(w[1])}` : '';
   };
+  const flagsOf = (h) => [h.isBomb ? 'bomb pot' : '', h.doubleBoard ? 'two boards' : '', h.runCount > 1 ? `ran ${h.runCount} times` : ''].filter(Boolean).join(', ');
+  const subOf = (h) => [sessionName(h), when(h.at), gameShort(h.gameType), flagsOf(h)].filter(Boolean).join(', ');
   const rowHTML = (h) => {
+    const k = handKey(h);
+    const on = k === v.cur;
     if (!v.who) {
-      const flags = [h.isBomb ? 'bomb pot' : '', h.doubleBoard ? 'two boards' : '', h.runCount > 1 ? `ran ${h.runCount} times` : ''].filter(Boolean).join(', ');
-      const vals = Object.values(h.nets || {});
-      const big = v.sort === 'won' ? Math.max(0, ...vals) : v.sort === 'lost' ? Math.min(0, ...vals) : null;
-      return `<button type="button" class="hh-row ${h.handNumber === v.cur ? 'on' : ''}" data-h="${h.handNumber}" role="option" aria-selected="${h.handNumber === v.cur}">
+      const big = v.sort === 'won' || v.sort === 'lost' ? resultOf(h, '', v.sort) : null;
+      return `<button type="button" class="hh-row ${on ? 'on' : ''}" data-h="${esc(k)}" role="option" aria-selected="${on}">
       <span class="hh-n">${h.handNumber}</span>
-      <span class="hh-net ${big === null ? 'even' : big > 0 ? 'pos' : 'neg'}">${big === null ? fmtC(h.pot) : signed(big)}</span>
+      <span class="hh-net ${big === null ? 'even' : big > 0 ? 'pos' : 'neg'}">${big === null ? money(h.pot) : signed(big)}</span>
       <span class="hh-cards"></span>
-      <span class="hh-sub">${esc(when(h.at))}, ${esc(gameShort(h.gameType))}${flags ? `, ${esc(flags)}` : ''}${topWinner(h) ? `<b>${esc(topWinner(h))}</b>` : ''}</span>
+      <span class="hh-sub">${esc(subOf(h))}${winnerText(h) ? `<b>${esc(winnerText(h))}</b>` : ''}</span>
     </button>`;
     }
     const net = h.nets[v.who];
     const cls = net === undefined ? 'out' : net > 0 ? 'pos' : net < 0 ? 'neg' : 'even';
     const cards = h.cards?.[v.who];
-    const flags = [h.isBomb ? 'bomb pot' : '', h.doubleBoard ? 'two boards' : '', h.runCount > 1 ? `ran ${h.runCount} times` : ''].filter(Boolean).join(', ');
-    return `<button type="button" class="hh-row ${h.handNumber === v.cur ? 'on' : ''}" data-h="${h.handNumber}" role="option" aria-selected="${h.handNumber === v.cur}">
+    return `<button type="button" class="hh-row ${on ? 'on' : ''}" data-h="${esc(k)}" role="option" aria-selected="${on}">
       <span class="hh-n">${h.handNumber}</span>
       <span class="hh-net ${cls}">${net === undefined ? 'Not in' : signed(net)}</span>
       <span class="hh-cards">${cards ? cards.map((c) => (c ? cardHTML(c) : backHTML())).join('') : ''}</span>
-      <span class="hh-sub">${esc(when(h.at))}, ${esc(gameShort(h.gameType))}${flags ? `, ${esc(flags)}` : ''}${v.sort === 'pot' || net === undefined ? `<b>pot ${fmtC(h.pot)}</b>` : ''}</span>
+      <span class="hh-sub">${esc(subOf(h))}${v.sort === 'pot' || net === undefined ? `<b>pot ${money(h.pot)}</b>` : ''}</span>
     </button>`;
   };
   const sideHTML = () => {
     const L = list();
     const games = [...new Set(v.all.map((h) => h.gameType))];
     const people = [...names().entries()].filter(([id]) => played(id)).sort((a, b) => (a[0] === me ? -1 : b[0] === me ? 1 : a[1].localeCompare(b[1])));
-    const total = v.who ? L.reduce((s, h) => s + (h.nets[v.who] || 0), 0) : 0;
+    // a player's total over the hands listed; across every game only your own, unless you see the whole club
+    const total = v.who && (v.seeAll || v.who === me) ? L.reduce((sum, h) => sum + (h.nets[v.who] || 0), 0) : null;
     const opt = (pairs, val) => pairs.map(([k, l]) => `<option value="${esc(k)}" ${k === val ? 'selected' : ''}>${esc(l)}</option>`).join('');
+    const ran = runChoices(v.all);
+    const sess = [...sessions.values()];
     return `
       <div class="hh-side-top"><button type="button" class="btn small" data-list>Back to the hand</button></div>
       <div class="hh-tools">
+        ${club ? `<label class="hh-wide"><span class="lbl">Session</span><select data-k="session">${opt([['all', 'Every session'], ...sess.map((x) => [x.id, `${x.name}, ${new Date(x.at).toLocaleDateString([], { month: 'short', day: 'numeric' })}`])], v.session)}</select></label>` : ''}
         <label class="hh-who"><span class="lbl">Player</span><select data-k="who">${opt([['', 'Everyone'], ...people.map(([id, nm]) => [id, id === me ? 'You' : nm])], v.who)}</select></label>
         <label><span class="lbl">Sort</span><select data-k="sort">${opt(SORTS, v.sort)}</select></label>
-        <label><span class="lbl">Show</span><select data-k="filter">${opt(FILTERS, v.filter)}</select></label>
+        <label><span class="lbl">Show</span><select data-k="filter">${opt(showChoices(v.all), v.filter)}</select></label>
+        ${ran.length ? `<label><span class="lbl">Times run</span><select data-k="runs">${opt(ran, v.runs)}</select></label>` : ''}
         ${games.length > 1 ? `<label><span class="lbl">Game</span><select data-k="game">${opt([['all', 'All games'], ...games.map((g) => [g, gameShort(g)])], v.game)}</select></label>` : ''}
       </div>
-      <p class="hh-sum">${L.length} hand${L.length === 1 ? '' : 's'}${L.length && v.who ? `, ${esc(whoName())} <b class="${total > 0 ? 'pos' : total < 0 ? 'neg' : ''}">${signed(total)}</b>` : ''}</p>
+      <p class="hh-sum">${L.length} hand${L.length === 1 ? '' : 's'}${L.length && total !== null ? `, ${esc(whoName())} <b class="${total > 0 ? 'pos' : total < 0 ? 'neg' : ''}">${signed(total)}</b>` : ''}</p>
       <div class="hh-list" role="listbox" aria-label="Hands">${L.length ? L.map(rowHTML).join('') : `<p class="muted hh-empty">${v.all.length ? 'No hands match.' : 'No finished hands yet.'}</p>`}</div>`;
   };
   const drawSide = () => {
@@ -152,7 +165,7 @@ export async function historyDialog({ start = null, sort = null, who = null, fil
   };
   const markRow = (scroll) => {
     dlg.el.querySelectorAll('.hh-row').forEach((b) => {
-      const on = Number(b.dataset.h) === v.cur;
+      const on = b.dataset.h === v.cur;
       b.classList.toggle('on', on);
       b.setAttribute('aria-selected', on);
       if (on && scroll) b.scrollIntoView({ block: 'nearest' });
@@ -162,40 +175,61 @@ export async function historyDialog({ start = null, sort = null, who = null, fil
   // ----- one hand -----
   const neighbor = (d) => {
     const L = list();
-    const k = L.findIndex((h) => h.handNumber === v.cur);
-    if (k < 0) return L.length ? L[d > 0 ? 0 : L.length - 1].handNumber : null;
-    return L[k + d]?.handNumber ?? null;
+    const k = L.findIndex((h) => handKey(h) === v.cur);
+    if (k < 0) return L.length ? handKey(L[d > 0 ? 0 : L.length - 1]) : null;
+    return L[k + d] ? handKey(L[k + d]) : null;
   };
-  const record = async (n) => {
-    if (!v.cache.has(n)) {
-      const x = await emit('hand:get', { handNumber: n }, { quiet: true });
-      if (!x.ok) return null;
-      v.cache.set(n, x.record);
+  const fetchRecord = async (k) => {
+    if (!club) {
+      const x = await emit('hand:get', { handNumber: Number(k) }, { quiet: true });
+      return x.ok ? x.record : null;
     }
-    return v.cache.get(n);
+    const h = byKey(k);
+    if (!h) return null;
+    try { return (await api.get(`/api/tables/${encodeURIComponent(h.tableId)}/hands/${h.handNumber}`)).record; }
+    catch { return null; }
   };
-  const load = async (n, at = 0) => {
-    if (n == null) return;
+  const record = async (k) => {
+    if (!v.cache.has(k)) {
+      const rec = await fetchRecord(k);
+      if (!rec) return null;
+      v.cache.set(k, rec);
+    }
+    return v.cache.get(k);
+  };
+  // across every game, each hand is drawn in its own game's money and felt, and checked as that game's
+  const useGameOf = (k) => {
+    const h = club && byKey(k);
+    if (!h) return;
+    const x = sessions.get(h.tableId);
+    app.dec = x?.decimals ?? 2;
+    app.state.table.settings.feltColor = x?.felt || null;
+    if (!fairs.has(h.tableId)) fairs.set(h.tableId, new FairClient(h.tableId, async () => ({ ok: false }), null));
+    app.fair = fairs.get(h.tableId);
+  };
+  const load = async (k, at = 0) => {
+    if (k == null) return;
     const ticket = ++v.loading;
-    v.cur = n;
+    v.cur = k;
     markRow(true);
-    const rec = await record(n);
+    const rec = await record(k);
     if (ticket !== v.loading) return; // a later choice won
+    useGameOf(k);
     v.rec = rec;
     v.R = rec && canReplay(rec) ? buildReplay(rec, fmt) : null;
     v.i = v.R ? (at === 'last' ? v.R.steps.length - 1 : Math.max(0, Math.min(v.R.steps.length - 1, Number(at) || 0))) : 0;
     drawMain();
-    for (const d of [1, -1]) { const k = neighbor(d); if (k != null) record(k); } // ready before it is asked for
+    for (const d of [1, -1]) { const n = neighbor(d); if (n != null) record(n); } // ready before it is asked for
   };
-  const meta = (rec) => [gameName(rec.gameType), rec.isBomb ? 'bomb pot' : '', rec.doubleBoard ? 'two boards' : '', `blinds ${fmt(rec.smallBlind)}/${fmt(rec.bigBlind)}`, rec.runCount > 1 ? `ran ${rec.runCount} times` : '', when(rec.startedAt)].filter(Boolean).join(', ');
+  const meta = (rec) => [club ? sessionName(byKey(v.cur) || {}) : '', gameName(rec.gameType), rec.isBomb ? 'bomb pot' : '', rec.doubleBoard ? 'two boards' : '', `blinds ${fmt(rec.smallBlind)}/${fmt(rec.bigBlind)}`, rec.runCount > 1 ? `ran ${rec.runCount} times` : '', when(rec.startedAt)].filter(Boolean).join(', ');
   const drawMain = () => {
     const main = $('.hh-main');
     if (!main) return;
     syncURL();
     const rec = v.rec;
-    if (!rec) { main.innerHTML = `<p class="muted">${v.all.length ? 'Pick a hand from the list.' : 'No finished hands yet. They show up here as soon as one ends.'}</p>`; return; }
+    if (!rec) { main.innerHTML = `<p class="muted">${v.all.length ? (v.cur != null ? 'That hand did not load. Try another one.' : 'Pick a hand from the list.') : 'No finished hands yet. They show up here as soon as one ends.'}</p>`; return; }
     const L = list();
-    const pos = L.findIndex((h) => h.handNumber === v.cur);
+    const pos = L.findIndex((h) => handKey(h) === v.cur);
     main.innerHTML = `
       <div class="hh-head">
         <div><h3>Hand #${rec.handNumber}${pos >= 0 ? `<small>${pos + 1} of ${L.length}</small>` : ''}${checkBadge(rec.handNumber, L[pos]?.revealed ?? rec.revealed)}</h3><p>${esc(meta(rec))}</p></div>
@@ -221,10 +255,10 @@ export async function historyDialog({ start = null, sort = null, who = null, fil
         ${btn('next', atEnd ? 'Next hand (right arrow)' : 'Next step (right arrow)', icon.next, (R && !atEnd) || nextH != null)}
         ${btn('nextHand', 'Next hand (down arrow)', icon.nextHand, nextH != null)}
       </div>
-      ${R && v.mode === 'replay' ? `<div class="hh-line" role="group" aria-label="Steps">${R.steps.map((s, k) => {
-        const label = s.dealt === 'run' ? String((s.run ?? 0) + 1) : LETTER[s.dealt] || '';
-        const what = s.dealt === 'run' ? `Run ${(s.run ?? 0) + 1}` : s.dealt ? s.dealt[0].toUpperCase() + s.dealt.slice(1) : s.final ? 'Result' : `Step ${k + 1}`;
-        return `<button type="button" data-step="${k}" class="${k === v.i ? 'on' : k < v.i ? 'past' : ''}${label ? ' mark' : ''}${s.final ? ' fin' : ''}" title="${esc(what)}" aria-label="${esc(what)}">${label}</button>`;
+      ${R && v.mode === 'replay' ? `<div class="hh-line" role="group" aria-label="Steps">${R.steps.map((st, k) => {
+        const label = st.dealt === 'run' ? String((st.run ?? 0) + 1) : LETTER[st.dealt] || '';
+        const what = st.dealt === 'run' ? `Run ${(st.run ?? 0) + 1}` : st.dealt ? st.dealt[0].toUpperCase() + st.dealt.slice(1) : st.final ? 'Result' : `Step ${k + 1}`;
+        return `<button type="button" data-step="${k}" class="${k === v.i ? 'on' : k < v.i ? 'past' : ''}${label ? ' mark' : ''}${st.final ? ' fin' : ''}" title="${esc(what)}" aria-label="${esc(what)}">${label}</button>`;
       }).join('')}</div>` : ''}`;
   };
 
@@ -273,7 +307,7 @@ export async function historyDialog({ start = null, sort = null, who = null, fil
     // the history goes on in a tab of its own, so this one closes and the table shows again
     if (e.target.closest('[data-newtab]')) { stop(); syncURL(); setTimeout(() => dlg.close(), 0); return; }
     const row = e.target.closest('[data-h]');
-    if (row) { stop(); $('.hh')?.classList.remove('list-open'); load(Number(row.dataset.h), 0); return; }
+    if (row) { stop(); $('.hh')?.classList.remove('list-open'); load(row.dataset.h, 0); return; }
     if (e.target.closest('[data-list]')) { $('.hh')?.classList.toggle('list-open'); markRow(true); return; }
     const c = e.target.closest('[data-c]');
     if (c && !c.disabled) { act(c.dataset.c); return; }
@@ -288,11 +322,11 @@ export async function historyDialog({ start = null, sort = null, who = null, fil
     v[k] = e.target.value;
     drawSide();
     const L = list();
-    const keep = (k === 'who' || k === 'game') && L.some((h) => h.handNumber === v.cur);
+    const keep = (k === 'who' || k === 'game') && L.some((h) => handKey(h) === v.cur);
     if (keep) { drawMain(); return; }
     stop();
     $('.hh-list')?.scrollTo(0, 0);
-    if (L.length) load(L[0].handNumber, 0);
+    if (L.length) load(handKey(L[0]), 0);
     else { v.cur = null; v.rec = null; drawMain(); }
   });
   dlg.el.addEventListener('keydown', (e) => {
@@ -302,13 +336,38 @@ export async function historyDialog({ start = null, sort = null, who = null, fil
     e.preventDefault();
     act(k);
   });
-  dlg.el.addEventListener('close', () => { stop(); if (current && current.refresh === refresh) current = null; });
+  // across every game, new hands from games being played join the list while it is open
+  let looker = null;
+  if (club) {
+    const look = async () => {
+      if (document.visibilityState !== 'visible' || !dlg.el.open) return;
+      try {
+        const x = await api.get(`/api/clubs/${encodeURIComponent(club.id)}/hands/version`);
+        if (x.version !== v.version) refresh();
+      } catch { /* try again next time */ }
+    };
+    looker = setInterval(look, LOOK_EVERY);
+    document.addEventListener('visibilitychange', look);
+    dlg.el.addEventListener('close', () => { clearInterval(looker); document.removeEventListener('visibilitychange', look); });
+  }
+  dlg.el.addEventListener('close', () => {
+    stop();
+    if (current && current.refresh === refresh) current = null;
+    onClose?.({ who: v.who, sort: v.sort, filter: v.filter, runs: v.runs, game: v.game, session: v.session });
+  });
 
-  // New hands at a live table join the list while it is open.
+  // New hands join the list while it is open: at a live table as they end, across every game when
+  // the club's hands change.
   async function refresh() {
-    const x = await emit('hands:list', {}, { quiet: true });
+    const x = await fetchAll();
     if (!x.ok || !dlg.el.open) return;
     v.all = x.hands;
+    if (club) {
+      v.names = x.names || v.names;
+      v.version = x.version || v.version;
+      sessions.clear();
+      for (const s of x.sessions || []) sessions.set(s.id, s);
+    }
     if (!dlg.el.querySelector('.hh-side')) return;
     const scroll = $('.hh-list')?.scrollTop || 0;
     drawSide();
@@ -320,10 +379,11 @@ export async function historyDialog({ start = null, sort = null, who = null, fil
   dlg.setBody('<div class="hh"><aside class="hh-side"></aside><section class="hh-main" tabindex="-1" aria-label="Hand"></section></div>');
   drawSide();
   const L = list();
-  const first = start != null && v.all.some((h) => h.handNumber === start) ? start : L[0]?.handNumber ?? null;
-  if (first != null && !L.some((h) => h.handNumber === first)) { v.sort = 'new'; v.filter = 'all'; v.game = 'all'; drawSide(); }
+  const want = start == null ? null : String(start);
+  const first = want != null && byKey(want) ? want : L[0] ? handKey(L[0]) : null;
+  if (first != null && !L.some((h) => handKey(h) === first)) { v.sort = 'new'; v.filter = 'all'; v.game = 'all'; v.runs = 'any'; v.session = 'all'; drawSide(); }
   if (first == null) drawMain();
-  else await load(first, start === first ? step : 0);
+  else await load(first, want === first ? step : 0);
   // the keys step through the hand from the start, without a ring round the first button in the head
   if (dlg.el.open) $('.hh-main')?.focus({ preventScroll: true });
 }

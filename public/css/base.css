@@ -348,8 +348,9 @@ dialog[open] { display: flex; flex-direction: column; }
 .seal { display: inline-block; vertical-align: middle; flex: none; }
 
 /* ---------- wordmark ---------- */
-.wordmark { display: inline-flex; align-items: center; gap: .5rem; font: 400 22px/1 var(--serif); letter-spacing: .01em; color: var(--text); text-decoration: none; }
-.wordmark b { color: inherit; font-weight: 400; }
+/* the fish and the name, in the same type as everything else */
+.wordmark { display: inline-flex; align-items: center; gap: .55rem; font: 650 18px/1 var(--ui); letter-spacing: -.012em; color: var(--text); text-decoration: none; }
+.wordmark .fish { flex: none; display: block; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
