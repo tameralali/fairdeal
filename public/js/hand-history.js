@@ -55,7 +55,7 @@ export async function historyDialog({ start = null, sort = null, who = null, fil
   }
   const me = club ? r.me : app.state.me.userId;
   const ended = club || app.state.table.status === 'ended';
-  const firstSort = club ? 'new' : ended ? 'old' : 'new';
+  const firstSort = club ? 'pot' : ended ? 'old' : 'new'; // every game: biggest pots first
   const sessions = new Map((r.sessions || []).map((x) => [x.id, x]));
   const v = {
     all: r.hands, sort: SORTS.some(([k]) => k === sort) ? sort : firstSort,

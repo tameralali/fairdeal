@@ -808,8 +808,9 @@ function renderTable(s) {
   const rot = s.me.seat ?? 0;
   const hp = new Map((h?.players || []).map((p) => [p.seat, p]));
   const R = resultInfo(h);
-  // run more than once, each runout shows its own odds beside it, so the seats show none
-  const chances = h && runCount(h) > 1 ? null : allInChances(h);
+  // each player's chance of winning the run being dealt, on their seat (a hand run more than once
+  // also lists each runout's odds beside it)
+  const chances = allInChances(h);
   const best = chances ? Math.max(...chances.values()) : 0;
   const myReq = s.me.requests.find((r) => r.type === 'seat');
   const pendingSeats = new Set((s.requests || []).filter((r) => r.type === 'seat').map((r) => r.seat));
@@ -902,13 +903,15 @@ function renderTable(s) {
     let tagCls = '';
     // during the run-it vote each player's pick shows on their seat, for the whole table
     const ritPick = h && h.phase === 'rit' && h.rit ? (h.rit.picks || []).find((x) => x.seat === seat) : null;
+    // Away: ran out of time, left the page or sat out; everyone sees it on the seat until they are back
+    const away = info.away || info.sittingOut || info.sitOutNext;
     if (won) { tag = '+' + fmt(won); tagCls = 'win'; }
     else if (ritPick) { tag = ritPick.pick === null ? 'Picking' : ritPick.pick === 'any' ? 'Any number' : cap(TIMES[ritPick.pick]); tagCls = ritPick.pick === null ? 'out' : 'pick'; }
+    else if (info.away && !actor) { tag = 'Away'; tagCls = 'away'; }
     else if (p && live && p.lastAction && !p.allIn && !(p.folded && !isMe)) { tag = p.lastAction; tagCls = p.lastAction.toLowerCase().replace(/[^a-z]/g, ''); }
     else if (info.leaving) { tag = 'Leaving'; tagCls = 'out'; }
-    else if (!p && info.sittingOut) { tag = 'Away'; tagCls = 'out'; }
+    else if (away && !(p && live && !p.folded)) { tag = 'Away'; tagCls = 'away'; }
     else if (!p && info.stack === 0) { tag = 'Out of chips'; tagCls = 'out'; }
-    else if (info.sitOutNext) { tag = 'Away'; tagCls = 'out'; }
     let timer = '';
     if (actor && h.turn) {
       timer = `<div class="timer ${h.turn.usingBank ? 'bank' : ''}"><i data-deadline="${h.turn.deadline}" data-total="${h.turn.total || 30000}"></i></div>`;
@@ -1243,8 +1246,9 @@ function centerHTML(s, R) {
   let above = '';
   if (h.phase === 'done' && h.results) {
     // the pot's place is kept, so the board stays where it was as the results come in under it
-    above = '<div class="pot ghost" aria-hidden="true"><b>0</b></div>';
-    below = `<div class="results">${resultLines(h).map((l) => `<div>${l}</div>`).join('')}</div><button type="button" class="replay-btn" data-replay="${h.number}">Replay hand #${h.number}</button>`;
+    const again = `<button type="button" class="replay-btn" data-replay="${h.number}">Replay hand #${h.number}</button>`;
+    above = `<div class="pot-spot"><div class="pot ghost" aria-hidden="true"><b>0</b></div>${app.portrait ? '' : again}</div>`;
+    below = `<div class="results">${resultLines(h).map((l) => `<div>${l}</div>`).join('')}</div>${app.portrait ? again : ''}`;
     if (t.waiting && t.waiting !== 'Waiting for players') below += `<div class="waiting"><small>${esc(t.waiting)}</small></div>`;
   } else {
     // the pot in the middle, and above it everything in, bets in front of the players included
@@ -1369,7 +1373,7 @@ function renderBottom(s) {
     if (!wide) {
       const out = s.me.sittingOut || s.me.sitOutNext;
       my += out
-        ? `<button class="btn ${s.me.sittingOut ? 'primary' : ''}" data-my="back">I’m back</button>`
+        ? '<button class="btn primary" data-my="back">I’m back</button>'
         : '<button class="btn" data-my="sitout" title="Away from the next hand on. I’m back brings you back in.">Away</button>';
       if (s.table.status !== 'ended') my += '<button class="btn" data-my="chips">Add chips</button>';
       if (s.table.settings.straddle && s.table.status !== 'ended') my += `<button class="btn tog ${s.me.straddle ? 'on' : ''}" data-my="straddle" aria-pressed="${!!s.me.straddle}" title="Post a straddle, twice the big blind, whenever you are under the gun">Straddle</button>`;
@@ -1407,7 +1411,7 @@ function presetList(L) {
 // its size, so the table never shifts as the turn moves round: on your turn the buttons work; otherwise
 // the same places hold pre-clicks while you are in the hand (Call or Call any, Check, Check/Fold or Fold),
 // or sit greyed out. RAISE opens a panel over the table with a big slider, the bet sizes and the amount.
-const EXTRA = 10; // seconds each Extra time takes off the time bank (EXTRA_CHUNK on the server)
+const BANK_SECONDS = 30; // each time bank (TIME_BANK_SECONDS on the server)
 function slot(cls, label, key, { act = null, pre = null, on = false, preAmount = null } = {}) {
   const live = act || pre;
   const attrs = act ? ` data-act="${act}"` : pre ? ` data-pre="${pre}" aria-pressed="${on}"${preAmount !== null ? ` data-pre-amount="${preAmount}"` : ''}` : ' disabled';
@@ -1419,11 +1423,11 @@ const idleRow = () => slot('call', 'Call', 'C') + slot('raise', 'Raise', 'R') + 
 function turnRow(s, mine) {
   if (!mine) return '<div class="turn-row" aria-hidden="true"></div>';
   const me = s.seats[s.me.seat];
-  const extra = Math.min(EXTRA, Math.floor(me?.timeBank || 0));
+  const banks = me?.timeBanks || 0;
   const v = VC.voice;
   // on a phone the buttons under the table give way on your turn, so the mute comes along
   const mute = v.on ? `<button type="button" class="btn act-mute ${v.muted ? 'muted' : 'live'}" data-voice="mute" aria-pressed="${v.muted}" title="${v.muted ? 'Unmute' : 'Mute'}">${v.muted ? MIC_OFF : MIC}</button>` : '';
-  return `<div class="turn-row">${mute}<span class="yt"><i aria-hidden="true"></i>Your turn <b data-actclock></b></span>${extra ? `<button type="button" class="xt" data-extra title="Take ${extra} seconds from your time bank">Extra time <b>+${extra}s</b><kbd aria-hidden="true">T</kbd></button>` : ''}</div>`;
+  return `<div class="turn-row">${mute}<span class="yt"><i aria-hidden="true"></i>Your turn <b data-actclock></b></span>${banks ? `<button type="button" class="xt" data-extra title="Use a time bank: ${BANK_SECONDS} more seconds. You have ${banks}.">Extra time <b>+${BANK_SECONDS}s</b><small>${banks} left</small><kbd aria-hidden="true">T</kbd></button>` : ''}</div>`;
 }
 
 // the raise panel: what to raise to, the bet sizes, and a big slider
@@ -1463,7 +1467,7 @@ function renderActions(s) {
   document.body.classList.remove('rit-open');
   if (L) {
     const v = VC.voice;
-    const bank = Math.floor(s.seats[s.me.seat]?.timeBank || 0);
+    const bank = s.seats[s.me.seat]?.timeBanks || 0;
     const key = `${h.number}|${h.street}|${L.currentBet}|${L.toCall}|${L.minTo}|${L.maxTo}|${L.canRaise}|${v.on ? (v.muted ? 'm' : 'u') : ''}|${bank}|${app.raiseOpen ? 'R' : ''}`;
     if (key === app.actionKey) return;
     if (!app.raiseOpen && firePre(h, L)) {
@@ -1541,6 +1545,8 @@ function renderActions(s) {
   const mine = h && h.players.find((p) => p.id === s.me.userId);
   const live = !!(h && h.phase === 'betting' && mine && !mine.folded && !mine.allIn);
   // once the hand is over, the places hold the panel to show your cards
+  const away = s.me.sittingOut || s.me.sitOutNext;
+  const backRow = '<div class="act-row"><button type="button" class="act back-big" data-my="back">I’m back</button></div>';
   const panel = h && h.canShow ? showPanel(s) : '';
   if (panel) {
     app.pre = null;
@@ -1548,9 +1554,9 @@ function renderActions(s) {
     return;
   }
   // away, and out of the hand: one big I'm back, as on PokerNow
-  if (s.me.sittingOut && !live && !(mine && !mine.folded && h && h.phase !== 'done')) {
+  if (away && !live && !(mine && !mine.folded && h && h.phase !== 'done')) {
     app.pre = null;
-    els.actions.innerHTML = `${turnRow(s, false)}${status ? `<div class="ghost-note">${status}</div>` : ''}<div class="act-row"><button type="button" class="act back-big" data-my="back">I’m back</button></div>`;
+    els.actions.innerHTML = `${turnRow(s, false)}${status ? `<div class="ghost-note">${status}</div>` : ''}${backRow}`;
     if (status) tick();
     return;
   }
@@ -1580,7 +1586,9 @@ function showPanel(s) {
   const one = (c, i) => (!c || shown.has(i)
     ? `<span class="sp-one done${c ? ` s-${c[1]}` : ''}" title="Shown">${c ? `${esc(rankLabel(c))}${pipSVG(c[1])}` : ''}</span>`
     : `<button type="button" class="sp-one s-${c[1]}" data-show="${i}" title="Show this card" aria-label="Show ${esc(rankLabel(c))}${esc(SUIT[c[1]])}">${esc(rankLabel(c))}${pipSVG(c[1])}<kbd aria-hidden="true">${i + 1}</kbd></button>`);
-  return `<div class="show-panel n${hole.length}" role="group" aria-label="Show your cards"><button type="button" class="sp-all" data-show="all">${left === hole.length ? 'Show all<span class="sp-x"> cards</span>' : 'Show the rest'}<kbd aria-hidden="true">S</kbd></button><div class="sp-row">${hole.map(one).join('')}</div></div>`;
+  // away: I'm back, big, on top of the panel, so it is the first thing seen after the hand
+  const back = s.me.sittingOut || s.me.sitOutNext ? '<button type="button" class="act back-big sp-back" data-my="back">I’m back</button>' : '';
+  return `<div class="show-panel n${hole.length}${back ? ' with-back' : ''}" role="group" aria-label="Show your cards">${back}<button type="button" class="sp-all" data-show="all">${left === hole.length ? 'Show all<span class="sp-x"> cards</span>' : 'Show the rest'}<kbd aria-hidden="true">S</kbd></button><div class="sp-row">${hole.map(one).join('')}</div></div>`;
 }
 
 // picking a pre-click, or picking it again to take it back
@@ -1679,6 +1687,12 @@ function tick() {
     const left = h.turn.deadline - t;
     ac.textContent = `${Math.max(0, Math.ceil(left / 1000))}s${h.turn.usingBank ? ' with extra time' : ''}`;
     ac.classList.toggle('low', left < 8000);
+    const total = h.turn.total || 0;
+    const key = `${h.number}|${h.turn.deadline}`;
+    if (total >= 5000 && left > 0 && left <= total / 2 && app.hurried !== key) {
+      app.hurried = key;
+      if (prefs.sound) playSound('hurry');
+    }
   }
   for (const rc of document.querySelectorAll('[data-ritclock]')) {
     if (h && h.ritDeadline) rc.textContent = `${Math.max(0, Math.ceil((h.ritDeadline - t) / 1000))}s left`;

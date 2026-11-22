@@ -20,13 +20,13 @@ export const DELAYS = {
   afterUncontested: 9000, afterShowdown: 9000, perExtraRun: 1500, perExtraBoard: 1000,
   rit: 45000, ritSettle: 15000, autoAct: 400, away: 5000, call: 30 * 60000,
 };
-export const BANK_REFILL = { hands: 10, seconds: 5 };
+// Each time bank is this many more seconds on the clock; a player uses one on their turn (Extra
+// time, or T), as many in a hand as they have left, and gets one back every timeBankRefill hands.
+export const TIME_BANK_SECONDS = 30;
 // how often tables are looked over (a stalled hand moved on, finished games' memory let go), and how
 // long a finished game's hands stay in memory after they were last opened
 export const SWEEP_MS = 5000;
 export const RELEASE_MS = 10 * 60000;
-// extra time, asked for on your turn: at most this many seconds off the time bank each time
-export const EXTRA_CHUNK = 10;
 
 // The format is a list of steps played in order, then repeated from the top. Each step is one game
 // for one orbit or a set number of hands, dealt on one board or two (double board).
@@ -43,7 +43,8 @@ export const DEFAULT_SETTINGS = {
   minPlayers: 2, // the first hand waits until this many are in; after that two are enough
   ratholeMinutes: 0, // 0 off, -1 for the whole game: a player who leaves comes back with at least what they left with
   decisionSeconds: 30,
-  timeBankSeconds: 20,
+  timeBanks: 3, // time banks each player starts with, TIME_BANK_SECONDS each
+  timeBankRefill: 15, // hands dealt to a player for one time bank back (0: never)
   autoApprove: false,
   bombPot: { mode: 'off', every: 10, percent: 10, anteBB: 2, game: 'current', doubleBoard: false },
   rit: { enabled: true, maxRuns: 4 },
@@ -119,6 +120,9 @@ function legacyFormat(games, rotateEvery, rotateHands) {
 
 export function migrateSettings(saved) {
   const s = { ...structuredClone(DEFAULT_SETTINGS), ...structuredClone(saved || {}) };
+  // the time bank used to be seconds (timeBankSeconds): none stays none, any other became 3 banks
+  if (saved && saved.timeBanks === undefined && saved.timeBankSeconds !== undefined) s.timeBanks = saved.timeBankSeconds > 0 ? DEFAULT_SETTINGS.timeBanks : 0;
+  delete s.timeBankSeconds;
   if (!Array.isArray(saved?.format) || !saved.format.length) s.format = legacyFormat(s.games || ['nlh'], s.rotateEvery, s.rotateHands);
   else s.format = s.format.map(normalStep).filter((x) => x && GAME_TYPES[x.game] && x.count >= 1);
   if (!s.format.length) s.format = structuredClone(DEFAULT_SETTINGS.format);
@@ -173,7 +177,9 @@ export function sanitizeSettings(input = {}, current = DEFAULT_SETTINGS, ctx = {
     s.ratholeMinutes = r === -1 ? -1 : intIn(r, 0, 24 * 60, 'Rathole time (minutes)');
   }
   if (has('decisionSeconds')) s.decisionSeconds = intIn(input.decisionSeconds, 5, 600, 'Decision time');
-  if (has('timeBankSeconds')) s.timeBankSeconds = intIn(input.timeBankSeconds, 0, 3600, 'Time bank');
+  if (has('timeBanks')) s.timeBanks = intIn(input.timeBanks, 0, 20, 'Time banks');
+  else if (has('timeBankSeconds')) s.timeBanks = Number(input.timeBankSeconds) > 0 ? DEFAULT_SETTINGS.timeBanks : 0;
+  if (has('timeBankRefill')) s.timeBankRefill = intIn(input.timeBankRefill, 0, 500, 'Hands for a time bank back');
   for (const k of ['autoApprove', 'spectatorChat', 'autoStart', 'straddle']) if (has(k)) s[k] = !!input[k];
   if (has('sevenDeuce')) s.sevenDeuce = intIn(input.sevenDeuce, 0, 1e12, 'The 7-2 bounty');
   if (has('bombPot')) {
@@ -248,6 +254,9 @@ export class Table {
     this.seats = Array(10).fill(null);
     for (const p of data.players || []) {
       this.players.set(p.userId, { sittingOut: false, sitOutNext: false, away: false, leaveAfterHand: false, kicked: false, pendingChips: 0, ...p });
+      const sp = this.players.get(p.userId);
+      if (sp.timeBanks === undefined) sp.timeBanks = this.settings.timeBanks;
+      delete sp.timeBank;
       this.seats[p.seat] = p.userId;
     }
     this.hand = null;
@@ -376,7 +385,7 @@ export class Table {
       fairPending: this.fair ? savedCommitment(this.fair.pending) : undefined,
       players: [...this.players.values()].map((p) => ({
         userId: p.userId, name: p.name, seat: p.seat, stack: p.stack, sittingOut: p.sittingOut,
-        timeBank: p.timeBank, bankHands: p.bankHands || 0, joinedAt: p.joinedAt, leaveAt: p.leaveAt || null, straddle: !!p.straddle,
+        timeBanks: p.timeBanks, bankHands: p.bankHands || 0, joinedAt: p.joinedAt, leaveAt: p.leaveAt || null, straddle: !!p.straddle,
       })),
     };
     this.store.save();
@@ -597,7 +606,7 @@ export class Table {
     if (this.clubId) this.clubs.buyIn(this.clubId, userId, amount, this);
     const p = {
       userId, name, seat, stack: amount, sittingOut: false, sitOutNext: false, away: false,
-      leaveAfterHand: false, kicked: false, pendingChips: 0, timeBank: this.settings.timeBankSeconds, joinedAt: Date.now(),
+      leaveAfterHand: false, kicked: false, pendingChips: 0, timeBanks: this.settings.timeBanks, joinedAt: Date.now(),
     };
     this.players.set(userId, p);
     this.seats[seat] = userId;
@@ -940,6 +949,7 @@ export class Table {
     const next = sanitizeSettings(input, before, { highestSeat });
     const changes = describeChanges(before, next, (a) => this.fmt(a));
     this.settings = next;
+    for (const pl of this.players.values()) if ((pl.timeBanks || 0) > next.timeBanks) pl.timeBanks = next.timeBanks;
     const order = (f) => f.map((x) => x.game).join(',');
     if (order(before.format) !== order(next.format)) this.rotation = { index: 0, seen: [], count: 0 };
     if (this.session.clockAtFirstHand) {
@@ -1407,21 +1417,21 @@ export class Table {
     this.autoAct(t.userId, true);
   }
 
-  // Extra time, as on PokerNow: on their turn a player asks for it (Activate extra time, or T), and up
-  // to EXTRA_CHUNK seconds come off their time bank onto the clock each time, until the bank is empty.
+  // Extra time: on their turn a player uses a time bank (Extra time, or T) and gets TIME_BANK_SECONDS
+  // more on the clock; they can use another, and another, while they have any left.
   useTimeBank(user) {
     const t = this.turn;
     if (!t || !this.hand || t.userId !== user.id || t.auto) fail('It is not your turn');
     const p = this.players.get(user.id);
-    const add = Math.min(EXTRA_CHUNK, Math.floor(p?.timeBank || 0));
-    if (!(add >= 1)) fail('Your time bank is empty');
-    p.timeBank -= add;
+    if (!(p?.timeBanks >= 1)) fail('You have no time banks left');
+    const add = TIME_BANK_SECONDS;
+    p.timeBanks -= 1;
     t.deadline += add * 1000;
     t.extra = (t.extra || 0) + add * 1000;
     t.usingBank = true;
     clearTimeout(this.timers.action);
     this.timers.action = setTimeout(this.safe(() => this.onTurnTimeout()), Math.max(0, t.deadline - Date.now()));
-    this.log(`${p.name} takes ${add} seconds of extra time`, 'seat');
+    this.log(`${p.name} uses a time bank: ${add} more seconds (${p.timeBanks} left)`, 'seat');
     this.snapshot();
     this.broadcast();
   }
@@ -1543,9 +1553,10 @@ export class Table {
       const p = this.players.get(hp.id);
       if (!p) continue;
       p.stack = hp.stack;
-      // the time bank refills a little as you play: 5 seconds for every 10 hands dealt to you, up to its full size
+      // one time bank back for every timeBankRefill hands dealt to you, up to what you started with
       p.bankHands = (p.bankHands || 0) + 1;
-      if (p.bankHands % BANK_REFILL.hands === 0) p.timeBank = Math.min(this.settings.timeBankSeconds, (p.timeBank || 0) + BANK_REFILL.seconds);
+      const every = this.settings.timeBankRefill;
+      if (every > 0 && p.bankHands % every === 0 && (p.timeBanks || 0) < this.settings.timeBanks) p.timeBanks = (p.timeBanks || 0) + 1;
     }
     const rec = this.buildRecord(hand, meta);
     this.paySevenDeuce(hand, rec); // won at showdown with 7-2: the cards are already shown
@@ -1745,7 +1756,7 @@ export class Table {
       const p = uid && this.players.get(uid);
       seats.push(p ? {
         seat: i, userId: p.userId, name: p.name, stack: p.stack, sittingOut: p.sittingOut, sitOutNext: p.sitOutNext, straddle: !!p.straddle,
-        leaving: p.leaveAfterHand, leaveAt: p.leaveAt || null, connected: this.isConnected(uid), timeBank: Math.floor(p.timeBank),
+        leaving: p.leaveAfterHand, leaveAt: p.leaveAt || null, connected: this.isConnected(uid), timeBanks: p.timeBanks || 0,
         isHost: this.isHost(uid), pendingChips: p.pendingChips, away: p.away,
       } : null);
     }
@@ -1799,7 +1810,8 @@ function describeChanges(a, b, fmt) {
   if (a.minBuyIn !== b.minBuyIn || a.maxBuyIn !== b.maxBuyIn) out.push(`buy-in ${b.minBuyIn ? fmt(b.minBuyIn) : 'any'} to ${b.maxBuyIn ? fmt(b.maxBuyIn) : 'any'}`);
   if (a.maxPlayers !== b.maxPlayers) out.push(`${b.maxPlayers} seats`);
   if (a.decisionSeconds !== b.decisionSeconds) out.push(`decision time ${b.decisionSeconds}s`);
-  if (a.timeBankSeconds !== b.timeBankSeconds) out.push(`time bank ${b.timeBankSeconds}s`);
+  if (a.timeBanks !== b.timeBanks) out.push(`${b.timeBanks} time bank${b.timeBanks === 1 ? '' : 's'} a player`);
+  if (a.timeBankRefill !== b.timeBankRefill) out.push(b.timeBankRefill ? `a time bank back every ${b.timeBankRefill} hands` : 'no time banks back');
   if (a.minPlayers !== b.minPlayers) out.push(`the first hand waits for ${b.minPlayers} players`);
   if (a.ratholeMinutes !== b.ratholeMinutes) out.push(ratholeText(b.ratholeMinutes));
   if (JSON.stringify(a.bombPot) !== JSON.stringify(b.bombPot)) {

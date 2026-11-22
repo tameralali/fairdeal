@@ -44,6 +44,7 @@ export const api = {
   },
 };
 
+export const BRAND_HEX = '6f3ac1d0a85c2e94b7f1036d4e5a9c8b21f0e7d6c5b4a39281706f5e4d3c2b1a';
 
 // Returns /api/me. The site is invite only, so without a valid sign-in the page shows the
 // members-only sign-in screen and waits there.

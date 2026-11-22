@@ -912,6 +912,50 @@ test('calling 30: a countdown on the seat, a big pot starts it again, and when i
 });
 
 // Runs last: it clears every game on the test server.
+test('time banks: each is 30 more seconds, several can go in one hand, and one comes back every few hands', { timeout: 90000 }, async () => {
+  const a = await admin('Banker', { fund: 100000 });
+  const b = await member('Ben', null, { fund: 100000 });
+  // the defaults: 3 time banks, one back every 15 hands; the old seconds setting of 0 still means none
+  const plain = await call('POST', '/api/tables', { settings: {} }, a.token);
+  assert.equal(srv.tables.get(plain.id).settings.timeBanks, 3);
+  assert.equal(srv.tables.get(plain.id).settings.timeBankRefill, 15);
+  const old = await call('POST', '/api/tables', { settings: { timeBankSeconds: 0 } }, a.token);
+  assert.equal(srv.tables.get(old.id).settings.timeBanks, 0);
+  const { id } = await call('POST', '/api/tables', { settings: { autoStart: true, autoApprove: true, decisionSeconds: 30, timeBanks: 2, timeBankRefill: 2 } }, a.token);
+  const bots = [new Bot('Banker', a, 7), new Bot('Ben', b, 8)];
+  for (const x of bots) { x.passive = true; await x.connect(id); }
+  await bots[0].emit('seat:request', { seat: 0, buyIn: 1000 });
+  await bots[1].emit('seat:request', { seat: 1, buyIn: 1000 });
+  await until(() => bots.some((x) => x.state?.hand?.legal), 15000, 'a turn');
+  const actor = bots.find((x) => x.state.hand.legal);
+  const other = bots.find((x) => x !== actor);
+  const mine = (x) => x.state.seats[x.state.me.seat];
+  assert.equal(mine(actor).timeBanks, 2);
+  const before = actor.state.hand.turn.deadline;
+  let r = await actor.emit('timebank', {});
+  assert.ok(r.ok, r.error);
+  r = await actor.emit('timebank', {});
+  assert.ok(r.ok, r.error);
+  await until(() => mine(actor).timeBanks === 0, 3000, 'both used');
+  assert.equal(actor.state.hand.turn.deadline - before, 60000, 'two time banks: a minute more');
+  assert.equal(actor.state.hand.turn.total, 90000);
+  r = await actor.emit('timebank', {});
+  assert.equal(r.ok, false);
+  assert.match(r.error, /no time banks left/);
+  r = await other.emit('timebank', {});
+  assert.equal(r.ok, false, 'only on your turn');
+  // play on: one back for every 2 hands dealt, up to the 2 they started with
+  for (const x of bots) { x.passive = false; x.onState(x.state); }
+  await until(() => (bots[0].state?.table.handNumber || 0) >= 6, 60000, 'six hands');
+  assert.equal(mine(actor).timeBanks, 2);
+  assert.equal(srv.tables.get(id).players.get(actor.userId).timeBanks, 2);
+  // fewer time banks set during the game: nobody keeps more than the new number
+  r = await bots[0].emit('host:settings', { settings: { timeBanks: 1 } });
+  assert.ok(r.ok, r.error);
+  await until(() => srv.tables.get(id).players.get(actor.userId).timeBanks === 1, 5000, 'cut to one');
+  bots.forEach((x) => x.close());
+});
+
 test('the straddle: a player who turns it on straddles twice the big blind when under the gun', { timeout: 60000 }, async () => {
   const a = await admin('Straddler', { fund: 100000 });
   const b = await member('Second', null, { fund: 100000 });

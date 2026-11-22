@@ -332,10 +332,11 @@ function startFormHTML(values, presets, activeId) {
           <h3>Clock</h3>
           <div class="field-grid">
             <label><span class="lbl">Seconds to act</span><input name="decisionSeconds" type="number" min="5" max="600" value="${s.decisionSeconds || 30}"></label>
-            <label><span class="lbl">Time bank (seconds)</span><input name="timeBankSeconds" type="number" min="0" max="3600" value="${s.timeBankSeconds ?? 20}"></label>
+            <label><span class="lbl">Time banks per player</span><input name="timeBanks" type="number" min="0" max="20" value="${s.timeBanks ?? 3}"></label>
+            <label><span class="lbl">One back every (hands)</span><input name="timeBankRefill" type="number" min="0" max="500" value="${s.timeBankRefill ?? 15}"></label>
             <label><span class="lbl">Game length</span><select name="sessionMinutes">${lengths.map(([m, l]) => opt(m, l, minutes)).join('')}</select></label>
           </div>
-          <p class="hint">The time bank is extra time once the seconds to act run out, used up as it goes and refilled 5 seconds for every 10 hands. When the game length runs out, the hand in progress finishes and everyone is cashed out.</p>
+          <p class="hint">Each time bank is 30 more seconds: on your turn, Extra time (or T) uses one, and you can use more than one in a hand. Each player gets one back every so many hands, up to the number they started with (0: never). When the game length runs out, the hand in progress finishes and everyone is cashed out.</p>
         </div>
       </section>
       <section class="sg-sec">
@@ -406,7 +407,7 @@ function readStartForm(form) {
       maxPlayers: Number(el('seats').value), minPlayers: Number(el('minPlayers').value),
       bombPot: readBomb(form),
       rit: { enabled: runs > 1, maxRuns: Math.max(2, runs) },
-      decisionSeconds: Number(el('decisionSeconds').value), timeBankSeconds: Number(el('timeBankSeconds').value),
+      decisionSeconds: Number(el('decisionSeconds').value), timeBanks: Number(el('timeBanks').value), timeBankRefill: Number(el('timeBankRefill').value),
       sessionMinutes: Number(el('sessionMinutes').value), ratholeMinutes: Number(el('rathole').value),
       autoApprove: el('autoApprove').checked, autoStart: el('autoStart').checked,
       straddle: el('straddle').checked, sevenDeuce: el('s72').value.trim() ? P('s72') : 0,

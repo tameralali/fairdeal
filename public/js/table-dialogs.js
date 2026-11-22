@@ -212,10 +212,11 @@ export function hostDialog({ tab = null } = {}) {
       <div data-panel="time" class="stack hidden">
         <div class="field-grid">
           <label><span class="lbl">Seconds to act</span><input name="decisionSeconds" type="number" min="5" max="600" value="${st.decisionSeconds}"></label>
-          <label><span class="lbl">Time bank (seconds per player)</span><input name="timeBankSeconds" type="number" min="0" max="3600" value="${st.timeBankSeconds}"></label>
+          <label><span class="lbl">Time banks per player</span><input name="timeBanks" type="number" min="0" max="20" value="${st.timeBanks ?? 3}"></label>
+          <label><span class="lbl">One back every (hands)</span><input name="timeBankRefill" type="number" min="0" max="500" value="${st.timeBankRefill ?? 15}"></label>
           <label><span class="lbl">Game length (minutes)</span><input name="sessionMinutes" type="number" min="0" max="1440" value="${st.sessionMinutes || ''}" placeholder="No limit"></label>
         </div>
-        <p class="hint">The time bank is extra time once the seconds to act run out, used up as it goes and refilled 5 seconds for every 10 hands. When the game length runs out, the hand in progress finishes and everyone is cashed out. Leave it empty for no limit.</p>
+        <p class="hint">Each time bank is 30 more seconds: on your turn, Extra time (or T) uses one, and you can use more than one in a hand. Each player gets one back every so many hands, up to the number they started with (0: never). When the game length runs out, the hand in progress finishes and everyone is cashed out. Leave it empty for no limit.</p>
         ${ends && t.status === 'running' ? `<p>This game ends at <b>${new Date(ends).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</b>.</p>` : ''}
         ${t.status === 'running' ? (ends
           ? `<div class="row"><button type="button" class="btn small" data-now="extend" data-min="15">Add 15 min</button><button type="button" class="btn small" data-now="extend" data-min="30">Add 30 min</button><button type="button" class="btn small" data-now="extend" data-min="60">Add 1 hour</button><button type="button" class="btn small ghost" data-now="cleartime">Remove the limit</button></div>`
@@ -328,7 +329,7 @@ export function hostDialog({ tab = null } = {}) {
       bombPot: readBomb(form),
       rit: { enabled: val(form, 'ritEnabled').checked, maxRuns: num('ritMax') },
       decisionSeconds: num('decisionSeconds'),
-      timeBankSeconds: num('timeBankSeconds'),
+      timeBanks: num('timeBanks'), timeBankRefill: num('timeBankRefill'),
       sessionMinutes: Number(val(form, 'sessionMinutes').value || 0),
       revealPolicy: val(form, 'revealPolicy').value,
       feltColor: val(form, 'feltColor').value,

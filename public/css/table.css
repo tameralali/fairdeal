@@ -190,6 +190,8 @@ html, body { overflow: hidden; }
 .plate .tag.allin { background: var(--made); color: #fff; }
 .plate .tag.win { background: var(--ok); color: #fff; font-weight: 700; font-size: max(10px, calc(var(--u) * 1.15)); }
 .plate .tag.out { background: #2c2c2e; color: var(--muted); }
+/* away (ran out of time, left the page or sitting out): amber, so the table sees it at once */
+.plate .tag.away { background: #f2b84b; color: #2b1d00; }
 .plate .tag.pick { background: var(--brass); color: var(--brass-ink); }
 .plate .timer { position: absolute; left: calc(var(--u) * .7); right: calc(var(--u) * .7); bottom: calc(var(--u) * .35); height: calc(var(--u) * .32); min-height: 3px; border-radius: 99px; overflow: hidden; background: rgb(255 255 255 / .1); z-index: 2; }
 .plate .timer i { display: block; height: 100%; width: 100%; border-radius: 99px; background: var(--ok); transform-origin: left; }
@@ -266,6 +268,9 @@ html, body { overflow: hidden; }
 .table-area.portrait .center { top: 48%; width: 72%; }
 .center > .below { position: absolute; left: 0; right: 0; top: calc(100% + var(--u) * .9); display: flex; flex-direction: column; align-items: center; gap: calc(var(--u) * .9); }
 .pot.ghost { visibility: hidden; }
+/* after the hand, Replay hand sits where the pot was */
+.pot-spot { position: relative; display: flex; justify-content: center; }
+.pot-spot .replay-btn { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); white-space: nowrap; }
 /* upright there is no room beside the board for long lines, so they stay in the column */
 .table-area.portrait .center > .below { position: static; }
 .table-area.portrait .pot.ghost { display: none; }
@@ -374,6 +379,7 @@ html, body { overflow: hidden; }
 .xt:hover { background: var(--fill-hi); }
 .xt:disabled { opacity: .45; cursor: default; }
 .xt b { color: #ffd60a; font-weight: 700; }
+.xt small { margin-left: 8px; color: var(--muted); font: 600 .86em/1 var(--ui); }
 .xt kbd { margin-left: 10px; padding: 2px 5px; border-radius: 5px; background: rgb(0 0 0 / .2); color: var(--muted); font: 600 10.5px/1.2 var(--ui); }
 /* the raise panel: what to raise to, the bet sizes, a big slider, and Raise */
 .raise-panel {
@@ -419,6 +425,7 @@ html, body { overflow: hidden; }
 .show-panel.n4 { width: 420px; }
 .show-panel.n5 { width: 500px; }
 .show-panel button { appearance: none; position: relative; border: 0; cursor: pointer; }
+.show-panel .act.back-big.sp-back { --ac: #0a84ff; width: 100%; min-width: 0; height: 64px; font-size: 21px; } /* blue beside the green Show all; over body.pn's size */
 .show-panel kbd { position: absolute; top: 6px; right: 8px; padding: 2px 4px; border-radius: 5px; background: rgb(0 0 0 / .16); font: 600 10.5px/1.2 var(--ui); }
 .sp-all { height: 56px; border-radius: 14px; background: var(--go); color: #fff; font: 600 18px/1 var(--ui); letter-spacing: -.01em; box-shadow: inset 0 1px 0 rgb(255 255 255 / .14); }
 .sp-all kbd { color: rgb(255 255 255 / .75); }
@@ -636,11 +643,18 @@ html, body { overflow: hidden; }
 .vbtn.live:hover { background: #47a060; border-color: #47a060; }
 .vbtn.muted { background: #5a2f2b; border-color: #8a443d; color: #ffd6d0; }
 .vwho { color: var(--muted); font-size: 13.5px; max-width: 18em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.plate .nm .vc { display: inline-grid; place-items: center; flex: none; width: 1.15em; height: 1.15em; color: #8fdc9c; }
+/* in voice: a green disc with the mic, a red one when muted; it pulses while they talk */
+.plate .nm .vc {
+  display: inline-grid; place-items: center; flex: none; width: 1.5em; height: 1.5em; padding: .22em; border-radius: 50%;
+  background: #30d158; color: #062a10; box-shadow: 0 0 0 2px rgb(48 209 88 / .3);
+}
 .plate .nm .vc svg { width: 100%; height: 100%; }
-.plate .nm .vc.muted { color: #f08a7e; }
+.plate .nm .vc.muted { background: #ff6157; color: #fff; box-shadow: 0 0 0 2px rgb(255 97 87 / .28); }
+@keyframes vc-talk { 0% { box-shadow: 0 0 0 0 rgb(48 209 88 / .75); } 100% { box-shadow: 0 0 0 .55em rgb(48 209 88 / 0); } }
+.seat.speaking .plate .nm .vc:not(.muted) { animation: vc-talk 1s ease-out infinite; }
+@media (prefers-reduced-motion: reduce) { .seat.speaking .plate .nm .vc:not(.muted) { animation: none; box-shadow: 0 0 0 3px rgb(48 209 88 / .7); } }
 .seat.speaking .plate { box-shadow: 0 0 0 2px #6fd07f, 0 0 calc(var(--u) * 1.6) rgba(111, 208, 127, .5); }
-.seat.speaking .plate .nm .vc { color: #b7f5c0; }
+
 audio.voice-out { position: fixed; width: 0; height: 0; opacity: 0; pointer-events: none; }
 /* where the bottom bar steps aside on your turn, Mute stays */
 @media (max-width: 640px), (max-height: 780px) and (min-width: 641px), (max-height: 520px) and (orientation: landscape) {
@@ -696,6 +710,8 @@ button.tb-clock:hover { border-color: var(--line); }
     background: none; border: 0; border-radius: 0; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none;
   }
   body.bar-fixed .show-panel .sp-all { flex: none; height: 52px; padding: 0 14px; font-size: 15.5px; border-radius: 13px; }
+  body.bar-fixed .show-panel.with-back { flex-wrap: wrap; }
+  body.bar-fixed .show-panel .act.back-big.sp-back { flex: 1 1 100%; height: 54px; font-size: 19px; border-radius: 13px; }
   body.bar-fixed .show-panel .sp-x { display: none; }
   body.bar-fixed .show-panel .sp-row { flex: 1; min-width: 0; height: 52px; gap: 6px; }
   body.bar-fixed .show-panel .sp-one { min-width: 0; font-size: 20px; border-radius: 11px; }

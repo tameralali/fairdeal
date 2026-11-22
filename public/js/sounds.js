@@ -169,6 +169,11 @@ const SOUNDS = {
       tone(t + d, { freq: f * 2, dur: 0.18, gain: 0.025 });
     });
   },
+  // half of your clock has gone: one light beep
+  hurry(t) {
+    tone(t, { freq: 1174.66, dur: 0.18, gain: 0.075 });
+    tone(t, { freq: 2349.32, dur: 0.06, gain: 0.012 });
+  },
   // someone asks the host for a seat or chips
   request(t) {
     tone(t, { freq: 523.25, dur: 0.32, gain: 0.12, type: 'triangle' });
