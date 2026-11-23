@@ -651,6 +651,7 @@ export function lookDialog() {
       <label class="check"><input type="checkbox" data-pref="handStrength" ${prefs.handStrength ? 'checked' : ''}> Show what my hand makes</label>
       <label class="check"><input type="checkbox" data-pref="sound" ${prefs.sound ? 'checked' : ''}> Sound when it is my turn</label>
       <label class="check"><input type="checkbox" data-pref="tableSounds" ${prefs.tableSounds ? 'checked' : ''}> Table sounds<small>Chips for bets and calls, folds, checks, cards being dealt and the pot going to the winner.</small></label>
+      <label class="check"><input type="checkbox" data-pref="chatSound" ${prefs.chatSound !== false ? 'checked' : ''}> Chat sounds<small>A ping when someone writes in the chat. Someone adding chips always pings.</small></label>
       <label class="check"><input type="checkbox" data-pref="verifyNotes" ${prefs.verifyNotes ? 'checked' : ''}> Note in the log when my browser has checked a hand</label>
       <p class="hint">These settings are saved in this browser and only change what you see.</p>
     </div>`;

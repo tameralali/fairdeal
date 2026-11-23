@@ -853,6 +853,45 @@ test('a hand folded before the flop moves on sooner than one that saw a flop, un
   }
 });
 
+test('adding chips puts a note in the chat for everyone: now, after this hand, or a rebuy', { timeout: 60000 }, async () => {
+  const bots = [];
+  try {
+    const a = await admin('Rio', { fund: 500000 });
+    const b = await member('Sol', null, { fund: 500000 });
+    const { id } = await call('POST', '/api/tables', { settings: { autoApprove: true, autoStart: false, smallBlind: 5, bigBlind: 10 } }, a.token);
+    const t = srv.tables.get(id);
+    for (const [u, name, seed, seat] of [[a, 'Rio', 97, 0], [b, 'Sol', 98, 1]]) {
+      const bot = new Bot(name, u, seed);
+      bot.passive = true;
+      await bot.connect(id);
+      bots.push(bot);
+      assert.ok((await bot.emit('seat:request', { seat, buyIn: 1000 })).ok);
+    }
+    const notes = () => t.logEntries.filter((e) => e.kind === 'chat' && e.note).map((e) => e.text);
+    assert.ok((await bots[0].emit('chips:request', { amount: 250 })).ok);
+    assert.equal(notes().at(-1), `Rio is adding ${t.fmt(250)} to their stack`);
+    assert.ok((await bots[0].emit('host:start', {})).ok);
+    await until(() => t.hand && t.hand.phase === 'betting', 5000, 'a hand');
+    assert.ok((await bots[1].emit('chips:request', { amount: 300 })).ok);
+    assert.equal(notes().at(-1), `Sol is adding ${t.fmt(300)} to their stack after this hand`);
+    // the note is not anyone's message: no bubble by a seat, no name to answer
+    const last = t.logEntries.filter((e) => e.note).at(-1);
+    assert.equal(last.userId, undefined);
+    assert.equal(last.by, b.user.id);
+    // a rebuy on no chips: pause, fold the hand out, and the player who is out of chips rebuys
+    assert.ok((await bots[0].emit('host:pause', { value: true })).ok);
+    const h = t.hand;
+    const actor = h.actor().id === a.user.id ? bots[0] : bots[1];
+    assert.ok((await actor.emit('action', { type: 'fold' })).ok);
+    await until(() => t.hand === null, 3000, 'the hand to end');
+    t.players.get(a.user.id).stack = 0;
+    assert.ok((await bots[0].emit('chips:request', { amount: 1000 })).ok);
+    assert.equal(notes().at(-1), `Rio rebuys for ${t.fmt(1000)}`);
+  } finally {
+    for (const bot of bots) bot.close();
+  }
+});
+
 // Plays the hand in progress with everyone in it all in: the first to act shoves and the rest call.
 async function allInHand(t, bots, h) {
   for (let i = 0; i < 30 && t.hand === h && h.phase === 'betting'; i++) {
@@ -1483,6 +1522,10 @@ test('settling one player against another, results over a period, and the owner 
   await bots[0].emit('seat:request', { seat: 0, buyIn: 1000 });
   await bots[1].emit('seat:request', { seat: 1, buyIn: 1000 });
   await until(() => (bots[0].state?.table.handNumber || 0) >= 6, 30000, 'six hands');
+  // pause, so no hand ends between reading the results and reading the hands
+  assert.ok((await bots[0].emit('host:pause', { value: true })).ok);
+  await until(() => srv.tables.get(id).hand === null, 10000, 'the hand to end');
+  await wait(50);
   const watcher = new Bot('Owed', d, 33);
   await watcher.connect(id);
   let removed = null;

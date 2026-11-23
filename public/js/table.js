@@ -74,6 +74,10 @@ function connect() {
   socket.on('state', onState);
   socket.on('log:reset', (entries) => { app.logs = entries; renderLog(); renderPnChat(); });
   socket.on('log', (entries) => {
+    // a ping: always for someone adding chips, and for someone else's message unless chat sounds are off
+    // (the speaker in the top bar still silences everything)
+    const others = entries.filter((e) => e.kind === 'chat' && (e.note ? e.by !== myId() : !!e.userId && e.userId !== myId()));
+    if (others.length && soundOn() && (others.some((e) => e.note) || prefs.chatSound !== false)) playSound('ping');
     app.logs.push(...entries);
     if (app.logs.length > 900) app.logs.splice(0, app.logs.length - 900);
     appendLog(entries);
@@ -85,7 +89,7 @@ function connect() {
       if (m) announce(`${m[1]} won with 7-2`, `${m[4]} bounty: ${m[2]} from ${m[3]}`, 'bounty');
     }
     if (!wideChat() && els.drawer.classList.contains('collapsed')) {
-      const fresh = entries.filter((e) => e.kind === 'chat' && e.userId !== myId()).length;
+      const fresh = entries.filter((e) => e.kind === 'chat' && (e.note ? e.by !== myId() : e.userId !== myId())).length;
       if (fresh) { app.unread += fresh; paintUnread(); }
     }
   });
@@ -1932,6 +1936,7 @@ function tick() {
 // ---------- log & chat ----------
 function entryHTML(e) {
   if (e.kind === 'hand-end') return '';
+  if (e.kind === 'chat' && e.note) return `<div class="e k-chat note">${CHIP_SVG}<span class="msg">${esc(e.text)}</span></div>`;
   if (e.kind === 'chat') {
     const mine = !!e.userId && e.userId === myId();
     const at = e.at ? new Date(e.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
@@ -1944,7 +1949,7 @@ function entryHTML(e) {
   return `<div class="e ${kinds}">${suitText(esc(text))}</div>`;
 }
 
-function logFilter(e) { return app.logOnlyChat ? e.kind === 'chat' : true; }
+function logFilter(e) { return app.logOnlyChat ? e.kind === 'chat' : !e.note; }
 
 function renderLog() {
   const shown = app.logs.filter(logFilter);
@@ -1978,7 +1983,11 @@ function toggleLog() {
   resize();
   render();
 }
+const CHIP_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4"/><path d="M12 3.5v3M12 17.5v3M3.5 12h3M17.5 12h3"/></svg>';
+// a note in the chat from the table itself: someone adding chips
+const noteLine = (e) => `<div class="pm note">${CHIP_SVG}<span>${esc(e.text)}</span></div>`;
 const pnLine = (e) => {
+  if (e.note) return noteLine(e);
   const mine = !!e.userId && e.userId === myId();
   return `<div class="pm${mine ? ' mine' : ''}${e.spectator ? ' spec' : ''}"><b>${esc(mine ? 'You' : e.name)}</b> <span>${esc(e.text)}</span></div>`;
 };

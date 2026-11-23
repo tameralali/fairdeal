@@ -701,12 +701,17 @@ export class Table {
   }
 
   queueChips(p, amount, approvedBy) {
-    if (this.inHand(p.userId)) {
+    // a note in the chat for everyone (the table pings with it): who is adding chips, and how much
+    const later = this.inHand(p.userId);
+    const note = p.stack === 0 && !p.pendingChips && !later ? `${p.name} rebuys for ${this.fmt(amount)}`
+      : `${p.name} is adding ${this.fmt(amount)} to their stack${later ? ' after this hand' : ''}`;
+    if (later) {
       p.pendingChips += amount;
       this.log(`${p.name} will add ${this.fmt(amount)} after this hand`, 'chips');
     } else {
       this.applyChips(p, amount, approvedBy);
     }
+    this.log(note, 'chat', { note: 'chips', name: p.name, by: p.userId });
     this.snapshot();
     this.broadcast();
   }

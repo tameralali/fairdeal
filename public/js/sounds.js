@@ -190,6 +190,12 @@ const SOUNDS = {
     tone(b, { freq: 120, drop: 40, dur: 0.9, gain: 0.5 });
     tone(b + 0.02, { freq: 64, drop: 30, dur: 1.1, gain: 0.4 });
   },
+  // a note in the chat, such as someone adding chips: a soft two-note ping, like a message coming in
+  ping(t) {
+    tone(t, { freq: 1318.51, dur: 0.22, gain: 0.16 });
+    tone(t + 0.085, { freq: 1975.53, dur: 0.32, gain: 0.13 });
+    tone(t + 0.085, { freq: 3951.07, dur: 0.08, gain: 0.02 });
+  },
   // someone asks the host for a seat or chips
   request(t) {
     tone(t, { freq: 523.25, dur: 0.32, gain: 0.12, type: 'triangle' });

@@ -8,6 +8,7 @@ export const DEFAULT_PREFS = {
   felt: '',           // '' = use the table's felt color
   sound: true,         // a call when it is my turn
   tableSounds: true,   // chips for bets, folds, checks, cards dealt, the pot won
+  chatSound: true,     // a ping for each chat message (someone adding chips always pings)
   autoRun: 'ask',     // ask | once | any (go with whatever number the others pick)
   handStrength: true,
   verifyNotes: true,
