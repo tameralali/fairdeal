@@ -355,3 +355,11 @@ dialog[open] { display: flex; flex-direction: column; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
 }
+
+/* Start a game and the host's options: Cash game or Tourney, and a tourney's blind levels */
+.sg-kind { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.sg-kind h3 { margin: 0; }
+[data-tourney-sec] { margin-top: 16px; }
+.t-levels { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.t-levels label { width: 100%; }
+.t-levels textarea { width: 100%; min-height: 120px; resize: vertical; font: 500 14px/1.5 var(--num); font-variant-numeric: tabular-nums; }

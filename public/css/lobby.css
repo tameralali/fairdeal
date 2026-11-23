@@ -84,6 +84,7 @@
 .gb-x svg { width: 13px; height: 13px; flex: none; }
 .gb-x.bomb, .gb-x.s72 { color: #ff8f86; background: rgb(255 69 58 / .14); }
 .gb-x.strad { color: #b3b1ff; background: rgb(94 92 230 / .2); }
+.gb-x.tour { color: #6cb6ff; background: rgb(10 132 255 / .16); }
 .gb-x.runs { color: #7cc0ff; background: rgb(10 132 255 / .15); }
 .s72-cards { display: inline-flex; margin-right: 1px; }
 .s72-cards b { display: inline-grid; place-items: center; width: 11px; height: 14px; border: 1.4px solid currentColor; border-radius: 2.5px; font: 800 9px/1 var(--num); }

@@ -6,8 +6,8 @@ import { cardHTML, backHTML, prefs, savePrefs, FELTS, BACKS } from './cards.js';
 import { sealSVG } from './seal.js';
 import { webCryptoAdapter } from '/shared/fairness.js';
 import { GAME_TYPES } from '/shared/cards.js';
-import { app, emit, fmt, fmtC, parse, inp, gameShort, gameName } from './table-core.js';
-import { seg, bindSegs, formatEditorHTML, bindFormatEditor, readFormat, formatProblem, bombFieldsHTML, bindBombFields, readBomb, fitSeats, fitMinPlayers, ritText, boardName, RATHOLE, ratholeHint, FOLDED, foldedHint, endGameText } from './game-form.js';
+import { app, emit, fmt, fmtC, parse, inp, now, gameShort, gameName } from './table-core.js';
+import { seg, bindSegs, formatEditorHTML, bindFormatEditor, readFormat, formatProblem, bombFieldsHTML, bindBombFields, readBomb, fitSeats, fitMinPlayers, ritText, boardName, RATHOLE, ratholeHint, FOLDED, foldedHint, endGameText, tourneyFieldsHTML, readTourney, bindTourneyFields } from './game-form.js';
 import { statsDialog, playerSheet, afText, hudPanel } from './table-stats.js';
 import { historyDialog } from './hand-history.js';
 import { canReplay } from '/shared/replay.js';
@@ -19,6 +19,7 @@ const open = {};
 export function onState(s) {
   if (open.requests) open.requests(s);
   if (open.players) open.players(s);
+  rebuyCheck(s);
 }
 
 const val = (form, n) => form.elements.namedItem(n);
@@ -30,47 +31,94 @@ const amountBox = (name, value, placeholder = '') => {
     ? `<span class="money"><input name="${name}" type="text" inputmode="decimal" autocomplete="off" value="${esc(value)}" ${req}></span>`
     : `<input name="${name}" type="number" inputmode="numeric" step="1" min="0" value="${esc(value)}" ${req}>`;
 };
-const availText = (s) => (s.table.clubId && s.me.clubAvailable !== null ? ` You have ${fmtC(Math.max(0, s.me.clubAvailable))} available in your balance, credit included.` : '');
-
 // ---------- seats & chips ----------
-export function seatDialog(seat) {
-  const s = app.state;
-  const st = s.table.settings;
-  const club = !!s.table.clubId;
+// Buying in, at a seat, adding chips or rebuying: the amount, a Max that fills in the most you can bring
+// (the table's maximum, or all you have with your credit if that is less), your club balance and
+// credit under them, and the buttons. No sentences: a problem shows when you press a button.
+const fact = (label, v, cls = '') => `<div><small>${esc(label)}</small><b class="${cls}">${fmt(v)}</b></div>`;
+function moneyFacts(s, extra = '') {
+  const m = s.me;
+  const club = s.table.clubId && m.clubBalance !== null && m.clubBalance !== undefined;
+  const html = (club ? fact('Balance', m.clubBalance, m.clubBalance < 0 ? 'neg' : '') + fact('Credit', m.clubCredit || 0) : '') + extra;
+  return html ? `<div class="bi-facts">${html}</div>` : '';
+}
+// the most a player can bring: up to `room` on the table (null for no limit), and no more than they have
+function maxBring(s, room) {
+  const avail = s.table.clubId && s.me.clubAvailable !== null ? Math.max(0, s.me.clubAvailable - (s.me.pendingChips || 0)) : null;
+  if (room === null) return avail;
+  return avail === null ? room : Math.min(room, avail);
+}
+function buyInBody({ value, max, facts, buttons, fixed = null }) {
+  return `<form class="buyin" novalidate>
+      ${fixed !== null ? `<div class="bi-fixed"><small>Buy-in</small><b>${fmt(fixed)}</b></div>` : `<div class="bi-row">
+        <span class="bi-amt">${amountBox('amount', inp(value))}</span>
+        ${max !== null && max > 0 ? `<button type="button" class="btn bi-max" data-max="${esc(inp(max))}">Max ${fmt(max)}</button>` : ''}
+      </div>`}
+      ${facts}
+      <p class="bad hidden" data-err></p>
+      <div class="bi-go">${buttons}</div>
+    </form>`;
+}
+function bindBuyIn(dlg) {
+  const f = dlg.$('form');
+  const box = val(f, 'amount');
+  box?.setAttribute('aria-label', 'Amount');
+  dlg.$('[data-max]')?.addEventListener('click', (e) => { box.value = e.currentTarget.dataset.max; box.focus(); });
+  const err = (m) => { const el = dlg.$('[data-err]'); el.textContent = m || ''; el.classList.toggle('hidden', !m); };
+  setTimeout(() => (box ? box.select() : f.querySelector('.btn.primary')?.focus()), 30);
+  return { f, box, err };
+}
+// a tourney: how many of your buy-ins are left, when there is a limit
+function tourneyFact(tv) {
+  if (!tv || !tv.buyIns) return '';
+  return `<div><small>Buy-ins left</small><b>${Math.max(0, tv.buyIns - tv.mine)} of ${tv.buyIns}</b></div>`;
+}
+// why a tourney will not take your buy-in, or ''
+const tourneyBlock = (tv) => (!tv || tv.canBuyIn ? '' : tv.buyInOpen ? 'You have used all your buy-ins' : 'Buying in is closed');
+const defaultBuyIn = (st) => {
   let def = st.bigBlind * 100;
   if (st.minBuyIn) def = Math.max(def, st.minBuyIn);
   if (st.maxBuyIn) def = Math.min(def, st.maxBuyIn);
+  return def;
+};
+
+export function seatDialog(seat) {
+  const s = app.state;
+  const st = s.table.settings;
+  let def = defaultBuyIn(st);
   // the rathole rule: back with at least what you left with
   const rh = s.me.rathole;
   if (rh) def = Math.max(def, rh.amount);
-  const range = st.minBuyIn || st.maxBuyIn ? `Buy-in ${st.minBuyIn ? fmt(st.minBuyIn) : 'any'} to ${st.maxBuyIn ? fmt(rh ? Math.max(st.maxBuyIn, rh.amount) : st.maxBuyIn) : 'any'}.` : '';
-  const ratText = rh ? ` You left with ${fmt(rh.amount)}, so you come back with at least that ${rh.until ? `until ${new Date(rh.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'for the rest of this game'} (rathole rule).` : '';
-  const avail = (club ? availText(s) : '') + ratText;
+  const tableMax = st.maxBuyIn ? (rh ? Math.max(st.maxBuyIn, rh.amount) : st.maxBuyIn) : null;
   const auto = s.me.isHost || st.autoApprove;
+  const tv = s.table.tourney;
   const dlg = dialog({
     title: `Sit in seat ${seat + 1}`, className: 'narrow',
-    body: `<form class="stack">
-      <label><span class="lbl">Name at this table</span><input name="nick" type="text" maxlength="24" value="${esc(app.me?.name || '')}" required></label>
-      <label><span class="lbl">Buy-in</span>${amountBox('buyIn', inp(def))}</label>
-      <p class="hint">${esc(range + avail)}${auto ? '' : ' The host approves seat requests.'}</p>
-      <p class="bad hidden" data-err></p>
-      <button class="btn primary" type="submit">${auto ? 'Sit down' : 'Request seat'}</button>
-    </form>`,
+    body: buyInBody({
+      value: def, max: maxBring(s, tableMax), fixed: tv ? tv.buyIn : null,
+      facts: moneyFacts(s, tv ? tourneyFact(tv) : rh ? fact('Rathole minimum', rh.amount) : ''),
+      buttons: `<button class="btn primary" type="submit" data-away="0">${auto ? 'Sit now' : 'Request seat'}</button>
+        <button class="btn" type="submit" data-away="1">${auto ? 'Sit while away' : 'Request seat while away'}</button>`,
+    }),
   });
-  dlg.$('form').addEventListener('submit', async (e) => {
+  const { f, box, err } = bindBuyIn(dlg);
+  const blocked = tourneyBlock(tv);
+  if (blocked) { err(blocked); f.querySelectorAll('[type=submit]').forEach((b) => { b.disabled = true; }); }
+  let away = false;
+  f.addEventListener('click', (e) => { const b = e.target.closest('[data-away]'); if (b) away = b.dataset.away === '1'; });
+  f.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const f = e.target;
-    const ack = await emit('seat:request', { seat, buyIn: parse(val(f, 'buyIn').value), name: val(f, 'nick').value }, { quiet: true });
+    if (e.submitter?.dataset.away) away = e.submitter.dataset.away === '1';
+    err('');
+    const ack = await emit('seat:request', { seat, buyIn: tv ? tv.buyIn : parse(box.value), away }, { quiet: true });
     if (ack.ok) {
       dlg.close();
-      toast(ack.seated ? 'You sat down' : 'Seat requested. The host will approve it.');
+      toast(ack.seated ? (away ? 'You sat down, away' : 'You sat down') : 'Seat requested. The host will approve it.');
     } else {
-      const el = dlg.$('[data-err]');
-      el.textContent = ack.error || 'Could not request the seat';
-      el.classList.remove('hidden');
+      err(ack.error || 'Could not request the seat');
     }
+    away = false;
   });
-  setTimeout(() => dlg.$('[name=buyIn]').select(), 30);
 }
 
 export function chipsDialog() {
@@ -78,21 +126,87 @@ export function chipsDialog() {
   const st = s.table.settings;
   const seat = s.seats[s.me.seat];
   const room = st.maxBuyIn ? Math.max(0, st.maxBuyIn - seat.stack - (seat.pendingChips || 0)) : null;
-  const def = room !== null ? room : st.bigBlind * 100;
+  const max = maxBring(s, room);
   const auto = s.me.isHost || st.autoApprove;
-  const club = availText(s);
   const dlg = dialog({
     title: 'Add chips', className: 'narrow',
-    body: `<form class="stack">
-      <label><span class="lbl">Amount</span>${amountBox('amount', inp(def))}</label>
-      <p class="hint">${room !== null ? `You can add up to ${fmt(room)} (maximum stack ${fmt(st.maxBuyIn)}).` : ''}${esc(club)} Chips added during a hand arrive when it ends.${auto ? '' : ' The host approves chip requests.'}</p>
-      <button class="btn primary" type="submit">${auto ? 'Add chips' : 'Request chips'}</button>
-    </form>`,
+    body: buyInBody({
+      value: max !== null ? max : st.bigBlind * 100, max, facts: moneyFacts(s),
+      buttons: `<button class="btn primary" type="submit">${auto ? 'Add chips' : 'Request chips'}</button>`,
+    }),
   });
-  dlg.$('form').addEventListener('submit', async (e) => {
+  const { f, box, err } = bindBuyIn(dlg);
+  f.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const ack = await emit('chips:request', { amount: parse(val(e.target, 'amount').value) });
-    if (ack.ok) { dlg.close(); toast(ack.pending ? 'Chip request sent to the host' : 'Chips added'); }
+    err('');
+    const inHand = !!(app.state.hand && app.state.hand.phase !== 'done' && app.state.hand.players.some((p) => p.id === app.state.me.userId));
+    const ack = await emit('chips:request', { amount: parse(box.value) }, { quiet: true });
+    if (ack.ok) { dlg.close(); toast(ack.pending ? 'Chip request sent to the host' : inHand ? 'Your chips arrive after this hand' : 'Chips added'); }
+    else err(ack.error || 'Could not add chips');
+  });
+}
+
+// After a hand that took your last chip, a pop-up gives you the table's moment to rebuy (DELAYS.rebuy
+// on the server, 10 seconds), counting down; the next deal waits for it. Not now, Close or Esc lets the
+// table go on at once; when the time is up it closes by itself, and Add chips still works after.
+let rebuy = null;
+let rebuyAnswered = 0;
+function rebuyCheck(s) {
+  const until = s.me.seated ? s.me.rebuyUntil : null;
+  if (rebuy && rebuy.until && rebuy.until !== until) { rebuy.quiet = true; rebuy.dlg.close(); }
+  if (!until || rebuy || until === rebuyAnswered || until - now() < 1000) return;
+  rebuyDialog(s, until);
+}
+
+// Rebuy from the menu, in a tourney on no chips: the same pop-up without the countdown.
+export function rebuyNow() {
+  if (rebuy) return;
+  rebuyDialog(app.state, null);
+}
+
+function rebuyDialog(s, until) {
+  const st = s.table.settings;
+  const tv = s.table.tourney;
+  const room = st.maxBuyIn ? Math.max(0, st.maxBuyIn - (s.me.pendingChips || 0)) : null;
+  const max = maxBring(s, room);
+  const auto = s.me.isHost || st.autoApprove;
+  const r = { until, quiet: false, dlg: null, timer: null };
+  rebuy = r;
+  const dlg = dialog({
+    title: 'Rebuy', className: `narrow ${until ? 'rebuy' : ''}`,
+    actions: until ? '<span class="rb-left" data-left aria-label="Seconds left"></span>' : '',
+    body: buyInBody({
+      value: defaultBuyIn(st), max, facts: moneyFacts(s, tourneyFact(tv)), fixed: tv ? tv.buyIn : null,
+      buttons: `<button class="btn primary" type="submit">${auto ? 'Rebuy' : 'Request rebuy'}</button><button class="btn" type="button" data-skip>Not now</button>`,
+    }),
+    onClose: () => {
+      clearInterval(r.timer);
+      if (rebuy === r) rebuy = null;
+      if (until) rebuyAnswered = until;
+      if (until && !r.quiet) emit('rebuy:skip', {}, { quiet: true });
+    },
+  });
+  r.dlg = dlg;
+  const { f, box, err } = bindBuyIn(dlg);
+  if (until) {
+    const total = Math.max(1000, until - now());
+    const tick = () => {
+      const ms = Math.max(0, until - now());
+      dlg.$('[data-left]').textContent = String(Math.ceil(ms / 1000));
+      dlg.el.style.setProperty('--rb', String(ms / total));
+      if (ms <= 0) { r.quiet = true; dlg.close(); }
+    };
+    tick();
+    r.timer = setInterval(tick, 200);
+  }
+  dlg.$('[data-skip]').addEventListener('click', () => dlg.close());
+  f.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    err('');
+    const amount = tv ? tv.buyIn : parse(box.value);
+    const ack = await emit('chips:request', { amount }, { quiet: true });
+    if (ack.ok) { r.quiet = true; dlg.close(); toast(ack.pending ? 'Rebuy request sent to the host' : `Rebought ${fmt(amount)}`); }
+    else err(ack.error || 'Could not rebuy');
   });
 }
 
@@ -101,6 +215,14 @@ export async function standDialog() {
   const seat = s.seats[s.me.seat];
   const inHand = s.hand && s.hand.phase !== 'done' && s.hand.players.some((p) => p.id === s.me.userId);
   const where = s.table.clubId ? 'back to your club balance' : 'out in the ledger';
+  const tv = s.table.tourney;
+  if (tv && s.table.status !== 'ended') {
+    // leaving a tourney puts you out; paid by place, the chips stay in the prize pool
+    const keep = tv.pay === 'place' && seat.stack > 0;
+    const ok = await confirmDialog(`Leaving puts you out of the tourney${inHand ? ' after this hand' : ''}. ${keep ? 'Your chips stay in the prize pool.' : `Your stack${seat.stack ? ` of ${fmt(seat.stack)}` : ''} is cashed ${where}.`}`, { title: 'Leave the tourney?', ok: 'Leave', danger: keep });
+    if (ok) emit('standup');
+    return;
+  }
   const ok = await confirmDialog(inHand
     ? `You will leave after this hand and your stack will be cashed ${where}. Remaining decisions this hand are checked or folded for you.`
     : `Your stack of ${fmt(seat.stack)} will be cashed ${where}.`, { title: 'Stand up?', ok: 'Stand up' });
@@ -167,6 +289,9 @@ export function hostDialog({ tab = null } = {}) {
   const st = t.settings;
   const opt = (v, l, cur) => `<option value="${v}" ${String(v) === String(cur) ? 'selected' : ''}>${l}</option>`;
   const ends = t.session && t.session.endsAt;
+  // a tourney under way keeps its buy-in and how it pays; its blinds come from its levels
+  const tour = !!st.tourney?.on;
+  const tourLocked = tour && (t.handNumber > 0 || (t.tourney?.pool || 0) > 0);
   const dlg = dialog({
     title: 'Game options', className: 'wide',
     tabs: [
@@ -181,17 +306,18 @@ export function hostDialog({ tab = null } = {}) {
           ${formatEditorHTML(st.format)}
           <p class="hint">An orbit ends when the button has gone around the table once. Changes apply from the next hand; changing which games are played, or their order, starts again from step 1.</p>
         </div>
+        ${tour ? `<div><span class="lbl">Tourney</span>${tourneyFieldsHTML(st.tourney, { money: (n, v) => amountBox(n, v), toIn: (c) => inp(c), locked: tourLocked })}</div>` : ''}
         <div class="field-grid">
-          <label><span class="lbl">Small blind</span>${amountBox('smallBlind', inp(st.smallBlind))}</label>
+          ${tour ? '' : `<label><span class="lbl">Small blind</span>${amountBox('smallBlind', inp(st.smallBlind))}</label>
           <label><span class="lbl">Big blind</span>${amountBox('bigBlind', inp(st.bigBlind))}</label>
           <label><span class="lbl">Minimum buy-in</span>${amountBox('minBuyIn', st.minBuyIn ? inp(st.minBuyIn) : '', 'Any')}</label>
-          <label><span class="lbl">Maximum stack</span>${amountBox('maxBuyIn', st.maxBuyIn ? inp(st.maxBuyIn) : '', 'Any')}</label>
+          <label><span class="lbl">Maximum stack</span>${amountBox('maxBuyIn', st.maxBuyIn ? inp(st.maxBuyIn) : '', 'Any')}</label>`}
           <label><span class="lbl">Seats</span><select name="maxPlayers">${[2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => opt(n, n, st.maxPlayers)).join('')}</select></label>
           ${t.handNumber === 0 ? `<label><span class="lbl">Players to start</span><select name="minPlayers"><option value="${st.minPlayers || 2}" selected>${st.minPlayers || 2}</option></select></label>` : ''}
-          <label><span class="lbl">Rathole time</span><select name="rathole">${(RATHOLE.some(([m]) => m === (st.ratholeMinutes || 0)) ? RATHOLE : [...RATHOLE, [st.ratholeMinutes, `${st.ratholeMinutes} minutes`]]).map(([m, l]) => opt(m, l, st.ratholeMinutes || 0)).join('')}</select></label>
+          ${tour ? '' : `<label><span class="lbl">Rathole time</span><select name="rathole">${(RATHOLE.some(([m]) => m === (st.ratholeMinutes || 0)) ? RATHOLE : [...RATHOLE, [st.ratholeMinutes, `${st.ratholeMinutes} minutes`]]).map(([m, l]) => opt(m, l, st.ratholeMinutes || 0)).join('')}</select></label>`}
         </div>
         <p class="hint" data-seat-hint></p>
-        <p class="hint">${t.handNumber === 0 ? 'The first hand waits until the players to start are in. ' : ''}${esc(ratholeHint)}</p>
+        <p class="hint">${t.handNumber === 0 ? 'The first hand waits until the players to start are in. ' : ''}${tour ? '' : esc(ratholeHint)}</p>
         <label class="check"><input type="checkbox" name="autoApprove" ${st.autoApprove ? 'checked' : ''}> Approve seat and chip requests automatically<small>Leave off to approve every buy-in and rebuy yourself.</small></label>
         <label class="check"><input type="checkbox" name="straddle" ${st.straddle ? 'checked' : ''}> Allow a straddle<small>The player under the gun can post twice the big blind before the deal, and acts last before the flop. Each player turns it on for themselves.</small></label>
         <div class="field-grid">
@@ -250,6 +376,7 @@ export function hostDialog({ tab = null } = {}) {
   const form = dlg.$('#hostform');
   bindSegs(dlg.el);
   bindBombFields(form);
+  if (tour) bindTourneyFields(form, { parse, toIn: (c) => inp(c) });
   const refit = () => {
     fitSeats(val(form, 'maxPlayers'), readFormat(form), readBomb(form), dlg.$('[data-seat-hint]'));
     if (val(form, 'minPlayers')) fitMinPlayers(val(form, 'minPlayers'), Number(val(form, 'maxPlayers').value));
@@ -313,16 +440,26 @@ export function hostDialog({ tab = null } = {}) {
   });
   dlg.$('[data-save]').addEventListener('click', async () => {
     const num = (n) => Number(val(form, n).value);
+    let stakes;
+    if (tour) {
+      const tr = readTourney(form, parse, { locked: tourLocked });
+      if (tr.error) { toast(tr.error, 'error'); return; }
+      stakes = { tourney: tr.tourney };
+    } else {
+      stakes = {
+        smallBlind: parse(val(form, 'smallBlind').value),
+        bigBlind: parse(val(form, 'bigBlind').value),
+        minBuyIn: val(form, 'minBuyIn').value.trim() ? parse(val(form, 'minBuyIn').value) : 0,
+        maxBuyIn: val(form, 'maxBuyIn').value.trim() ? parse(val(form, 'maxBuyIn').value) : 0,
+        ratholeMinutes: num('rathole'),
+      };
+    }
     const settings = {
       name: val(form, 'tableName').value,
       format: readFormat(form),
-      smallBlind: parse(val(form, 'smallBlind').value),
-      bigBlind: parse(val(form, 'bigBlind').value),
-      minBuyIn: val(form, 'minBuyIn').value.trim() ? parse(val(form, 'minBuyIn').value) : 0,
-      maxBuyIn: val(form, 'maxBuyIn').value.trim() ? parse(val(form, 'maxBuyIn').value) : 0,
+      ...stakes,
       maxPlayers: num('maxPlayers'),
       ...(val(form, 'minPlayers') ? { minPlayers: num('minPlayers') } : {}),
-      ratholeMinutes: num('rathole'),
       autoApprove: val(form, 'autoApprove').checked,
       straddle: val(form, 'straddle').checked,
       sevenDeuce: val(form, 'sevenDeuce').value.trim() ? parse(val(form, 'sevenDeuce').value) : 0,

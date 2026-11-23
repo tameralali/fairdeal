@@ -8,6 +8,7 @@ import { cleanName } from './auth.js';
 import { StatsBook, statsRows, gamesIn, summarize, aggregate, handView } from './stats.js';
 import { fmtMoney } from '../shared/money.js';
 import { score5 } from '../shared/evaluator.js';
+import { DEFAULT_TOURNEY, TOURNEY_TIME, cleanTourney, standardLevels, payouts, ordinal, newTourneyState } from './tourney.js';
 
 // Pauses, in ms: before each street, between the streets of an all-in runout, before the showdown,
 // after a hand, and for the run-it vote.
@@ -16,11 +17,13 @@ const VOICE_MAX = 10; // each person in voice sends to each other one, so it sta
 // After a hand the result stays up for 9 seconds, folded or shown down, before the next deal: PokerNow's
 // slowest showdown setting (it offers 3, 6 or 9), time to show cards or say something.
 export const DELAYS = {
-  // an all-in runout takes its time: 3.4 seconds before its first card, 3.7 between its cards, and
-  // 2 more before each further run starts
-  street: 1400, runoutFirst: 3400, runout: 3700, runBreak: 2000, showdown: 1400,
+  // an all-in runout takes its time: 2.9 seconds before its first card, 2.95 between its cards, and
+  // 1 more before each further run starts
+  street: 1400, runoutFirst: 2900, runout: 2950, runBreak: 1000, showdown: 1400,
   afterUncontested: 9000, afterShowdown: 9000, perExtraRun: 1500, perExtraBoard: 1000,
   rit: 45000, ritSettle: 15000, autoAct: 400, away: 5000, call: 30 * 60000,
+  // a player who loses their last chip has 10 seconds to rebuy before the next deal
+  rebuy: 10000,
 };
 // Each time bank is this many more seconds on the clock; a player uses one on their turn (Extra
 // time, or T), as many in a hand as they have left, and gets one back every timeBankRefill hands.
@@ -60,6 +63,7 @@ export const DEFAULT_SETTINGS = {
   autoStart: false,
   straddle: false, // the player under the gun may post twice the big blind before the deal
   sevenDeuce: 0, // the 7-2 game: a Hold'em hand won with 7-2, shown, collects this from everyone else dealt in
+  tourney: DEFAULT_TOURNEY, // a tourney: one buy-in, a set number of them, blinds up on a clock (tourney.js)
 };
 
 const fail = (m) => { throw new Error(m); };
@@ -130,6 +134,7 @@ export function migrateSettings(saved) {
   if (!s.format.length) s.format = structuredClone(DEFAULT_SETTINGS.format);
   s.bombPot = { ...DEFAULT_SETTINGS.bombPot, ...(s.bombPot || {}) };
   s.rit = { ...DEFAULT_SETTINGS.rit, ...(s.rit || {}) };
+  s.tourney = { ...DEFAULT_TOURNEY, ...(s.tourney || {}) };
   delete s.games;
   delete s.rotateEvery;
   delete s.rotateHands;
@@ -217,6 +222,18 @@ export function sanitizeSettings(input = {}, current = DEFAULT_SETTINGS, ctx = {
     s.feltColor = input.feltColor.toLowerCase();
   }
   if (has('decimals')) s.decimals = Number(input.decimals) === 2 ? 2 : 0;
+  if (has('tourney')) {
+    s.tourney = cleanTourney(input.tourney, s.tourney, (a) => fmtMoney(a, s.decimals, 'auto', ''));
+    if (s.tourney.on && !(input.tourney.levels && input.tourney.levels.length) && !s.tourney.levels.length) s.tourney.levels = standardLevels(s.smallBlind, s.bigBlind);
+  }
+  if (s.tourney.on) {
+    // one buy-in, which is the starting stack; the game starts at the first level's blinds (the clock
+    // moves them on from there); coming back with what you left with has no meaning in a tourney
+    s.minBuyIn = s.tourney.buyIn;
+    s.maxBuyIn = s.tourney.buyIn;
+    s.ratholeMinutes = 0;
+    if (!ctx.playing) [s.smallBlind, s.bigBlind] = s.tourney.levels[0];
+  }
   s.minPlayers = Math.max(2, Math.min(s.minPlayers || 2, s.maxPlayers));
   const { cap, why } = seatCap(s);
   if (s.maxPlayers > cap && !has('maxPlayers') && (ctx.highestSeat ?? -1) < cap) s.maxPlayers = cap;
@@ -252,6 +269,7 @@ export class Table {
     // amounts at a table are whole numbers of its unit: 2 means cents (dollars and cents), 0 means chips
     this.unit = data.unit ?? null;
     this.leftWith = data.leftWith || {}; // userId -> { amount, at }: what a player stood up with, for the rathole rule
+    this.tourney = { ...newTourneyState(), ...(data.tourney || {}) }; // where a tourney stands (tourney.js)
     this.players = new Map();
     this.seats = Array(10).fill(null);
     for (const p of data.players || []) {
@@ -394,7 +412,7 @@ export class Table {
       settings: this.settings, status: this.status, paused: this.paused, handNumber: this.handNumber,
       buttonSeat: this.buttonSeat, revealedThrough: this.revealedThrough, session: this.session,
       rotation: this.rotation, handsSinceBomb: this.handsSinceBomb, ledger: this.ledger,
-      requests: this.requests, endedAt: this.endedAt, logSeq: this.logSeq, unit: this.unit, leftWith: this.leftWith,
+      requests: this.requests, endedAt: this.endedAt, logSeq: this.logSeq, unit: this.unit, leftWith: this.leftWith, tourney: this.tourney,
       fairPending: this.fair ? savedCommitment(this.fair.pending) : undefined,
       players: [...this.players.values()].map((p) => ({
         userId: p.userId, name: p.name, seat: p.seat, stack: p.stack, sittingOut: p.sittingOut,
@@ -493,6 +511,8 @@ export class Table {
     // a turn long past its time should have been played by now (its clock is kept after it goes off)
     const overdue = !!this.turn && Date.now() > this.turn.deadline + 15000;
     const moving = live ? !overdue && !!(this.timers.action || this.timers.advance || this.timers.rit) : !!this.timers.next;
+    // a tourney waiting for players: once buying in closes, whoever is on no chips is out
+    if (!live && !this.timers.next && this.tourneyCheck()) { this.endGame('tourney'); return; }
     if (moving || (!live && this.waitingReason())) { this.stalls = 0; return; }
     this.stalls = (this.stalls || 0) + 1;
     if (this.stalls < 2) return;
@@ -582,7 +602,8 @@ export class Table {
     return { amount: r.amount, until };
   }
 
-  requestSeat(user, { seat, buyIn, name }) {
+  // away: sit down but sit out, until "I'm back"
+  requestSeat(user, { seat, buyIn, name, away = false }) {
     this.assertOpen();
     seat = Number(seat);
     if (!Number.isInteger(seat) || seat < 0 || seat >= this.settings.maxPlayers) fail('That seat does not exist');
@@ -591,6 +612,10 @@ export class Table {
     const nick = cleanName(name || user.name);
     for (const p of this.players.values()) if (p.name.toLowerCase() === nick.toLowerCase()) fail('Someone at the table already uses that name');
     buyIn = Number(buyIn);
+    if (this.isTourney) {
+      buyIn = this.settings.tourney.buyIn;
+      this.checkTourneyBuyIn(user.id);
+    }
     this.checkBuyIn(buyIn, 0, this.ratholeFor(user.id));
     if (this.clubId) {
       if (!this.clubs.role(this.clubId, user.id)) fail('Only club members can sit at this table');
@@ -598,11 +623,12 @@ export class Table {
       if (buyIn > avail) fail(`You have ${this.fmt(Math.max(0, avail))} available in your balance, credit included`);
     }
     this.requests = this.requests.filter((r) => r.userId !== user.id || r.type !== 'seat');
+    away = !!away;
     if (this.isHost(user.id) || this.settings.autoApprove) {
-      this.seatPlayer(user.id, nick, seat, buyIn, null);
+      this.seatPlayer(user.id, nick, seat, buyIn, null, away);
       return { seated: true };
     }
-    this.requests.push({ id: randomId(5), type: 'seat', userId: user.id, name: nick, seat, amount: buyIn, at: Date.now() });
+    this.requests.push({ id: randomId(5), type: 'seat', userId: user.id, name: nick, seat, amount: buyIn, away, at: Date.now() });
     this.emitHosts('request', { name: nick, type: 'seat', amount: this.fmt(buyIn) });
     this.snapshot();
     this.broadcast();
@@ -613,20 +639,22 @@ export class Table {
     for (const s of this.sockets) if (this.isHost(s.data.user.id)) s.emit(event, payload);
   }
 
-  seatPlayer(userId, name, seat, amount, approvedBy) {
+  seatPlayer(userId, name, seat, amount, approvedBy, away = false) {
     if (this.seats[seat]) fail('That seat is taken');
     if (this.players.has(userId)) fail('Already seated');
     if (this.clubId) this.clubs.buyIn(this.clubId, userId, amount, this);
     const p = {
-      userId, name, seat, stack: amount, sittingOut: false, sitOutNext: false, away: false,
+      userId, name, seat, stack: amount, sittingOut: !!away, sitOutNext: false, away: false,
       leaveAfterHand: false, kicked: false, pendingChips: 0, timeBanks: this.settings.timeBanks, joinedAt: Date.now(),
     };
     this.players.set(userId, p);
     this.seats[seat] = userId;
     this.ledgerAdd(p, 'buyin', amount, approvedBy ? `approved by ${approvedBy}` : '');
+    if (this.isTourney) this.tourneyEntry(userId, amount);
     this.log(approvedBy
       ? `The host approved ${name} in seat ${seat + 1} with a stack of ${this.fmt(amount)}`
       : `${name} sat in seat ${seat + 1} with a stack of ${this.fmt(amount)}`, 'seat');
+    if (away) this.log(`${name} is away`, 'seat');
     this.snapshot();
     this.maybeStartHand();
   }
@@ -640,6 +668,11 @@ export class Table {
     const p = this.players.get(user.id);
     if (!p) fail('Sit down first');
     amount = Number(amount);
+    if (this.isTourney) {
+      if (p.stack > 0 || p.pendingChips > 0 || this.inHand(p.userId)) fail('In a tourney you can only rebuy once you are out of chips');
+      this.checkTourneyBuyIn(user.id);
+      amount = this.settings.tourney.buyIn;
+    }
     if (!Number.isInteger(amount) || amount <= 0) fail('Enter a positive amount');
     const s = this.settings;
     if (s.maxBuyIn && p.stack + p.pendingChips + amount > s.maxBuyIn) {
@@ -675,9 +708,159 @@ export class Table {
   applyChips(p, amount, approvedBy) {
     if (this.clubId) this.clubs.buyIn(this.clubId, p.userId, amount, this);
     p.stack += amount;
-    this.ledgerAdd(p, 'buyin', amount, approvedBy ? `approved by ${approvedBy}` : 'add-on');
+    this.ledgerAdd(p, 'buyin', amount, approvedBy ? `approved by ${approvedBy}` : this.isTourney ? 'rebuy' : 'add-on');
+    if (this.isTourney) this.tourneyEntry(p.userId, amount);
     this.log(`${p.name} added ${this.fmt(amount)} (stack ${this.fmt(p.stack)})`, 'chips');
+    this.rebuyDone(p.userId);
     this.maybeStartHand();
+  }
+
+  // ---------- the moment to rebuy ----------
+  // When a hand leaves players on no chips, each of them who is here (connected, not away) gets
+  // DELAYS.rebuy to rebuy before the next deal. It runs alongside the result's time on the table, so
+  // it only holds the deal for whatever it has left after that; it ends early for a player who
+  // rebuys, says not now, goes away or leaves, and once all have, the deal comes at its usual time.
+  startRebuy(hand) {
+    const ids = hand.players.map((hp) => this.players.get(hp.id)).filter((p) => p && p.stack === 0 && !p.pendingChips
+      && !p.sittingOut && !p.sitOutNext && !p.leaveAfterHand && this.isConnected(p.userId)
+      && (!this.isTourney || this.canTourneyBuyIn(p.userId))).map((p) => p.userId);
+    this.rebuy = ids.length ? { until: Date.now() + DELAYS.rebuy, ids: new Set(ids) } : null;
+  }
+
+  // The next deal, once the result has had its time and no one is still deciding to rebuy.
+  scheduleNext() {
+    clearTimeout(this.timers.next);
+    const r = this.rebuy && this.rebuy.ids.size ? this.rebuy : null;
+    const at = Math.max(this.nextAt || 0, r ? r.until : 0);
+    this.timers.next = setTimeout(this.safe(() => {
+      this.timers.next = null;
+      const had = this.rebuy;
+      this.rebuy = null;
+      const before = this.hand;
+      this.maybeStartHand();
+      if (had && this.hand === before) this.broadcast();
+    }), Math.max(0, at - Date.now()));
+  }
+
+  rebuyDone(userId) {
+    const r = this.rebuy;
+    if (!r || !r.ids.delete(userId)) return;
+    if (!r.ids.size && this.timers.next) this.scheduleNext();
+    this.broadcast();
+  }
+
+  skipRebuy(user) { this.rebuyDone(user.id); }
+
+  // ---------- tourney (rules in tourney.js) ----------
+  get isTourney() { return !!this.settings.tourney?.on; }
+
+  // The level the clock is on (from 0), counting any that ran out while no hand was dealt.
+  tourneyClockLevel(at = Date.now()) {
+    const t = this.tourney;
+    const st = this.settings.tourney;
+    const last = Math.max(0, st.levels.length - 1);
+    if (!t.started || t.levelEndsAt === null || at < t.levelEndsAt) return Math.min(t.level, last);
+    return Math.min(last, t.level + 1 + Math.floor((at - t.levelEndsAt) / (st.levelMinutes * TOURNEY_TIME.minute)));
+  }
+
+  // buying in (sitting down or rebuying) is open through the last level to buy in (0: all game)
+  tourneyBuyInOpen() {
+    const last = this.settings.tourney.lastRebuyLevel;
+    return !last || this.tourneyClockLevel() + 1 <= last;
+  }
+
+  tourneyBuyInsLeft(userId) {
+    const max = this.settings.tourney.buyIns;
+    return max ? Math.max(0, max - (this.tourney.entries[userId] || 0)) : Infinity;
+  }
+
+  canTourneyBuyIn(userId) { return this.tourneyBuyInOpen() && this.tourneyBuyInsLeft(userId) > 0; }
+
+  checkTourneyBuyIn(userId) {
+    if (!this.tourneyBuyInOpen()) fail('Buying in is closed in this tourney');
+    if (this.tourneyBuyInsLeft(userId) <= 0) fail(`You have used all ${this.settings.tourney.buyIns} of your buy-ins`);
+  }
+
+  tourneyEntry(userId, amount) {
+    const t = this.tourney;
+    t.entries[userId] = (t.entries[userId] || 0) + 1;
+    t.pool += amount;
+    t.out = t.out.filter((o) => o.userId !== userId); // back in after leaving
+  }
+
+  // At the start of each hand: the clock starts with the first one, and moves to the next level when
+  // a level's time is up (never in the middle of a hand); the hand is played at that level's blinds.
+  tourneyLevelUp() {
+    const t = this.tourney;
+    const st = this.settings.tourney;
+    const last = st.levels.length - 1;
+    const len = st.levelMinutes * TOURNEY_TIME.minute;
+    if (!t.started) {
+      t.started = true;
+      t.level = 0;
+      t.levelEndsAt = last > 0 ? Date.now() + len : null;
+      t.levelLeft = null;
+    }
+    const from = t.level;
+    while (t.levelEndsAt !== null && Date.now() >= t.levelEndsAt && t.level < last) {
+      t.level += 1;
+      t.levelEndsAt = t.level < last ? t.levelEndsAt + len : null;
+    }
+    t.level = Math.min(t.level, last);
+    const [sb, bb] = st.levels[t.level];
+    this.settings.smallBlind = sb;
+    this.settings.bigBlind = bb;
+    if (t.level !== from) this.log(`Blinds up: level ${t.level + 1}, ${this.fmt(sb)}/${this.fmt(bb)}`, 'game');
+    if (t.level === last && t.level !== from && last > 0) this.log('This is the last level: the blinds stay here', 'game');
+  }
+
+  // Players on no chips who cannot buy in again are out: they leave their seats and take places from
+  // the bottom up. Several out in one hand are placed by the stacks they started it with, bigger first.
+  tourneyKnockOut(list, startStacks = new Map()) {
+    const sorted = [...list].sort((a, b) => (startStacks.get(a.userId) || 0) - (startStacks.get(b.userId) || 0));
+    for (const p of sorted) {
+      const place = this.players.size;
+      this.tourney.out.push({ userId: p.userId, name: p.name, place, at: Date.now() });
+      this.log(`${p.name} is out in ${ordinal(place)} place`, 'game');
+      this.emitTo(p.userId, 'toast', { text: `You are out in ${ordinal(place)} place` });
+      this.removePlayer(p, 'out');
+    }
+  }
+
+  // Players on no chips once buying in has closed are out. True when that leaves one player: the end.
+  tourneyCheck(startStacks) {
+    if (!this.isTourney || !this.tourney.started || this.status !== 'running') return false;
+    const broke = [...this.players.values()].filter((p) => p.stack === 0 && !p.pendingChips && !this.canTourneyBuyIn(p.userId)
+      && !this.requests.some((r) => r.userId === p.userId));
+    this.tourneyKnockOut(broke, startStacks);
+    return this.players.size <= 1;
+  }
+
+  // When a tourney ends: those still in are placed by their stacks, bigger first, above everyone who
+  // went out. Paid by place, the pool goes to the places by the split; chips are cash, it is what they
+  // hold, already cashed out like a cash game. Kept in tourney.places for the table to show.
+  tourneyFinish(remaining) {
+    const t = this.tourney;
+    const st = this.settings.tourney;
+    const order = [...remaining].sort((a, b) => b.stack - a.stack || a.seat - b.seat)
+      .map((p, i) => ({ userId: p.userId, name: p.name, place: i + 1, stack: p.stack }));
+    const out = [...t.out].sort((a, b) => a.place - b.place).map((o, i) => ({ ...o, place: order.length + i + 1 }));
+    const places = [...order, ...out];
+    if (st.pay === 'place' && t.pool > 0 && places.length) {
+      const amounts = payouts(t.pool, st.split, places.length);
+      amounts.forEach((amount, i) => {
+        const x = places[i];
+        x.payout = amount;
+        if (!amount) return;
+        this.ledger.push({ at: Date.now(), userId: x.userId, name: x.name, type: 'cashout', amount, note: `${ordinal(x.place)} place` });
+        if (this.clubId) this.clubs.cashOut(this.clubId, x.userId, amount, this);
+      });
+    }
+    t.places = places.map(({ userId, name, place, payout }) => ({ userId, name, place, payout: payout ?? null }));
+    const top = places.slice(0, Math.max(3, st.pay === 'place' ? st.split.length : 0));
+    if (top.length) {
+      this.log(`Tourney over: ${top.map((x) => `${ordinal(x.place)} ${x.name}${x.payout ? ` ${this.fmt(x.payout)}` : ''}`).join(', ')}`, 'game');
+    }
   }
 
   cancelRequest(user) {
@@ -756,7 +939,13 @@ export class Table {
   }
 
   removePlayer(p, reason) {
-    const amount = p.stack;
+    // in a tourney paid by place chips are not money: the buy-ins stay in the pool, paid by place
+    const amount = this.isTourney && this.settings.tourney.pay === 'place' ? 0 : p.stack;
+    if (this.isTourney && this.tourney.started && reason !== 'game ended' && reason !== 'out' && !this.tourney.out.some((o) => o.userId === p.userId)) {
+      const place = this.players.size;
+      this.tourney.out.push({ userId: p.userId, name: p.name, place, at: Date.now() });
+      this.log(`${p.name} left the tourney in ${ordinal(place)} place${amount === 0 && p.stack > 0 ? `; their ${this.fmt(p.stack)} in chips stay in the prize pool` : ''}`, 'game');
+    }
     // the rathole rule remembers what they left with (a game that ends has no one coming back)
     if (reason !== 'game ended') {
       if (amount > 0) this.leftWith[p.userId] = { amount, at: Date.now() };
@@ -764,11 +953,12 @@ export class Table {
     }
     this.seats[p.seat] = null;
     this.players.delete(p.userId);
+    if (this.rebuy) this.rebuyDone(p.userId);
     this.ledgerAdd(p, 'cashout', amount, reason);
     if (this.clubId) this.clubs.cashOut(this.clubId, p.userId, amount, this);
     this.requests = this.requests.filter((r) => r.userId !== p.userId);
     const verb = reason === 'kicked' ? 'was removed by the host' : reason === 'game ended' ? 'cashed out' : 'stood up';
-    this.log(`${p.name} ${verb} with a stack of ${this.fmt(amount)}`, 'seat');
+    if (reason !== 'out' && !(this.isTourney && amount === 0 && reason === 'game ended')) this.log(`${p.name} ${verb} with a stack of ${this.fmt(amount)}`, 'seat');
     this.snapshot();
     this.broadcast();
   }
@@ -790,6 +980,7 @@ export class Table {
       if (this.inHand(p.userId)) p.sitOutNext = true;
       else p.sittingOut = true;
       this.log(`${p.name} is away`, 'seat');
+      this.rebuyDone(p.userId);
     } else {
       const was = p.sittingOut || p.sitOutNext;
       p.sittingOut = false;
@@ -810,16 +1001,20 @@ export class Table {
     this.requests = this.requests.filter((x) => x.id !== requestId);
     if (!approve) {
       this.emitTo(r.userId, 'toast', { text: r.type === 'seat' ? 'Your seat request was declined' : 'Your chip request was declined' });
+      if (r.type === 'chips') this.rebuyDone(r.userId);
       this.snapshot();
       this.broadcast();
       return;
     }
+    // a tourney's buying in may have closed, or the buy-ins run out, while the request waited
+    if (this.isTourney) this.checkTourneyBuyIn(r.userId);
     if (r.type === 'seat') {
       if (this.seats[r.seat]) fail('That seat was taken in the meantime');
-      this.seatPlayer(r.userId, r.name, r.seat, r.amount, host.name);
+      this.seatPlayer(r.userId, r.name, r.seat, r.amount, host.name, r.away);
     } else {
       const p = this.players.get(r.userId);
       if (!p) fail('That player has left');
+      if (this.isTourney && (p.stack > 0 || p.pendingChips > 0)) fail('They are no longer out of chips');
       this.queueChips(p, r.amount, host.name);
     }
     this.broadcast();
@@ -891,6 +1086,12 @@ export class Table {
 
   hostPause(host, value) {
     this.requireHost(host);
+    // a tourney's level clock stops while the game is paused
+    const t = this.tourney;
+    if (this.isTourney && t.started) {
+      if (value && !this.paused && t.levelEndsAt !== null) { t.levelLeft = Math.max(0, t.levelEndsAt - Date.now()); t.levelEndsAt = null; }
+      if (!value && this.paused && t.levelLeft !== null) { t.levelEndsAt = Date.now() + t.levelLeft; t.levelLeft = null; }
+    }
     this.paused = !!value;
     this.log(value ? (this.hand && this.hand.phase !== 'done' ? 'The host paused the game; it will stop after this hand' : 'The host paused the game') : 'The host resumed the game', 'game');
     this.snapshot();
@@ -959,7 +1160,16 @@ export class Table {
       fail('Chip display can only change before anyone buys in');
     }
     const before = this.settings;
-    const next = sanitizeSettings(input, before, { highestSeat });
+    const playing = this.handNumber > 0 || this.ledger.length > 0;
+    if (playing && input.tourney) {
+      const was = before.tourney;
+      const t = input.tourney;
+      if ((t.on !== undefined && !!t.on !== was.on) || (was.on && ((t.pay && t.pay !== was.pay) || (t.buyIn !== undefined && Number(t.buyIn) !== was.buyIn)))) {
+        fail('A game under way cannot change between cash game and tourney, or change its buy-in or how it pays');
+      }
+    }
+    const next = sanitizeSettings(input, before, { highestSeat, playing });
+    if (next.tourney.on && playing) { next.smallBlind = before.smallBlind; next.bigBlind = before.bigBlind; }
     const changes = describeChanges(before, next, (a) => this.fmt(a));
     this.settings = next;
     for (const pl of this.players.values()) if ((pl.timeBanks || 0) > next.timeBanks) pl.timeBanks = next.timeBanks;
@@ -1031,16 +1241,19 @@ export class Table {
       return;
     }
     for (const k of ['action', 'advance', 'next', 'rit', 'call']) { clearTimeout(this.timers[k]); this.timers[k] = null; }
+    this.rebuy = null;
     for (const t of this.timers.session) clearTimeout(t);
     this.timers.session = [];
     this.status = 'ended';
     this.endedAt = Date.now();
     this.endAfterHand = false;
-    for (const p of [...this.players.values()]) this.removePlayer(p, 'game ended');
+    const remaining = [...this.players.values()];
+    for (const p of remaining) this.removePlayer(p, 'game ended');
+    if (this.isTourney && this.tourney.started) this.tourneyFinish(remaining);
     this.requests = [];
     const last = this.getRecords().at(-1);
     if (last) this.reveal(last.handNumber);
-    this.log(reason === 'time' ? 'Time is up. The game has ended.' : reason === 'units' ? 'The game was ended when the club moved to dollars and cents. Chips went back to balances.' : 'The game has ended.', 'game');
+    this.log(reason === 'tourney' ? 'One player has every chip. The tourney is over.' : reason === 'time' ? 'Time is up. The game has ended.' : reason === 'units' ? 'The game was ended when the club moved to dollars and cents. Chips went back to balances.' : 'The game has ended.', 'game');
     this.snapshot();
     this.broadcast();
     if (this.clubId) this.clubs.changed(this.clubId);
@@ -1273,11 +1486,14 @@ export class Table {
   startHand() {
     clearTimeout(this.timers.next);
     this.timers.next = null;
+    this.rebuy = null;
     for (const p of this.players.values()) {
       if (p.sitOutNext) { p.sittingOut = true; p.sitOutNext = false; }
     }
+    if (this.tourneyCheck()) { this.endGame('tourney'); return false; }
     const eligible = this.eligiblePlayers();
     if (eligible.length < this.playersNeeded()) return false;
+    if (this.isTourney) this.tourneyLevelUp();
     try {
       this.buttonSeat = this.pickButton(eligible);
       const step = this.pickStep();
@@ -1601,7 +1817,12 @@ export class Table {
         p.pendingChips = 0;
         try { this.applyChips(p, amt, null); } catch (e) { this.log(`${p.name} could not add chips: ${e.message}`, 'chips'); }
       }
-      if (p.stack === 0 && !p.sittingOut) this.log(`${p.name} is out of chips`, 'seat');
+      if (p.stack === 0 && !p.sittingOut && !(this.isTourney && !this.canTourneyBuyIn(p.userId))) this.log(`${p.name} is out of chips`, 'seat');
+    }
+    if (this.tourneyCheck(new Map(hand.players.map((hp) => [hp.id, hp.startStack])))) {
+      this.snapshot();
+      this.endGame('tourney');
+      return;
     }
     this.snapshot();
     if (this.endAfterHand || (this.session.endsAt && Date.now() >= this.session.endsAt && this.status === 'running')) {
@@ -1610,7 +1831,9 @@ export class Table {
     }
     const extra = (hand.runCount - 1) * DELAYS.perExtraRun + (hand.bpr - 1) * DELAYS.perExtraBoard;
     const delay = hand.results.uncontested ? DELAYS.afterUncontested : DELAYS.afterShowdown + extra;
-    this.timers.next = setTimeout(this.safe(() => { this.timers.next = null; this.maybeStartHand(); }), delay);
+    this.nextAt = Date.now() + delay;
+    this.startRebuy(hand);
+    this.scheduleNext();
     this.broadcast();
   }
 
@@ -1746,6 +1969,24 @@ export class Table {
       names: seated.map((p) => p.name), taken: seated.map((p) => p.seat), ending: !!this.endAfterHand, revealPolicy: s.revealPolicy,
       // a running game that is not dealing: why (too few players, paused)
       waiting: this.status === 'running' ? this.waitingReason() : null,
+      tourney: this.isTourney ? { pay: s.tourney.pay, buyIn: s.tourney.buyIn, level: this.tourney.level + 1, pool: this.tourney.pool, winner: this.tourney.places?.[0]?.name || null } : null,
+    };
+  }
+
+  // What the table shows of a tourney: the level and the clock, the pool and what it pays, who is out.
+  tourneyView(userId) {
+    if (!this.isTourney) return null;
+    const st = this.settings.tourney;
+    const t = this.tourney;
+    const entrants = Object.keys(t.entries).length;
+    return {
+      pay: st.pay, split: st.split, buyIn: st.buyIn, buyIns: st.buyIns, lastRebuyLevel: st.lastRebuyLevel,
+      levelMinutes: st.levelMinutes, levels: st.levels, started: !!t.started, level: t.level,
+      levelEndsAt: t.levelEndsAt, levelLeft: t.levelLeft, pool: t.pool, entrants,
+      payouts: st.pay === 'place' && t.pool ? payouts(t.pool, st.split, Math.max(1, entrants)) : null,
+      mine: t.entries[userId] || 0, buyInOpen: this.tourneyBuyInOpen(), canBuyIn: this.canTourneyBuyIn(userId),
+      myPlace: t.out.find((o) => o.userId === userId)?.place || null,
+      out: t.out.map(({ name, place }) => ({ name, place })), places: t.places,
     };
   }
 
@@ -1777,10 +2018,16 @@ export class Table {
       } : null);
     }
     let clubAvailable = null;
+    let clubBalance = null;
+    let clubCredit = null;
     let clubName = null;
     if (this.clubId) {
       clubName = this.clubs.data[this.clubId]?.name || null;
-      if (this.clubs.role(this.clubId, userId)) clubAvailable = this.clubs.available(this.clubId, userId);
+      if (this.clubs.role(this.clubId, userId)) {
+        clubAvailable = this.clubs.available(this.clubId, userId);
+        const m = this.clubs.data[this.clubId]?.members?.[userId];
+        if (m) { clubBalance = m.balance; clubCredit = m.creditLimit; }
+      }
     }
     return {
       serverNow: Date.now(),
@@ -1790,12 +2037,14 @@ export class Table {
         session: this.session, endAfterHand: !!this.endAfterHand, revealedThrough: this.revealedThrough,
         createdAt: this.createdAt, endedAt: this.endedAt, waiting: this.waitingReason(), bombNext: this.bombNext,
         rotation: this.rotationInfo(), handsSinceBomb: this.handsSinceBomb, hands: this.getRecords().length,
+        tourney: this.tourneyView(userId),
       },
       hud: this.hudData(),
       me: {
         userId, isHost, seat: me ? me.seat : null, seated: !!me,
         sittingOut: me ? me.sittingOut : false, sitOutNext: me ? me.sitOutNext : false, leaving: me ? me.leaveAfterHand : false, leaveAt: me ? me.leaveAt || null : null, straddle: !!(me && me.straddle),
-        pendingChips: me ? me.pendingChips : 0, requests: this.requests.filter((r) => r.userId === userId), clubAvailable,
+        pendingChips: me ? me.pendingChips : 0, requests: this.requests.filter((r) => r.userId === userId), clubAvailable, clubBalance, clubCredit,
+        rebuyUntil: this.rebuy && this.rebuy.ids.has(userId) ? this.rebuy.until : null,
         rathole: me ? null : this.ratholeFor(userId),
       },
       seats,
@@ -1844,6 +2093,15 @@ function describeChanges(a, b, fmt) {
   if (a.spectatorChat !== b.spectatorChat) out.push(b.spectatorChat ? 'spectator chat on' : 'spectator chat off');
   if (!!a.straddle !== !!b.straddle) out.push(b.straddle ? 'straddle allowed' : 'no straddle');
   if ((a.sevenDeuce || 0) !== (b.sevenDeuce || 0)) out.push(b.sevenDeuce ? `7-2 game, bounty ${fmt(b.sevenDeuce)}` : 'no 7-2 game');
+  const ta = a.tourney || {};
+  const tb = b.tourney || {};
+  if (tb.on) {
+    if (ta.levelMinutes !== tb.levelMinutes) out.push(`blinds up every ${tb.levelMinutes} minutes`);
+    if (JSON.stringify(ta.levels) !== JSON.stringify(tb.levels)) out.push(`blind levels ${tb.levels.slice(0, 4).map(([x, y]) => `${fmt(x)}/${fmt(y)}`).join(', ')}${tb.levels.length > 4 ? ', ...' : ''}`);
+    if (ta.buyIns !== tb.buyIns) out.push(tb.buyIns ? `${tb.buyIns} buy-in${tb.buyIns === 1 ? '' : 's'} a player` : 'no limit on buy-ins');
+    if (ta.lastRebuyLevel !== tb.lastRebuyLevel) out.push(tb.lastRebuyLevel ? `buying in closes after level ${tb.lastRebuyLevel}` : 'buying in open all game');
+    if (JSON.stringify(ta.split) !== JSON.stringify(tb.split) && tb.pay === 'place') out.push(`prize pool split ${tb.split.join('/')}`);
+  }
   return out;
 }
 

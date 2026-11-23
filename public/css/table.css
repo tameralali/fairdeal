@@ -1110,3 +1110,44 @@ body.pn .drawer {
 }
 body.pn .drawer .seg, body.pn .drawer .chatbox { display: none; }
 .drawer-title { font: 600 15px/1 var(--ui); padding-left: 4px; }
+
+/* ---------- buying in (a seat, Add chips, Rebuy): the amount and Max on one line, the balance and
+   credit under them, then the buttons ---------- */
+.buyin .bi-row { display: flex; gap: 8px; align-items: stretch; }
+.buyin .bi-amt { flex: 1; min-width: 0; }
+.buyin .bi-amt input { width: 100%; }
+.buyin .bi-max { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.buyin .bi-facts { display: flex; flex-wrap: wrap; gap: 8px 28px; margin-top: 14px; }
+.buyin .bi-facts small { display: block; color: var(--muted); font-size: 13px; }
+.buyin .bi-facts b { font: 600 17px/1.25 var(--num); font-variant-numeric: tabular-nums; }
+.buyin [data-err] { margin: 12px 0 0; }
+.buyin .bi-go { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.buyin .bi-go .btn { flex: 1 1 0; white-space: nowrap; }
+/* the rebuy pop-up sits low, so the hand that just ended stays in view, with its seconds left and a
+   line along its top that runs down with them */
+dialog.rebuy { margin-top: auto; margin-bottom: max(16px, 4vh); }
+dialog.rebuy::backdrop { background: rgb(0 0 0 / .18); -webkit-backdrop-filter: none; backdrop-filter: none; }
+dialog.rebuy .dlg-head { position: relative; }
+dialog.rebuy .dlg-head::after {
+  content: ''; position: absolute; left: 0; bottom: -1px; height: 2px; width: calc(var(--rb, 1) * 100%);
+  background: #0a84ff; transition: width .2s linear;
+}
+.rb-left {
+  font: 600 15px/1 var(--num); font-variant-numeric: tabular-nums; color: var(--text); text-align: center;
+  min-width: 2.2em; padding: 5px 9px; border-radius: 999px; background: rgb(255 255 255 / .08);
+}
+@media (prefers-reduced-motion: reduce) { dialog.rebuy .dlg-head::after { transition: none; } }
+
+/* a tourney's one buy-in, shown rather than typed */
+.buyin .bi-fixed small { display: block; color: var(--muted); font-size: 13px; }
+.buyin .bi-fixed b { font: 600 26px/1.2 var(--num); font-variant-numeric: tabular-nums; }
+/* a tourney in the top bar: the level and its time left (amber in its last minute), then the pool */
+.pill.tour { background: rgb(10 132 255 / .16); color: #6cb6ff; }
+.pill.tour b { font-weight: 700; }
+.pill.tour small { font-weight: 500; opacity: .8; }
+.pill.tour.low { background: rgb(255 159 10 / .18); color: #ffb340; }
+
+/* a tourney on a phone: the table name gives up room to the level and its clock */
+.tb-tour .tb-title strong { max-width: 19vw !important; }
+@media (max-width: 370px) { .tb-tour .tb-title strong { max-width: 13vw !important; } .tb-tour .tb-game { gap: 4px; } }
+@media (max-width: 340px) { .tb-tour .tb-title { display: none; } }

@@ -10,7 +10,7 @@ import { createServer } from '../server/index.js';
 import { Store } from '../server/store.js';
 import { DELAYS } from '../server/table.js';
 
-Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, runBreak: 2, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10, away: 150 });
+Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, runBreak: 2, rebuy: 20, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10, away: 150 });
 
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));

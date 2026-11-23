@@ -540,6 +540,8 @@ function renderTop(s) {
     tick();
     return;
   }
+  // a tourney's level and clock need room: the table name gives some up
+  els.top.classList.toggle('tb-tour', !!t.tourney);
   els.top.innerHTML = `
     <span class="conn ${app.connected ? '' : 'off'}" title="${app.connected ? 'Connected' : 'Reconnecting'}"></span>
     <a class="wordmark" href="/" title="Back to the club">${wordmarkHTML(26)}</a>
@@ -547,6 +549,7 @@ function renderTop(s) {
     <div class="tb-game">
       <span class="pill brass" title="${esc(GAME_TYPES[game]?.name || '')}">${esc(gameShort(game))}</span>${dbNow ? '<span class="pill soft" title="Two boards, each pot split between them">Double board</span>' : ''}
       <span class="pill num">${fmt(st.smallBlind)}/${fmt(st.bigBlind)}</span>
+      ${t.tourney ? tourneyPills(t.tourney, true) : ''}
       ${st.sevenDeuce ? `<span class="pill s72" title="Win a Hold’em hand with 7-2 and show it: everyone else dealt in pays ${esc(fmt(st.sevenDeuce))}">7-2 ${fmt(st.sevenDeuce)}</span>` : ''}${st.straddle ? '<span class="pill soft sm-hide" title="The player under the gun can straddle">Straddle</span>' : ''}
       ${rot ? `<span class="tb-note">${esc(rot)}</span>` : ''}
       ${bomb}${status}
@@ -613,6 +616,7 @@ function pnTopHTML(s, { game, dbNow, rot, status, ends, reqs }) {
     bomb = `<span class="pn-bomb" title="Bomb pot ${left === 1 ? 'next hand' : `in ${left} hands`}${bm === 'both' ? `, or sooner: each hand has a ${st.bombPot.percent}% chance` : ''}">${PN_ICON.bomb}<small>${left === 1 ? 'Next' : left}</small></span>`;
   } else if (bm === 'percent') bomb = `<span class="pn-bomb" title="Each hand has this chance of being a bomb pot">${PN_ICON.bomb}<small>${st.bombPot.percent}%</small></span>`;
   const notes = [
+    t.tourney && tourneyPills(t.tourney),
     st.sevenDeuce && `<span class="pill s72" title="Win a Hold’em hand with 7-2 and show it: everyone else dealt in pays ${esc(fmt(st.sevenDeuce))}">7-2 pays ${fmt(st.sevenDeuce)}</span>`,
     st.straddle && '<span class="pill soft" title="The player under the gun can straddle">Straddle</span>',
     ends && t.status === 'running' && `<${s.me.isHost ? 'button type="button" data-open="clock"' : 'div'} class="tb-clock" data-ends="${ends}" title="Time left in this game${s.me.isHost ? '. Add time or remove the clock' : ''}"><b>--:--</b><small>left</small></${s.me.isHost ? 'button' : 'div'}>`,
@@ -627,7 +631,8 @@ function pnTopHTML(s, { game, dbNow, rot, status, ends, reqs }) {
     const out = s.me.sittingOut || s.me.sitOutNext;
     const live = t.status !== 'ended';
     side += out ? it('data-my="back" title="Back in from the next hand"', 'back', 'I’m back', 'go') : it('data-my="sitout" title="Away from the next hand on. I’m back brings you back in."', 'away', 'Away');
-    if (live) side += it('data-my="chips" title="Add chips to your stack"', 'chips', 'Add chips');
+    if (live && !t.tourney) side += it('data-my="chips" title="Add chips to your stack"', 'chips', 'Add chips');
+    if (live && t.tourney && t.tourney.canBuyIn && myStack(s) === 0) side += it('data-my="rebuy" title="Rebuy for the tourney buy-in"', 'chips', 'Rebuy', 'go');
     if (st.straddle && live) side += it(`data-my="straddle" aria-pressed="${!!s.me.straddle}" title="Post a straddle, twice the big blind, whenever you are under the gun"`, 'straddle', 'Straddle', s.me.straddle ? 'on' : '');
     if (s.me.leaveAt && !s.me.leaving) side += `<button type="button" class="pn-it warn" data-my="stay" title="Take back calling it">${PN_ICON.clock}<span><b data-leave-at="${s.me.leaveAt}">--:--</b> Stay</span></button>`;
     else if (!s.me.leaving && live) side += it('data-my="call30" title="Tell the table you are leaving in 30 minutes. A pot over 1,000 starts the 30 minutes again."', 'clock', 'Call 30');
@@ -835,8 +840,10 @@ function seatOdds(h) {
   return held ? e.final : live;
 }
 
-// Counts each seat's odds from what it showed to its new number, the colour following the number.
-const EQ_COUNT = 650;
+// Counts each seat's odds from what it showed to its new number, the colour following the number: a
+// quick count after each card, a little longer when a run is won and they go to 100% and 0%.
+const EQ_COUNT = 250;
+const EQ_COUNT_WON = 500;
 function animateOdds() {
   const e = app.eq;
   if (!e) return;
@@ -846,9 +853,13 @@ function animateOdds() {
   const moving = items.filter((x) => Math.abs(x.to - x.from) > 0.05);
   for (const x of items) if (!moving.includes(x)) e.shown.set(x.seat, x.to);
   if (!moving.length) return;
-  const start = performance.now();
+  const won = moving.every((x) => x.to === 0 || x.to === 100);
+  const length = won ? EQ_COUNT_WON : EQ_COUNT;
+  // the clock starts on the first frame drawn (a frame's time can be from before this was called)
+  let start = null;
   const step = (now) => {
-    const k = Math.min(1, (now - start) / EQ_COUNT);
+    if (start === null) start = now;
+    const k = Math.max(0, Math.min(1, (now - start) / length));
     const ease = 1 - (1 - k) ** 3;
     for (const x of moving) {
       const v = x.from + (x.to - x.from) * ease;
@@ -863,6 +874,21 @@ function animateOdds() {
 }
 
 // Away, where the cards would be: in red, with how long they have been away (kept up by tick)
+// A tourney in the top bar: the level and the time left on it, the blinds after it, and the pool
+// (with what each place gets, paid by place). short: the phone's bar, which has less room.
+function tourneyPills(tv, short = false) {
+  const lv = tv.levels[Math.min(tv.level, tv.levels.length - 1)];
+  const next = tv.levels[tv.level + 1];
+  const time = !tv.started || !next ? ''
+    : tv.levelEndsAt ? `<b data-level-ends="${tv.levelEndsAt}">--:--</b>` : tv.levelLeft !== null && tv.levelLeft !== undefined ? `<b>${clock(tv.levelLeft)}</b>` : '';
+  const title = `Level ${tv.level + 1} of ${tv.levels.length}, blinds ${fmt(lv[0])}/${fmt(lv[1])}${next ? `; then ${fmt(next[0])}/${fmt(next[1])}${tv.started ? '' : ` after ${tv.levelMinutes} minutes, from the first hand`}` : '; the last level'}. They go up between hands.`;
+  const pays = tv.payouts ? tv.payouts.map((a, i) => `${ordinal(i + 1)} ${fmt(a)}`).join(', ') : 'Chips are cash';
+  return `<span class="pill tour" title="${esc(title)}">${short ? 'L' : 'Level '}${tv.level + 1}${time ? ` ${time}` : ''}${next && !short ? ` <small>then ${fmt(next[0])}/${fmt(next[1])}</small>` : ''}</span>`
+    + `<span class="pill soft ${short ? 'sm-hide' : ''}" title="${esc(`Prize pool from ${tv.entrants} player${tv.entrants === 1 ? '' : 's'}: ${pays}`)}">Pool ${fmt(tv.pool)}</span>`;
+}
+const ordinal = (n) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th')}`;
+const myStack = (s) => (s.me.seated ? s.seats[s.me.seat]?.stack ?? 0 : 0);
+
 const awayMark = (since) => `<span class="awaymark" role="img" aria-label="Away"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 14.8A8 8 0 0 1 9.2 4.5a8 8 0 1 0 10.3 10.3z"/></svg><span>Away</span>${since ? `<b data-away-since="${since}">${clock(Math.max(1000, now() - since))}</b>` : ''}</span>`;
 const FOLD_MARK = '<span class="foldmark" aria-label="Folded"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg><span>Fold</span></span>';
 
@@ -1469,7 +1495,8 @@ function renderBottom(s) {
       my += out
         ? '<button class="btn primary" data-my="back">I’m back</button>'
         : '<button class="btn" data-my="sitout" title="Away from the next hand on. I’m back brings you back in.">Away</button>';
-      if (s.table.status !== 'ended') my += '<button class="btn" data-my="chips">Add chips</button>';
+      if (s.table.status !== 'ended' && !s.table.tourney) my += '<button class="btn" data-my="chips">Add chips</button>';
+      if (s.table.status !== 'ended' && s.table.tourney?.canBuyIn && myStack(s) === 0) my += '<button class="btn primary" data-my="rebuy">Rebuy</button>';
       if (s.table.settings.straddle && s.table.status !== 'ended') my += `<button class="btn tog ${s.me.straddle ? 'on' : ''}" data-my="straddle" aria-pressed="${!!s.me.straddle}" title="Post a straddle, twice the big blind, whenever you are under the gun">Straddle</button>`;
       if (s.me.leaveAt && !s.me.leaving) my += `<span class="status-line call30">Leaving in <b data-leave-at="${s.me.leaveAt}">--:--</b></span><button class="btn ghost" data-my="stay" title="Take back calling it">Stay</button>`;
       else if (!s.me.leaving && s.table.status !== 'ended') my += '<button class="btn" data-my="call30" title="Tell the table you are leaving in 30 minutes. A pot over 1,000 starts the 30 minutes again.">Call 30</button>';
@@ -1484,8 +1511,15 @@ function renderBottom(s) {
     if (s.me.requests.some((r) => r.type === 'chips')) my += '<span class="status-line">Chip request sent to the host</span>';
   } else if (s.me.requests.length) {
     my += '<span class="status-line">Waiting for the host to approve your seat</span><button class="btn ghost small" data-my="cancel">Cancel request</button>';
+  } else if (s.table.tourney && s.table.status !== 'ended' && s.table.tourney.myPlace) {
+    my += `<span class="status-line">You are out in ${ordinal(s.table.tourney.myPlace)} place${s.table.tourney.canBuyIn ? '. Pick an empty seat to buy in again.' : '.'}</span>`;
   } else if (s.table.status !== 'ended') {
     my += '<span class="status-line">You are watching. Pick an empty seat to play.</span>';
+  }
+  // a tourney that is over: the places, and what each was paid
+  const places = s.table.tourney?.places;
+  if (s.table.status === 'ended' && places?.length) {
+    my += `<span class="status-line t-places">${places.slice(0, 6).map((x) => `<b>${ordinal(x.place)}</b> ${esc(x.name)}${x.payout ? ` ${fmt(x.payout)}` : ''}`).join(', ')}</span>`;
   }
   els.mybar.innerHTML = my;
   renderActions(s);
@@ -1800,6 +1834,11 @@ function tick() {
     const left = Number(el.dataset.leaveAt) - t;
     el.textContent = left > 0 ? clock(left) : '0:00';
   }
+  for (const el of document.querySelectorAll('[data-level-ends]')) {
+    const left = Number(el.dataset.levelEnds) - t;
+    el.textContent = left > 0 ? clock(left) : 'next hand';
+    el.closest('.tour')?.classList.toggle('low', left < 60000);
+  }
   const clk = document.querySelector('[data-ends]');
   if (clk) {
     const left = Number(clk.dataset.ends) - t;
@@ -1949,6 +1988,7 @@ function bindEvents() {
       if (k === 'sitout') emit('sitout', { value: true });
       else if (k === 'back') emit('sitout', { value: false });
       else if (k === 'chips') D.chipsDialog();
+      else if (k === 'rebuy') D.rebuyNow();
       else if (k === 'stand') D.standDialog();
       else if (k === 'call30') emit('call30');
       else if (k === 'straddle') emit('straddle', { value: !app.state.me.straddle });

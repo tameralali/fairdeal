@@ -7,10 +7,11 @@ import { randomBytes } from 'node:crypto';
 import { io as ioc } from 'socket.io-client';
 import { createServer } from '../server/index.js';
 import { DELAYS } from '../server/table.js';
+import { TOURNEY_TIME } from '../server/tourney.js';
 import { verifyHandRecord, webCryptoAdapter } from '../shared/fairness.js';
 import { buildReplay } from '../shared/replay.js';
 
-Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, runBreak: 2, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10, away: 150 });
+Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, runBreak: 2, rebuy: 20, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10, away: 150 });
 
 let srv, url, dataDir, siteOwner;
 const wc = webCryptoAdapter();
@@ -591,6 +592,240 @@ test('an all-in runout waits before its first card and between cards, and longer
     ba.close();
     bb.close();
   } finally {
+    Object.assign(DELAYS, keep);
+  }
+});
+
+test('sitting down away, and the moment to rebuy: the next deal waits for a felted player, and goes on when they rebuy or say not now', { timeout: 90000 }, async () => {
+  const keep = { ...DELAYS };
+  Object.assign(DELAYS, { afterShowdown: 100, afterUncontested: 100, rebuy: 700 });
+  try {
+    const a = await admin('Rea', { fund: 500000 });
+    const b = await member('Bo', null, { fund: 500000 });
+    const c = await member('Cy', null, { fund: 500000 });
+    const { id } = await call('POST', '/api/tables', { settings: { autoApprove: true, autoStart: false, smallBlind: 5, bigBlind: 10, rit: { enabled: false, maxRuns: 2 } } }, a.token);
+    const bots = new Map();
+    for (const [u, name, seed] of [[a, 'Rea', 41], [b, 'Bo', 42], [c, 'Cy', 43]]) {
+      const bot = new Bot(name, u, seed);
+      bot.passive = true;
+      await bot.connect(id);
+      bots.set(u.user.id, bot);
+    }
+    const [ba, bb, bc] = [...bots.values()];
+    const t = srv.tables.get(id);
+    assert.ok((await ba.emit('seat:request', { seat: 0, buyIn: 1000 })).ok);
+    assert.ok((await bb.emit('seat:request', { seat: 1, buyIn: 1000 })).ok);
+    // sit while away: seated, sitting out, not dealt in until "I'm back"
+    assert.ok((await bc.emit('seat:request', { seat: 2, buyIn: 1000, away: true })).ok);
+    assert.equal(t.players.get(c.user.id).sittingOut, true, 'sat down away');
+    assert.ok((await ba.emit('host:start', {})).ok);
+    await until(() => t.hand && t.hand.phase === 'betting', 5000, 'the first hand');
+    assert.ok(!t.hand.byId(c.user.id), 'a player who sat down away is not dealt in');
+    assert.ok((await bc.emit('sitout', { value: false })).ok);
+    // every hand: Cy folds, the first of the others to act goes all in and the next calls
+    const play = async (h) => {
+      let shoved = false;
+      for (let i = 0; i < 20 && t.hand === h && h.phase === 'betting'; i++) {
+        const actor = h.actor();
+        if (!actor) { await new Promise((r) => setTimeout(r, 5)); continue; }
+        const type = actor.id === c.user.id ? 'fold' : shoved ? 'call' : 'allin';
+        const ack = await bots.get(actor.id).emit('action', { type });
+        if (ack.ok && type === 'allin') shoved = true;
+        if (!ack.ok) await bots.get(actor.id).emit('action', { type: 'call' });
+      }
+    };
+    const seen = [];
+    for (let n = 0; n < 60 && seen.length < 3; n++) {
+      await until(() => t.hand && t.hand.phase === 'betting', 8000, 'a hand');
+      const h = t.hand;
+      await play(h);
+      await until(() => t.hand !== h, 8000, 'the hand to end');
+      const out = [...t.players.values()].filter((p) => p.stack === 0 && !p.pendingChips);
+      if (!out.length) continue;
+      const f = out[0];
+      const fb = bots.get(f.userId);
+      assert.ok(t.rebuy && t.rebuy.ids.has(f.userId), 'a felted player gets the moment to rebuy');
+      const until1 = t.rebuy.until;
+      await until(() => fb.state.me.rebuyUntil === until1, 2000, 'the felted player to see it');
+      if (seen.length === 0) {
+        // nobody does anything: the deal waits for the moment to run out
+        await until(() => t.hand, 5000, 'the next hand');
+        assert.ok(Date.now() >= until1 - 20, 'the next deal waited for the felted player');
+        assert.ok(!t.hand.byId(f.userId));
+        await until(() => (fb.state.me.rebuyUntil ?? null) === null, 2000, 'the pop-up to go once the next hand is dealt');
+        assert.ok((await fb.emit('chips:request', { amount: 1000 })).ok, 'chips still come later, after the hand');
+        seen.push('waited');
+      } else if (seen.length === 1) {
+        // a rebuy straight away: dealt into the next hand, without waiting out the moment
+        assert.ok((await fb.emit('chips:request', { amount: 1000 })).ok);
+        await until(() => t.hand, 3000, 'the next hand');
+        assert.ok(Date.now() < until1 - 200, 'no waiting once they rebought');
+        assert.ok(t.hand.byId(f.userId), 'the rebuy is dealt in');
+        seen.push('rebought');
+      } else {
+        // not now: the deal goes on at once
+        assert.ok((await fb.emit('rebuy:skip', {})).ok);
+        await until(() => t.hand, 3000, 'the next hand');
+        assert.ok(Date.now() < until1 - 200, 'no waiting after not now');
+        assert.ok(!t.hand.byId(f.userId));
+        seen.push('skipped');
+      }
+    }
+    assert.deepEqual(seen, ['waited', 'rebought', 'skipped']);
+    for (const bot of bots.values()) bot.close();
+  } finally {
+    Object.assign(DELAYS, keep);
+  }
+});
+
+// Plays the hand in progress with everyone in it all in: the first to act shoves and the rest call.
+async function allInHand(t, bots, h) {
+  for (let i = 0; i < 30 && t.hand === h && h.phase === 'betting'; i++) {
+    const actor = h.actor();
+    if (!actor) { await new Promise((r) => setTimeout(r, 5)); continue; }
+    const bot = bots.get(actor.id);
+    let ack = await bot.emit('action', { type: 'allin' });
+    if (!ack.ok) ack = await bot.emit('action', { type: 'call' });
+    if (!ack.ok) await bot.emit('action', { type: 'check' });
+  }
+}
+
+test('a tourney paid by place: one buy-in whatever is sent, no adding chips, blinds up on the clock, players out in order, the pool paid by the split', { timeout: 120000 }, async () => {
+  const keep = { ...DELAYS };
+  const minute = TOURNEY_TIME.minute;
+  Object.assign(DELAYS, { afterShowdown: 30, afterUncontested: 30, rebuy: 30 });
+  TOURNEY_TIME.minute = 150; // a level lasts 150 ms
+  const bots = new Map();
+  try {
+    const a = await admin('Tia', { fund: 500000 });
+    const b = await member('Tob', null, { fund: 500000 });
+    const c = await member('Tec', null, { fund: 500000 });
+    const tourney = { on: true, buyIn: 1000, buyIns: 1, lastRebuyLevel: 0, levelMinutes: 1, levels: [[5, 10], [10, 20], [20, 40]], pay: 'place', split: [70, 30] };
+    const { id } = await call('POST', '/api/tables', { settings: { autoApprove: true, autoStart: false, rit: { enabled: false, maxRuns: 2 }, tourney } }, a.token);
+    const t = srv.tables.get(id);
+    assert.equal(t.settings.minBuyIn, 1000);
+    assert.equal(t.settings.maxBuyIn, 1000);
+    assert.deepEqual([t.settings.smallBlind, t.settings.bigBlind], [5, 10], 'the game starts at the first level');
+    const club = srv.clubs.data[a.clubId];
+    const before = new Map([a, b, c].map((u) => [u.user.id, club.members[u.user.id].balance]));
+    let seat = 0;
+    for (const [u, name, seed] of [[a, 'Tia', 51], [b, 'Tob', 52], [c, 'Tec', 53]]) {
+      const bot = new Bot(name, u, seed);
+      bot.passive = true;
+      await bot.connect(id);
+      bots.set(u.user.id, bot);
+      // whatever amount is sent, a tourney seat is the one buy-in
+      assert.ok((await bot.emit('seat:request', { seat: seat++, buyIn: 50 })).ok);
+    }
+    for (const p of t.players.values()) assert.equal(p.stack, 1000);
+    assert.equal(t.tourney.pool, 3000);
+    const add = await bots.get(a.user.id).emit('chips:request', { amount: 500 });
+    assert.ok(!add.ok && /out of chips/.test(add.error), 'no adding chips in a tourney');
+    assert.ok((await bots.get(a.user.id).emit('host:start', {})).ok);
+    let sawLevel = 0;
+    for (let n = 0; n < 80 && t.status !== 'ended'; n++) {
+      await until(() => t.status === 'ended' || (t.hand && t.hand.phase === 'betting'), 8000, 'a hand or the end');
+      if (t.status === 'ended') break;
+      sawLevel = Math.max(sawLevel, t.tourney.level);
+      assert.deepEqual([t.settings.smallBlind, t.settings.bigBlind], t.settings.tourney.levels[t.tourney.level], 'each hand is dealt at its level');
+      const h = t.hand;
+      if (n < 4) {
+        // the first hands are folded round while the clock moves the blinds up
+        await new Promise((r) => setTimeout(r, 90));
+        for (let i = 0; i < 10 && t.hand === h && h.phase === 'betting'; i++) {
+          const actor = h.actor();
+          if (!actor) { await new Promise((r) => setTimeout(r, 5)); continue; }
+          const ack = await bots.get(actor.id).emit('action', { type: 'fold' });
+          if (!ack.ok) await bots.get(actor.id).emit('action', { type: 'check' });
+        }
+      } else {
+        await allInHand(t, bots, h);
+      }
+      await until(() => t.hand !== h || t.status === 'ended', 8000, 'the hand to end');
+    }
+    assert.equal(t.status, 'ended', 'the tourney ends when one player has every chip');
+    assert.ok(sawLevel >= 1, 'the blinds went up on the clock');
+    const places = t.tourney.places;
+    assert.deepEqual(places.map((x) => x.place), [1, 2, 3]);
+    assert.deepEqual(places.map((x) => x.payout), [2100, 900, null], '70/30 of 3000');
+    // each player's money: the buy-in out, the payout in
+    for (const x of places) {
+      const change = club.members[x.userId].balance - before.get(x.userId);
+      assert.equal(change, (x.payout || 0) - 1000, `${x.name} paid by place`);
+    }
+  } finally {
+    for (const bot of bots.values()) bot.close();
+    Object.assign(DELAYS, keep);
+    TOURNEY_TIME.minute = minute;
+  }
+});
+
+test('a tourney with rebuys where chips are cash: a rebuy on no chips counts against the buy-ins, then out; buying in closes after its level; the last player cashes out every chip', { timeout: 120000 }, async () => {
+  const keep = { ...DELAYS };
+  Object.assign(DELAYS, { afterShowdown: 30, afterUncontested: 30, rebuy: 400 });
+  const bots = new Map();
+  try {
+    const a = await admin('Ria', { fund: 500000 });
+    const b = await member('Rob', null, { fund: 500000 });
+    const late = await member('Rue', null, { fund: 500000 });
+    const tourney = { on: true, buyIn: 1000, buyIns: 2, lastRebuyLevel: 2, levelMinutes: 30, levels: [[5, 10], [10, 20], [20, 40], [40, 80]], pay: 'chips' };
+    const { id } = await call('POST', '/api/tables', { settings: { autoApprove: true, autoStart: false, rit: { enabled: false, maxRuns: 2 }, tourney } }, a.token);
+    const t = srv.tables.get(id);
+    const club = srv.clubs.data[a.clubId];
+    const before = new Map([a, b].map((u) => [u.user.id, club.members[u.user.id].balance]));
+    for (const [u, name, seed, seat] of [[a, 'Ria', 61, 0], [b, 'Rob', 62, 1]]) {
+      const bot = new Bot(name, u, seed);
+      bot.passive = true;
+      await bot.connect(id);
+      bots.set(u.user.id, bot);
+      assert.ok((await bot.emit('seat:request', { seat, buyIn: 1000 })).ok);
+    }
+    assert.ok((await bots.get(a.user.id).emit('host:start', {})).ok);
+    let rebought = null;
+    for (let n = 0; n < 80 && t.status !== 'ended'; n++) {
+      try {
+        await until(() => t.status === 'ended' || (t.hand && t.hand.phase === 'betting'), 8000, 'a hand or the end');
+      } catch (e) {
+        console.log('STUCK', JSON.stringify({ status: t.status, phase: t.hand?.phase, waiting: t.waitingReason(), next: !!t.timers.next, rebuy: t.rebuy && [...t.rebuy.ids], players: [...t.players.values()].map((p) => [p.name, p.stack, p.pendingChips, p.sittingOut]), out: t.tourney.out, req: t.requests.length }));
+        throw e;
+      }
+      if (t.status === 'ended') break;
+      const h = t.hand;
+      await allInHand(t, bots, h);
+      await until(() => t.hand !== h || t.status === 'ended', 8000, 'the hand to end');
+      const broke = [...t.players.values()].find((p) => p.stack === 0);
+      if (broke && !rebought) {
+        // the first time out of chips: a second buy-in is left, so they can rebuy
+        assert.equal(t.tourneyBuyInsLeft(broke.userId), 1);
+        const ack = await bots.get(broke.userId).emit('chips:request', { amount: 1 });
+        assert.ok(ack.ok, 'a rebuy on no chips');
+        assert.equal(t.players.get(broke.userId).stack, 1000, 'for the one buy-in');
+        assert.equal(t.tourney.pool, 3000);
+        rebought = broke.userId;
+      }
+    }
+    assert.equal(t.status, 'ended');
+    assert.ok(rebought, 'someone rebought');
+    const winner = t.tourney.places[0];
+    // chips are cash: the winner cashed out all 3000; the money moved is the money bought in
+    const net = (u) => club.members[u].balance - before.get(u);
+    assert.equal(net(winner.userId) + net(t.tourney.places[1].userId), 0, 'no money made or lost');
+    assert.equal(net(winner.userId), winner.userId === rebought ? 1000 : 2000);
+
+    // buying in closes after its level: a new tourney table with the clock past level 2
+    const { id: id2 } = await call('POST', '/api/tables', { settings: { autoApprove: true, autoStart: false, tourney } }, a.token);
+    const t2 = srv.tables.get(id2);
+    t2.tourney.started = true;
+    t2.tourney.level = 2;
+    t2.tourney.levelEndsAt = Date.now() + 60000;
+    const lb = new Bot('Rue', late, 63);
+    lb.passive = true;
+    await lb.connect(id2);
+    const ack = await lb.emit('seat:request', { seat: 3, buyIn: 1000 });
+    assert.ok(!ack.ok && /closed/.test(ack.error), 'buying in is closed after the last level to buy in');
+    lb.close();
+  } finally {
+    for (const bot of bots.values()) bot.close();
     Object.assign(DELAYS, keep);
   }
 });

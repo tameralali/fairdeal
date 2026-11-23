@@ -145,6 +145,13 @@ function formatChips(t) {
 // the extras played at the game, as small tags
 function extrasHTML(t) {
   const out = [];
+  // a tourney: its buy-in, its level while it is played, and its winner once it is over
+  const tr = t.tourney;
+  if (tr) {
+    const tip = `Tourney: everyone buys in for ${boardMoney(tr.buyIn, t.decimals)}, the blinds go up on a clock, ${tr.pay === 'place' ? 'and the prize pool is paid by place' : 'and chips are cash'}`;
+    const where = t.status === 'ended' ? (tr.winner ? `, won by ${tr.winner}` : '') : t.handNumber ? `, level ${tr.level}` : '';
+    out.push(`<span class="gb-x tour" title="${esc(tip)}">Tourney ${esc(boardMoney(tr.buyIn, t.decimals))}${esc(where)}</span>`);
+  }
   const b = t.bomb;
   if (b) {
     const every = b.mode === 'every' || b.mode === 'both';

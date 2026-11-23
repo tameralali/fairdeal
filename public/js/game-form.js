@@ -242,6 +242,130 @@ export function bindBombFields(root) {
   show();
 }
 
+// ---------- tourney ----------
+// A tourney: everyone buys in for the same amount, which is their starting stack, a set number of
+// times at most, and the blinds go up on a clock (server/tourney.js has the rules). Standard steps
+// are about one and a half times the level before, as on the server.
+const STEP_TIMES = [1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 30, 40, 60, 80, 100, 120, 160, 200, 300, 400];
+export const standardLevels = (sb, bb) => STEP_TIMES.map((k) => [Math.max(1, Math.round(sb * k)), bb * k]);
+export const LEVEL_MINUTES = [5, 10, 12, 15, 20, 25, 30, 40, 45, 60];
+const BUY_INS = [[1, '1, no rebuys'], [2, '2'], [3, '3'], [4, '4'], [5, '5'], [0, 'No limit']];
+const DEFAULT_SPLIT = [65, 35];
+
+// "0.25/0.50" for a level; whole amounts without their .00
+function levelText([a, b], toIn) {
+  const short = (c) => { const x = toIn(c); return x.endsWith('.00') ? x.slice(0, -3) : x; };
+  return `${short(a)}/${short(b)}`;
+}
+export const levelsText = (levels, toIn) => levels.map((l) => levelText(l, toIn)).join('\n');
+
+// The blind levels from the box, one a line ("0.25/0.50"), as [[sb, bb], ...], or { error }.
+export function readLevels(text, parse) {
+  const lines = String(text || '').split(/[\n,;]+/).map((x) => x.trim()).filter(Boolean);
+  if (!lines.length) return { error: 'Add the blind levels, one a line, like 0.25/0.50.' };
+  if (lines.length > 40) return { error: 'A tourney can have at most 40 blind levels.' };
+  const out = [];
+  for (const [i, line] of lines.entries()) {
+    const m = line.match(/^([\d.,]+)\s*\/\s*([\d.,]+)$/);
+    const sb = m ? parse(m[1]) : NaN;
+    const bb = m ? parse(m[2]) : NaN;
+    if (!(sb > 0) || !(bb > 0)) return { error: `Level ${i + 1} should look like 0.25/0.50 (small blind/big blind).` };
+    if (sb > bb) return { error: `At level ${i + 1} the small blind is bigger than the big blind.` };
+    out.push([sb, bb]);
+  }
+  return { levels: out };
+}
+
+// The split from "65/35", or { error }.
+function readSplit(text) {
+  const parts = String(text || '').split(/[\s/,%]+/).filter(Boolean).map(Number);
+  if (!parts.length || parts.some((x) => !(x > 0))) return { error: 'Write the split by place like 65/35.' };
+  const sum = Math.round(parts.reduce((a, b) => a + b, 0) * 100) / 100;
+  if (sum !== 100) return { error: `The split by place has to add up to 100 (it adds up to ${sum}).` };
+  if (parts.length > 10) return { error: 'The prize pool can be split between 10 places at most.' };
+  return { split: parts };
+}
+
+// The fields. t: the tourney settings; money(name, value): an amount box; toIn: amount to box text;
+// locked: a game under way keeps its buy-in and how it pays.
+export function tourneyFieldsHTML(t, { money, toIn, locked = false }) {
+  const opt = (v, l, cur) => `<option value="${v}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(l)}</option>`;
+  const minutes = LEVEL_MINUTES.includes(t.levelMinutes) ? LEVEL_MINUTES : [...LEVEL_MINUTES, t.levelMinutes].sort((a, b) => a - b);
+  const lastOpts = [[0, 'Any level'], ...Array.from({ length: 12 }, (_, i) => [i + 1, `Level ${i + 1}`])];
+  if (t.lastRebuyLevel > 12) lastOpts.push([t.lastRebuyLevel, `Level ${t.lastRebuyLevel}`]);
+  const buyIns = BUY_INS.some(([v]) => v === t.buyIns) ? BUY_INS : [...BUY_INS, [t.buyIns, String(t.buyIns)]];
+  const split = (t.split && t.split.length ? t.split : DEFAULT_SPLIT).join('/');
+  return `<div class="stack" data-tourney-fields>
+      <div class="field-grid">
+        <label><span class="lbl">Buy-in</span>${locked ? `<input type="text" value="${esc(toIn(t.buyIn))}" disabled>` : money('tBuyIn', t.buyIn ? toIn(t.buyIn) : '')}</label>
+        <label><span class="lbl">Buy-ins per player</span><select name="tBuyIns">${buyIns.map(([v, l]) => opt(v, l, t.buyIns)).join('')}</select></label>
+        <label><span class="lbl">Buying in closes after</span><select name="tLastLevel">${lastOpts.map(([v, l]) => opt(v, l, t.lastRebuyLevel)).join('')}</select></label>
+        <label><span class="lbl">Minutes per level</span><select name="tMinutes">${minutes.map((m) => opt(m, `${m} minutes`, t.levelMinutes)).join('')}</select></label>
+        <label><span class="lbl">Pays</span><select name="tPay" ${locked ? 'disabled' : ''}>${opt('chips', 'Chips are cash', t.pay)}${opt('place', 'By place', t.pay)}</select></label>
+        <label data-split class="${t.pay === 'place' ? '' : 'hidden'}"><span class="lbl">Split by place (%)</span><input name="tSplit" type="text" inputmode="decimal" autocomplete="off" value="${esc(split)}" placeholder="65/35"></label>
+      </div>
+      <div class="t-levels">
+        <label class="grow"><span class="lbl">Blind levels, one a line</span><textarea name="tLevels" rows="7" spellcheck="false">${esc(levelsText(t.levels || [], toIn))}</textarea></label>
+        <button type="button" class="btn small" data-std-levels>Standard steps from the first level</button>
+      </div>
+      <p class="hint" data-tourney-hint></p>
+    </div>`;
+}
+
+// Reads the fields into tourney settings, or { error }. parse: box text to an amount.
+export function readTourney(root, parse, { locked = false } = {}) {
+  const v = (n) => root.querySelector(`[name=${n}]`);
+  const lv = readLevels(v('tLevels').value, parse);
+  if (lv.error) return { error: lv.error };
+  const t = {
+    on: true, buyIns: Number(v('tBuyIns').value), lastRebuyLevel: Number(v('tLastLevel').value),
+    levelMinutes: Number(v('tMinutes').value), levels: lv.levels,
+  };
+  if (!locked) {
+    t.buyIn = parse(v('tBuyIn').value);
+    if (!(t.buyIn > 0)) return { error: 'Enter the tourney buy-in, like 500.' };
+    t.pay = v('tPay').value;
+  }
+  if ((locked ? v('tPay').value : t.pay) === 'place') {
+    const sp = readSplit(v('tSplit').value);
+    if (sp.error) return { error: sp.error };
+    t.split = sp.split;
+  }
+  return { tourney: t };
+}
+
+// Keeps the hint, the split box and the standard steps button up to date.
+export function bindTourneyFields(root, { parse, toIn, fmt }) {
+  const box = root.querySelector('[data-tourney-fields]');
+  if (!box) return;
+  const v = (n) => root.querySelector(`[name=${n}]`);
+  const show = () => {
+    const pay = v('tPay').value;
+    root.querySelector('[data-split]').classList.toggle('hidden', pay !== 'place');
+    const lv = readLevels(v('tLevels').value, parse);
+    const buyIns = Number(v('tBuyIns').value);
+    const last = Number(v('tLastLevel').value);
+    const bits = [];
+    if (!lv.error) bits.push(`${lv.levels.length} levels of ${v('tMinutes').value} minutes, from ${levelText(lv.levels[0], toIn)} to ${levelText(lv.levels.at(-1), toIn)}; the blinds go up between hands.`);
+    bits.push(buyIns === 1 ? 'No rebuys.' : `${buyIns ? `Up to ${buyIns} buy-ins each` : 'Rebuys without a limit'}, ${last ? `until level ${last} ends` : 'all game'}.`);
+    bits.push(pay === 'place' ? `The buy-ins make a prize pool, paid ${v('tSplit').value || '65/35'} by place.` : 'Chips are cash: everyone cashes out the chips they hold.');
+    bits.push('It ends when one player has every chip.');
+    root.querySelector('[data-tourney-hint]').textContent = bits.join(' ');
+  };
+  box.addEventListener('input', show);
+  box.addEventListener('change', show);
+  box.querySelector('[data-std-levels]').addEventListener('click', () => {
+    const lv = readLevels(v('tLevels').value, parse);
+    const first = lv.error ? null : lv.levels[0];
+    const ta = v('tLevels');
+    if (!first) { toast('Put the first level on the first line, like 0.25/0.50', 'error'); ta.focus(); return; }
+    ta.value = levelsText(standardLevels(first[0], first[1]), toIn);
+    show();
+  });
+  show();
+  return show;
+}
+
 // ---------- seating rules ----------
 export const RATHOLE = [[0, 'Off'], [30, '30 minutes'], [60, '1 hour'], [120, '2 hours'], [180, '3 hours'], [240, '4 hours'], [-1, 'The rest of the game']];
 export const ratholeHint = 'A player who stands up and sits back down within this time has to bring at least the stack they left with, even above the maximum.';
@@ -301,6 +425,8 @@ function startFormHTML(values, presets, activeId) {
   const rat = s.ratholeMinutes ?? 0;
   const rats = RATHOLE.some(([m]) => m === rat) ? RATHOLE : [...RATHOLE, [rat, `${rat} minutes`]];
   const folded = s.revealPolicy || 'hidden';
+  const tour = { on: false, buyIn: 0, buyIns: 1, lastRebuyLevel: 0, levelMinutes: 15, pay: 'chips', split: [65, 35], ...(s.tourney || {}) };
+  if (!tour.levels || !tour.levels.length) tour.levels = standardLevels(s.smallBlind || 25, s.bigBlind || 50);
   const opt = (v, l, cur) => `<option value="${v}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(l)}</option>`;
   const money = (name, value, placeholder = '') => `<span class="money"><input name="${name}" type="text" inputmode="decimal" autocomplete="off" placeholder="${placeholder}" value="${value}"></span>`;
   const active = presets.find((p) => p.id === activeId);
@@ -318,6 +444,10 @@ function startFormHTML(values, presets, activeId) {
         <p class="hint">Players buy in from their club balance (plus any credit) and cash out back into it.</p>
       </section>
       <section class="sg-sec">
+        <div class="sg-kind"><h3>Game</h3>${seg('kind', [['cash', 'Cash game'], ['tourney', 'Tourney']], tour.on ? 'tourney' : 'cash')}</div>
+        <div class="${tour.on ? '' : 'hidden'}" data-tourney-sec>${tourneyFieldsHTML(tour, { money: (n, v) => money(n, v), toIn: (c) => toInput(c, dec) })}</div>
+      </section>
+      <section class="sg-sec">
         <h3>Format</h3>
         ${formatEditorHTML(format)}
         <p class="hint">An orbit ends when the button has gone around the table once.</p>
@@ -326,10 +456,10 @@ function startFormHTML(values, presets, activeId) {
         <div>
           <h3>Stakes and seats</h3>
           <div class="field-grid">
-            <label><span class="lbl">Small blind</span>${money('sb', amt('smallBlind', '0.25'))}</label>
-            <label><span class="lbl">Big blind</span>${money('bb', amt('bigBlind', '0.50'))}</label>
-            <label><span class="lbl">Minimum buy-in</span>${money('min', s.minBuyIn ? toInput(s.minBuyIn, dec) : '', 'Any')}</label>
-            <label><span class="lbl">Maximum stack</span>${money('max', s.maxBuyIn ? toInput(s.maxBuyIn, dec) : '', 'Any')}</label>
+            <label data-cash-only><span class="lbl">Small blind</span>${money('sb', amt('smallBlind', '0.25'))}</label>
+            <label data-cash-only><span class="lbl">Big blind</span>${money('bb', amt('bigBlind', '0.50'))}</label>
+            <label data-cash-only><span class="lbl">Minimum buy-in</span>${money('min', s.minBuyIn && !tour.on ? toInput(s.minBuyIn, dec) : '', 'Any')}</label>
+            <label data-cash-only><span class="lbl">Maximum stack</span>${money('max', s.maxBuyIn && !tour.on ? toInput(s.maxBuyIn, dec) : '', 'Any')}</label>
             <label><span class="lbl">Seats</span><select name="seats"><option selected>${s.maxPlayers || 8}</option></select></label>
             <label><span class="lbl">Players to start</span><select name="minPlayers"><option value="${s.minPlayers || 2}" selected>${s.minPlayers || 2}</option></select></label>
           </div>
@@ -357,7 +487,7 @@ function startFormHTML(values, presets, activeId) {
           <label><span class="lbl">Run it</span><select name="rit">${opt(4, 'Up to four times', ritVal)}${opt(3, 'Up to three times', ritVal)}${opt(2, 'Up to twice', ritVal)}${opt(1, 'Once only', ritVal)}</select></label>
           <p class="hint">${esc(ritText)}</p>
         </div>
-        <div>
+        <div data-cash-only>
           <h3>Coming back</h3>
           <label><span class="lbl">Rathole time</span><select name="rathole">${rats.map(([m, l]) => opt(m, l, rat)).join('')}</select></label>
           <p class="hint">${esc(ratholeHint)}</p>
@@ -399,24 +529,35 @@ function readStartForm(form) {
   const fmt = readFormat(form);
   const bad = formatProblem(fmt);
   if (bad) return { error: bad };
-  const sb = P('sb');
-  const bb = P('bb');
-  if (!(sb > 0) || !(bb > 0)) return { error: 'Enter the blinds in dollars, like 0.25 and 0.50.' };
-  if (bb < sb) return { error: 'The big blind should be at least the small blind.' };
-  for (const k of ['min', 'max']) if (el(k).value.trim() && !(P(k) > 0)) return { error: `Enter the ${k === 'min' ? 'minimum buy-in' : 'maximum stack'} in dollars, or leave it empty.` };
+  const tourneyOn = el('kind').value === 'tourney';
+  let tourney = { on: false };
+  let sb;
+  let bb;
+  if (tourneyOn) {
+    const t = readTourney(form, (x) => parseChips(x, 2));
+    if (t.error) return { error: t.error };
+    tourney = t.tourney;
+    [sb, bb] = tourney.levels[0];
+  } else {
+    sb = P('sb');
+    bb = P('bb');
+    if (!(sb > 0) || !(bb > 0)) return { error: 'Enter the blinds in dollars, like 0.25 and 0.50.' };
+    if (bb < sb) return { error: 'The big blind should be at least the small blind.' };
+    for (const k of ['min', 'max']) if (el(k).value.trim() && !(P(k) > 0)) return { error: `Enter the ${k === 'min' ? 'minimum buy-in' : 'maximum stack'} in dollars, or leave it empty.` };
+  }
   if (el('s72').value.trim() && !(P('s72') > 0)) return { error: 'Enter the 7-2 bounty in dollars, or leave it empty for no 7-2 game.' };
   const runs = Number(el('rit').value);
   return {
     name: el('tname').value.trim(),
     settings: {
       format: fmt,
-      smallBlind: sb, bigBlind: bb,
-      minBuyIn: el('min').value.trim() ? P('min') : 0, maxBuyIn: el('max').value.trim() ? P('max') : 0,
+      smallBlind: sb, bigBlind: bb, tourney,
+      minBuyIn: tourneyOn ? tourney.buyIn : el('min').value.trim() ? P('min') : 0, maxBuyIn: tourneyOn ? tourney.buyIn : el('max').value.trim() ? P('max') : 0,
       maxPlayers: Number(el('seats').value), minPlayers: Number(el('minPlayers').value),
       bombPot: readBomb(form),
       rit: { enabled: runs > 1, maxRuns: Math.max(2, runs) },
       decisionSeconds: Number(el('decisionSeconds').value), timeBanks: Number(el('timeBanks').value), timeBankRefill: Number(el('timeBankRefill').value),
-      sessionMinutes: Number(el('sessionMinutes').value), ratholeMinutes: Number(el('rathole').value),
+      sessionMinutes: Number(el('sessionMinutes').value), ratholeMinutes: tourneyOn ? 0 : Number(el('rathole').value),
       autoApprove: el('autoApprove').checked, autoStart: el('autoStart').checked,
       straddle: el('straddle').checked, sevenDeuce: el('s72').value.trim() ? P('s72') : 0,
       revealPolicy: el('folded').value,
@@ -461,6 +602,23 @@ export async function startGameDialog({ user, presetId = null } = {}) {
     const el = (n) => form.elements.namedItem(n);
     bindSegs(form);
     bindBombFields(form);
+    bindTourneyFields(form, { parse: (x) => parseChips(x, 2), toIn: (c) => toInput(c, 2) });
+    const kind = () => {
+      const on = el('kind').value === 'tourney';
+      dlg.$('[data-tourney-sec]').classList.toggle('hidden', !on);
+      form.querySelectorAll('[data-cash-only]').forEach((x) => x.classList.toggle('hidden', on));
+      // a tourney's first level starts from the cash game's blinds when the levels are still the standard ones
+      if (on) {
+        const ta = el('tLevels');
+        const sbv = parseChips(el('sb').value, 2);
+        const bbv = parseChips(el('bb').value, 2);
+        if (sbv > 0 && bbv >= sbv && !ta.dataset.touched) { ta.value = levelsText(standardLevels(sbv, bbv), (c) => toInput(c, 2)); ta.dispatchEvent(new Event('input', { bubbles: true })); }
+      }
+    };
+    el('tLevels').addEventListener('input', (e) => { if (e.isTrusted) e.target.dataset.touched = '1'; });
+    if (values.settings?.tourney?.on) el('tLevels').dataset.touched = '1';
+    el('kind').addEventListener('change', kind);
+    kind();
     const refit = () => {
       fitSeats(el('seats'), readFormat(form), readBomb(form), dlg.$('[data-seat-hint]'));
       fitMinPlayers(el('minPlayers'), Number(el('seats').value));

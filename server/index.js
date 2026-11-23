@@ -440,6 +440,7 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
     on('seat:request', (p) => T().requestSeat(u, p));
     on('seat:cancel', () => T().cancelRequest(u));
     on('chips:request', (p) => T().requestChips(u, p.amount));
+    on('rebuy:skip', () => T().skipRebuy(u));
     on('action', (p) => T().playerAction(u, p));
     on('rit', (p) => T().chooseRuns(u, p.runs));
     on('sitout', (p) => T().setSitOut(u, !!p.value));
