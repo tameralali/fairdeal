@@ -672,6 +672,16 @@ function resultInfo(h) {
   return info;
 }
 
+// A card's place in the deal. The first time a card shows up it gets a delay; the table is drawn again
+// often (each browser adding its input to the next seal, a message, a clock), and a card drawn again
+// before its delay is up waits out the rest of it, rather than turning up early: under a bomb pot's
+// burst, or partway through a deal.
+function dealDelay(key, ms) { app.sched?.set(key, Date.now() + ms); return ms; }
+function stillToCome(key) {
+  const at = app.sched?.get(key);
+  return at !== undefined && at > Date.now() ? Math.round(at - Date.now()) : null;
+}
+
 // True the first time a card shows up in this hand (and not when the page has just opened).
 function fresh(key) {
   if (app.seen.has(key)) return false;
@@ -967,7 +977,7 @@ function renderTable(s) {
   const t = s.table;
   const n = t.settings.maxPlayers;
   const h = s.hand;
-  if (h && app.seenHand !== h.number) { app.seenHand = h.number; app.seen = new Set(); }
+  if (h && app.seenHand !== h.number) { app.seenHand = h.number; app.seen = new Set(); app.sched = new Map(); }
   const nextGame = t.rotation ? t.rotation.current : t.settings.format[0].game;
   const holeN = GAME_TYPES[h ? h.gameType : nextGame]?.holeCount || 2;
   const rot0 = s.me.seat ?? 0;
@@ -1047,9 +1057,11 @@ function renderTable(s) {
       let cards = '';
       // a card seen face down before is turned over in place; a new card is dealt to the seat
       const motion = (key, back, i) => {
+        const wait = stillToCome(key);
+        if (wait !== null) return ['deal', `;--dd:${wait}ms`];
         if (!fresh(key)) return ['', ''];
         if (app.seen.has(back) && back !== key) return ['flip', ''];
-        const ms = dealAt(seat, i);
+        const ms = dealDelay(key, dealAt(seat, i));
         app.dealt.push({ ms, kind: 'deal' });
         return ['deal', `;--dd:${ms}ms`];
       };
@@ -1144,7 +1156,6 @@ function renderTable(s) {
   fitLabels();
   fitTags();
   fitBets();
-  fitMark();
   animateOdds();
 }
 
@@ -1335,17 +1346,6 @@ function fitBets() {
   });
 }
 
-// The Aquarium on the felt steps aside when boards or results reach down over it.
-function fitMark() {
-  const mark = els.felt.querySelector('.felt-mark');
-  if (!mark) return;
-  const k = els.center.firstElementChild ? els.center.getBoundingClientRect() : null;
-  const low = els.center.querySelector(':scope > .below');
-  const c = k && { top: k.top, bottom: Math.max(k.bottom, low ? low.getBoundingClientRect().bottom : 0) };
-  const m = mark.getBoundingClientRect();
-  mark.classList.toggle('hide', !!c && c.bottom > m.top + 2 && c.top < m.bottom);
-}
-
 function centerHTML(s, R) {
   const h = s.hand;
   const t = s.table;
@@ -1384,9 +1384,12 @@ function centerHTML(s, R) {
         const c = (boards[r] || [])[j];
         const under = r < n - 1 ? ' stk' : '';
         if (!c) { cards += `<span class="card slot${under}" aria-hidden="true" style="--r:${r}"></span>`; continue; }
-        const isNew = fresh(`r${r}${j}${c}`);
+        const key = `r${r}${j}${c}`;
+        const wait = stillToCome(key);
+        const isNew = wait !== null || fresh(key);
         let style = `--r:${r}`;
-        if (isNew) { const ms = boardStart + turned * 240; turned++; app.dealt.push({ ms, kind: 'board' }); style += `;--dd:${ms}ms`; }
+        if (wait !== null) style += `;--dd:${wait}ms`;
+        else if (isNew) { const ms = dealDelay(key, boardStart + turned * 240); turned++; app.dealt.push({ ms, kind: 'board' }); style += `;--dd:${ms}ms`; }
         // a shared card is lit when any run's winner used it
         const u = stack ? (used[r] ? [used[r]] : []) : used.filter(Boolean);
         const mark = u.length ? (u.some((x) => x.has(c)) ? 'win' : 'dim') : '';
@@ -1425,9 +1428,12 @@ function centerHTML(s, R) {
         if (!c) { slots += slotHTML(); continue; }
         // new cards are turned over one after another; a later run's copy of the shared cards just shows
         const shared = r > 0 && j < (h.sharedCount ?? 0);
-        const isNew = fresh(`r${i}${j}${c}`) && !shared;
+        const key = `r${i}${j}${c}`;
+        const wait = shared ? null : stillToCome(key);
+        const isNew = wait !== null || (fresh(key) && !shared);
         let style = '';
-        if (isNew) { const ms = boardStart + turned * 240; turned++; app.dealt.push({ ms, kind: 'board' }); style = `--dd:${ms}ms`; }
+        if (wait !== null) style = `--dd:${wait}ms`;
+        else if (isNew) { const ms = dealDelay(key, boardStart + turned * 240); turned++; app.dealt.push({ ms, kind: 'board' }); style = `--dd:${ms}ms`; }
         const cls = [isNew ? 'flip' : '', shared ? 'shared' : '', used ? (used.has(c) ? 'win' : 'dim') : ''].join(' ');
         slots += cardHTML(c, cls, style);
       }

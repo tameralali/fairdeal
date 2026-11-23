@@ -51,11 +51,32 @@ test('a straddle: under the gun posts twice the big blind, action starts after t
   assert.ok(steps.steps.some((x) => /straddles 20/.test(x.text || '')), 'the replayer says who straddled');
 });
 
-test('no straddle heads-up, from a short stack, in a bomb pot, or when not asked for', () => {
-  const two = hand([0, 1], { button: 0, straddleIds: ['p0', 'p1'] });
-  two.start();
-  assert.equal(two.currentBet, 10);
-  assert.equal(two.straddleIdx, null);
+test('heads-up the button straddles: it tops its small blind up to twice the big blind, and the big blind acts first', () => {
+  const h = hand([0, 1], { button: 0, straddleIds: ['p0', 'p1'] });
+  h.start();
+  assert.equal(h.byId('p0').bet, 20, 'twice the big blind in all');
+  assert.equal(h.currentBet, 20);
+  assert.equal(h.byId('p0').lastAction, 'Straddle');
+  assert.equal(h.actor().id, 'p1', 'the big blind acts first');
+  h.act('p1', { type: 'call' });
+  assert.equal(h.actor().id, 'p0', 'the button acts last before the flop');
+  assert.ok(h.legalActions('p0').canCheck, 'with the option');
+  h.act('p0', { type: 'check' });
+  for (let g = 0; g < 5 && h.phase === 'pending'; g++) h.advance();
+  assert.equal(h.street, 'flop');
+  assert.equal(h.actor().id, 'p1', 'after the flop the big blind acts first, as heads-up always');
+  assert.deepEqual(h.posts.map((x) => [x.id, x.a, x.amt]), [['p0', 'sb', 5], ['p1', 'bb', 10], ['p0', 'st', 15]]);
+  playOut(h);
+  const rec = { ...h.recordData(), handNumber: 1, players: h.recordData().players.map((p) => ({ ...p, userId: p.id })) };
+  const steps = buildReplay(rec);
+  assert.ok(steps.steps.some((x) => /straddles 20/.test(x.text || '')), 'the replayer gives the straddle in all');
+  // the big blind heads-up is not under the gun
+  const bb = hand([0, 1], { button: 0, straddleIds: ['p1'] });
+  bb.start();
+  assert.equal(bb.straddleIdx, null);
+});
+
+test('no straddle from a short stack, in a bomb pot, or when not asked for', () => {
   const short = hand([0, 1, 2, 3], { button: 0, straddleIds: ['p3'], stacks: { 3: 20 } });
   short.start();
   assert.equal(short.byId('p3').bet, 0, 'only with more than the straddle behind');

@@ -11,7 +11,7 @@ import { TOURNEY_TIME } from '../server/tourney.js';
 import { verifyHandRecord, webCryptoAdapter } from '../shared/fairness.js';
 import { buildReplay } from '../shared/replay.js';
 
-Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, runBreak: 2, rebuy: 20, bombIntro: 2, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10, away: 150 });
+Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, runBreak: 2, rebuy: 20, bombIntro: 2, bombDeal: 0, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10, away: 150 });
 
 let srv, url, dataDir, siteOwner;
 const wc = webCryptoAdapter();

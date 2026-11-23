@@ -24,8 +24,9 @@ export const DELAYS = {
   rit: 45000, ritSettle: 15000, autoAct: 400, away: 5000, call: 30 * 60000,
   // a player who loses their last chip has 10 seconds to rebuy before the next deal
   rebuy: 10000,
-  // a bomb pot's moment on the table (its animation) before the first player's clock starts
-  bombIntro: 2000,
+  // a bomb pot's moment on the table (its animation) before the first player's clock starts, and then
+  // its deal as the table animates it (bombDeal 0 skips that part)
+  bombIntro: 2000, bombDeal: 1,
 };
 // Each time bank is this many more seconds on the clock; a player uses one on their turn (Extra
 // time, or T), as many in a hand as they have left, and gets one back every timeBankRefill hands.
@@ -1574,13 +1575,18 @@ export class Table {
       }
       this.snapshot();
       if (hand.isBomb && DELAYS.bombIntro > 0) {
-        // a bomb pot: everyone sees it go off before the first player's clock starts
+        // a bomb pot: everyone sees it go off, then its cards dealt and the flop turned, before the first
+        // player's clock starts. The deal is timed as the table animates it: a card at a time, round the
+        // table, then the flop one card after another.
+        const cards = hand.players.length * (hand.game?.holeCount || 2);
+        const step = Math.max(45, Math.min(110, 1800 / cards));
+        const deal = DELAYS.bombDeal ? Math.round((cards - 1) * step + 350 + 740) : 0;
         for (const ev of hand.drainEvents()) this.log(ev.text, ev.kind);
         this.broadcast();
         this.timers.intro = setTimeout(this.safe(() => {
           this.timers.intro = null;
           if (this.hand === hand) this.afterHandChange();
-        }), DELAYS.bombIntro);
+        }), DELAYS.bombIntro + deal);
         return true;
       }
       this.afterHandChange();

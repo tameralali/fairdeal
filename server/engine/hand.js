@@ -171,11 +171,14 @@ export class Hand {
       this.minRaise = this.bb;
       // A straddle: the player under the gun, if they asked to, posts twice the big blind before the deal.
       // It is a live blind: action starts after them, and they act last before the flop, with the option
-      // to raise when nobody else has. Three players at least, and only with more than the straddle behind.
+      // to raise when nobody else has. Heads-up the player under the gun is the button, who has already
+      // posted the small blind: they put in the rest of twice the big blind (a button straddle), and the
+      // big blind acts first. Only with more than the straddle behind.
       const utg = (this.bbIdx + 1) % this.n;
       const sp = this.players[utg];
-      if (this.n >= 3 && this.straddleIds.includes(sp.id) && sp.stack > 2 * this.bb) {
-        this.postBlind(utg, 2 * this.bb, 'straddle', 'st');
+      const more = 2 * this.bb - sp.bet;
+      if (this.straddleIds.includes(sp.id) && more > 0 && sp.stack > more) {
+        this.postBlind(utg, more, 'straddle', 'st', sp.bet > 0 ? `straddles to ${this.fmt(2 * this.bb)}` : null);
         sp.lastAction = 'Straddle';
         this.straddleIdx = utg;
         this.currentBet = 2 * this.bb;
@@ -193,7 +196,8 @@ export class Hand {
     this.version++;
   }
 
-  postBlind(idx, amount, label, a) {
+  // text: what the log says in place of "posts a <label> of <amount>"
+  postBlind(idx, amount, label, a, text = null) {
     const p = this.players[idx];
     const amt = Math.min(p.stack, amount);
     p.stack -= amt;
@@ -201,7 +205,7 @@ export class Hand {
     p.committed += amt;
     if (p.stack === 0) p.allIn = true;
     this.posts.push({ id: p.id, a, amt, allIn: !!p.allIn });
-    this.log(`${p.name} posts a ${label} of ${this.fmt(amt)}${p.allIn ? ' and is all in' : ''}`);
+    this.log(`${p.name} ${text || `posts a ${label} of ${this.fmt(amt)}`}${p.allIn ? ' and is all in' : ''}`);
   }
 
   dealHoles() {
