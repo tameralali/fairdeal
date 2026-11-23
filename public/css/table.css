@@ -184,6 +184,11 @@ html, body { overflow: hidden; }
 }
 .awaymark svg { width: calc(var(--u) * 2.3); height: calc(var(--u) * 2.3); fill: #ff6b5e; }
 .awaymark b { font: 700 max(10px, calc(var(--u) * 1.1))/1 var(--num); font-variant-numeric: tabular-nums; color: rgb(255 140 130 / .85); }
+/* waiting for a hand to be dealt: the same, in a calm blue, with an hourglass */
+.waitmark { color: #6cb6ff; }
+.waitmark svg { fill: none; stroke: #6cb6ff; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.waitmark svg .sand { fill: #6cb6ff; stroke: none; }
+.waitmark b { color: rgb(150 200 255 / .85); }
 /* the last action, on the outside edge of the box */
 .plate .tag {
   position: absolute; z-index: 4; left: calc(var(--textx) + (var(--boxw) - var(--textx)) / 2); bottom: 0; transform: translate(-50%, calc(100% - 2px));

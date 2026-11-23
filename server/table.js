@@ -272,6 +272,7 @@ export class Table {
     this.unit = data.unit ?? null;
     this.leftWith = data.leftWith || {}; // userId -> { amount, at }: what a player stood up with, for the rathole rule
     this.tourney = { ...newTourneyState(), ...(data.tourney || {}) }; // where a tourney stands (tourney.js)
+    this.lastHandEndedAt = data.lastHandEndedAt || null; // for how long seated players have been waiting
     this.players = new Map();
     this.seats = Array(10).fill(null);
     for (const p of data.players || []) {
@@ -415,6 +416,7 @@ export class Table {
       buttonSeat: this.buttonSeat, revealedThrough: this.revealedThrough, session: this.session,
       rotation: this.rotation, handsSinceBomb: this.handsSinceBomb, ledger: this.ledger,
       requests: this.requests, endedAt: this.endedAt, logSeq: this.logSeq, unit: this.unit, leftWith: this.leftWith, tourney: this.tourney,
+      lastHandEndedAt: this.lastHandEndedAt,
       fairPending: this.fair ? savedCommitment(this.fair.pending) : undefined,
       players: [...this.players.values()].map((p) => ({
         userId: p.userId, name: p.name, seat: p.seat, stack: p.stack, sittingOut: p.sittingOut,
@@ -1829,6 +1831,7 @@ export class Table {
     this.hand = null;
     this.lastHand = hand;
     this.lastHandShown = true; // on the table until its result has had its time
+    this.lastHandEndedAt = Date.now();
     // sealed hands open their seen cards straight away; the folded ones stay sealed
     if (this.settings.revealPolicy !== 'session' || rec.fairness.version === FAIRNESS_V2) this.reveal(hand.number);
     // calling 30: a player who wins a pot over the line starts their 30 minutes again
@@ -2048,6 +2051,7 @@ export class Table {
       seats.push(p ? {
         seat: i, userId: p.userId, name: p.name, stack: p.stack, sittingOut: p.sittingOut, sitOutNext: p.sitOutNext, straddle: !!p.straddle,
         leaving: p.leaveAfterHand, leaveAt: p.leaveAt || null, connected: this.isConnected(uid), timeBanks: p.timeBanks || 0, awaySince: p.awaySince || null,
+        waitingSince: Math.max(p.joinedAt || 0, this.lastHandEndedAt || 0) || null,
         isHost: this.isHost(uid), pendingChips: p.pendingChips, away: p.away,
       } : null);
     }

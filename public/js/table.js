@@ -957,6 +957,9 @@ const awayTip = (s) => (s.hand && s.hand.phase !== 'done' && s.hand.players.some
   ? 'Fold this hand and sit out until I’m back' : 'Sit out until I’m back');
 const myStack = (s) => (s.me.seated ? s.seats[s.me.seat]?.stack ?? 0 : 0);
 
+// Waiting: seated, not away, and no hand being dealt (before the first one, or too few players), with
+// how long, in the same place as Away
+const waitMark = (since) => `<span class="awaymark waitmark" role="img" aria-label="Waiting"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3h11M6.5 21h11M7.8 3c0 4.4 4.2 5.6 4.2 9s-4.2 4.6-4.2 9M16.2 3c0 4.4-4.2 5.6-4.2 9s4.2 4.6 4.2 9"/><path class="sand" d="M9.4 19.6h5.2L12 16.8z"/></svg><span>Waiting</span>${since ? `<b data-wait-since="${since}">${clock(Math.max(1000, now() - since))}</b>` : ''}</span>`;
 const awayMark = (since) => `<span class="awaymark" role="img" aria-label="Away"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 14.8A8 8 0 0 1 9.2 4.5a8 8 0 1 0 10.3 10.3z"/></svg><span>Away</span>${since ? `<b data-away-since="${since}">${clock(Math.max(1000, now() - since))}</b>` : ''}</span>`;
 const FOLD_MARK = '<span class="foldmark" aria-label="Folded"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg><span>Fold</span></span>';
 
@@ -1090,6 +1093,7 @@ function renderTable(s) {
     // with how long, until they are back; cards still in a hand show first
     const away = info.away || info.sittingOut || info.sitOutNext;
     if (away && !fan.startsWith('<div class="fan')) fan = awayMark(info.awaySince);
+    else if (!away && !h && s.table.waiting && info.stack > 0 && !fan.startsWith('<div class="fan')) fan = waitMark(info.waitingSince);
 
     let tag = '';
     let tagCls = '';
@@ -1900,6 +1904,7 @@ function tick() {
     if (h && h.ritDeadline) rc.textContent = `${Math.max(0, Math.ceil((h.ritDeadline - t) / 1000))}s left`;
   }
   for (const el of document.querySelectorAll('[data-away-since]')) el.textContent = clock(Math.max(1000, t - Number(el.dataset.awaySince)));
+  for (const el of document.querySelectorAll('[data-wait-since]')) el.textContent = clock(Math.max(1000, t - Number(el.dataset.waitSince)));
   for (const el of document.querySelectorAll('[data-leave-at]')) {
     const left = Number(el.dataset.leaveAt) - t;
     el.textContent = left > 0 ? clock(left) : '0:00';
