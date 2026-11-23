@@ -22,7 +22,7 @@ html, body { overflow: hidden; }
 }
 .tb-title { display: flex; flex-direction: column; min-width: 0; }
 .tb-title strong { font-size: 16px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 32vw; }
-.tb-title a { font-size: 12.5px; color: var(--muted); text-decoration: none; }
+.tb-title a { font-size: 12.5px; color: var(--muted); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tb-title a:hover { color: var(--text); }
 .tb-game { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .pill { display: inline-flex; align-items: center; gap: 4px; font: 600 13px/1 var(--num); padding: 6px 10px 5px; border-radius: 999px; border: 1px solid transparent; background: var(--fill); color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -938,6 +938,14 @@ body.pn .pn-menu {
 .pn-it.warn { color: #ff9f0a; }
 .pn-it.warn b { font: 600 12px/1 var(--num); font-variant-numeric: tabular-nums; }
 .pn-it.hot { color: var(--text); }
+.pn-it.muted, .tb-sound.muted { color: #ff6961; }
+.tb-sound { width: 34px; padding: 0 !important; justify-content: center; }
+/* when the top bar is short of room the table name gives it up first, so the game, the blinds and the
+   level stay whole (down to a few letters of the name; in a tourney on a phone the name goes, so the level
+   and its clock have the room) */
+.tb-title { flex-shrink: 1000; min-width: var(--tmin, 72px); }
+@media (max-width: 440px) { .tb-tour .tb-title { display: none; } .tb-sound { width: 32px; } }
+.tb-sound svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
 .pn-it .pn-n { position: absolute; top: 5px; right: 10px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--danger); color: #fff; font: 700 11px/18px var(--ui); }
 /* top right: the game, the next game when they take turns, the blinds and the bomb pot; under them the
    rest of the rules, the sealed deck and the sound */
@@ -968,7 +976,6 @@ body.pn .pn-info {
 }
 .pn-tool:hover { color: var(--text); background: rgb(58 58 60 / .8); }
 .pn-tool:not(.seal) svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; }
-.pn-tool[aria-pressed="false"] { color: #ff6961; }
 /* the HUD button: its word, with a green dot under it while the HUD is on */
 .pn-tool.hud-tool { position: relative; }
 .pn-tool.hud-tool span { font: 800 13.5px/1 var(--ui); letter-spacing: .05em; margin-top: -5px; }

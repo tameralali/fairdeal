@@ -75,7 +75,7 @@ function connect() {
   socket.on('log:reset', (entries) => { app.logs = entries; renderLog(); renderPnChat(); });
   socket.on('log', (entries) => {
     // a ping: always for someone adding chips, and for someone else's message unless chat sounds are off
-    // (the speaker in the top bar still silences everything)
+    // (Sound, in the menu on the left or the speaker in the top bar, still silences everything)
     const others = entries.filter((e) => e.kind === 'chat' && (e.note ? e.by !== myId() : !!e.userId && e.userId !== myId()));
     if (others.length && soundOn() && (others.some((e) => e.note) || prefs.chatSound !== false)) playSound('ping');
     app.logs.push(...entries);
@@ -550,7 +550,7 @@ function renderTop(s) {
   els.top.innerHTML = `
     <span class="conn ${app.connected ? '' : 'off'}" title="${app.connected ? 'Connected' : 'Reconnecting'}"></span>
     <a class="wordmark" href="/" title="Back to the club">${wordmarkHTML(26)}</a>
-    <div class="tb-title"><strong>${esc(t.name)}</strong><a href="/">${esc(t.clubName || 'The Aquarium')}</a></div>
+    <div class="tb-title" style="--tmin:${Math.min(72, 9 * [...t.name].length)}px"><strong>${esc(t.name)}</strong><a href="/">${esc(t.clubName || 'The Aquarium')}</a></div>
     <div class="tb-game">
       <span class="pill brass" title="${esc(GAME_TYPES[game]?.name || '')}">${esc(gameShort(game))}</span>${dbNow ? '<span class="pill soft" title="Two boards, each pot split between them">Double board</span>' : ''}
       <span class="pill num">${fmt(st.smallBlind)}/${fmt(st.bigBlind)}</span>
@@ -567,11 +567,12 @@ function renderTop(s) {
       ${s.me.isHost && t.status === 'running' && !ends && !t.session?.clockAtFirstHand ? '<button class="btn small sm-hide" data-open="clock" title="Start a clock for this game">Clock</button>' : ''}
       ${s.me.isHost ? '<button class="btn small sm-hide" data-open="options">Options</button>' : ''}
       <button class="btn small sm-hide" data-open="ledger">Ledger</button>
-      <button class="btn small sm-hide" data-open="stats">Stats</button>
+      <button class="btn small sm-hide md-hide" data-open="stats">Stats</button>
       ${hudButton('btn small sm-hide md-hide hud-btn')}
       <button class="btn small sm-hide md-hide" data-open="hands">Hands</button>
       <button class="btn small sm-hide md-hide" data-open="look">Look</button>
       <button class="btn small sm-hide chat-btn ${els.drawer.classList.contains('collapsed') ? '' : 'primary'}" data-open="log">Chat<span class="unread" ${app.unread ? '' : 'hidden'}>${app.unread > 9 ? '9+' : app.unread || ''}</span></button>
+      ${soundButton('btn small tb-sound')}
       <button class="btn small menu-btn" data-open="menu">Menu</button>
     </div>`;
   tick();
@@ -594,6 +595,12 @@ const PN_ICON = {
   bomb: svg('<circle cx="10.5" cy="14" r="6.8" fill="currentColor" stroke="none"/><path d="M14.6 9.6l2.4-2.4M18.4 3.6v1.6M20.8 6.2h-1.6M20.4 4l-1.1 1.1"/>'),
 };
 const soundOn = () => !!(prefs.sound || prefs.tableSounds);
+// the one button that mutes every sound at the table (the game, your turn, the chat) and brings them back
+const soundButton = (cls, label = false) => {
+  const on = soundOn();
+  const tip = on ? 'Mute the game sounds' : 'Turn the game sounds back on';
+  return `<button type="button" class="${cls} snd ${on ? '' : 'muted'}" data-sound title="${tip}" ${label ? '' : `aria-label="${tip}"`}>${on ? PN_ICON.soundOn : PN_ICON.soundOff}${label ? `<span>${on ? 'Sound' : 'Muted'}</span>` : ''}</button>`;
+};
 // opens the HUD panel: the HUD on or off, and a switch for each player
 const hudButton = (cls) => {
   const on = S.hudOn();
@@ -631,6 +638,7 @@ function pnTopHTML(s, { game, dbNow, rot, status, ends, reqs }) {
   // the menu down the left, with what you can do in your seat under it
   const it = (attrs, icon, label, cls = '') => `<button type="button" class="pn-it ${cls}" ${attrs}>${PN_ICON[icon]}<span>${label}</span></button>`;
   let side = it('data-open="menu" title="Game options, ledger, stats, look and feel"', 'menu', 'Options') + it('data-open="hands" title="Hand history and the replayer"', 'hands', 'Hands');
+  side += soundButton('pn-it', true);
   if (reqs) side += `<button type="button" class="pn-it hot" data-open="requests" title="Players waiting for you">${PN_ICON.bell}<span>Requests</span><b class="pn-n">${reqs}</b></button>`;
   if (s.me.seated) {
     const out = s.me.sittingOut || s.me.sitOutNext;
@@ -643,7 +651,6 @@ function pnTopHTML(s, { game, dbNow, rot, status, ends, reqs }) {
     else if (!s.me.leaving && live) side += it('data-my="call30" title="Tell the table you are leaving in 30 minutes. A pot over 1,000 starts the 30 minutes again."', 'clock', 'Call 30');
     if (!s.me.leaving) side += it('data-my="stand" title="Stand up and leave your seat"', 'leave', 'Leave seat');
   }
-  const sound = soundOn();
   return `
     <a class="pn-brand wordmark" href="/" title="Back to the club"><span class="conn ${app.connected ? '' : 'off'}" title="${app.connected ? 'Connected' : 'Reconnecting'}"></span>${wordmarkHTML(24)}</a>
     <nav class="pn-menu" aria-label="Table">${side}</nav>
@@ -652,7 +659,6 @@ function pnTopHTML(s, { game, dbNow, rot, status, ends, reqs }) {
       <div class="pn-row2">${notes ? `<div class="pn-notes">${notes}</div>` : ''}
         <button type="button" class="pn-tool seal" data-open="fair" title="Hand #${f.handNumber} sealed, ${f.contributions} player input${f.contributions === 1 ? '' : 's'}. How the deal can be checked">${sealSVG(f.commitment, 34)}</button>
         ${hudButton('pn-tool hud-tool')}
-        <button type="button" class="pn-tool" data-sound aria-pressed="${sound}" title="${sound ? 'Turn the table sounds off' : 'Turn the table sounds on'}">${sound ? PN_ICON.soundOn : PN_ICON.soundOff}</button>
       </div>
     </div>`;
 }
