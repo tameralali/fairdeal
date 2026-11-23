@@ -198,18 +198,38 @@
 .linkish { appearance: none; background: none; border: 0; padding: 0; font: inherit; font-weight: 600; color: var(--text); cursor: pointer; text-align: left; }
 .linkish:not([disabled]):hover { color: var(--brass-hi); text-decoration: underline; text-underline-offset: 3px; }
 .linkish[disabled] { cursor: default; }
-/* phones: balances and ledger as stacked lists */
-.narrow-only { display: none; }
-.bal-list, .led-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
-.bal-item {
-  appearance: none; width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 12px; align-items: baseline;
-  padding: 11px 4px; background: none; border: 0; border-bottom: 1px solid var(--line-soft); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+/* the balances: the same table on every screen. Between 641 and 700px the credit column makes way for
+   the actions; on a phone the actions go (tapping a row opens the member, with them) and it tightens up */
+@media (min-width: 641px) and (max-width: 700px) { .balances .col-credit { display: none; } }
+@media (max-width: 640px) {
+  .balances .col-act, .balances .wide-lbl { display: none; }
+  .data.balances th, .data.balances th.n { padding: .4rem .3rem; font: 600 12.5px var(--ui); }
+  .balances td { padding: .55rem .3rem; }
+  .balances th:first-child, .balances td:first-child { padding-left: 4px; }
+  .balances th:last-child, .balances td:last-child { padding-right: 4px; }
+  .balances td.n { font-size: 14px; white-space: nowrap; }
+  .balances td.bal { font-size: 15px; }
+  .balances td.mem { line-height: 1.25; }
+  .balances td.mem .linkish { font-size: 15px; }
+  .balances td.mem .you { display: none; } /* your row is the tinted one */
+  .balances .role { display: inline-block; margin: 2px 0 0; padding: 1px 6px 2px; font-size: 11.5px; }
+  .balances tr[data-mrow] { cursor: pointer; }
+  .balances tr[data-mrow]:active td { background: rgb(255 255 255 / .04); }
+  .balances tr.me[data-mrow]:active td { background: var(--tint); }
+  /* amounts too long for the screen scroll sideways, with the names kept in view */
+  .balances th:first-child, .balances td.mem { position: sticky; left: 0; z-index: 1; background: var(--panel); }
+  .balances tr.me td.mem, .balances tr.me[data-mrow]:active td.mem { background: linear-gradient(var(--tint), var(--tint)), var(--panel); }
+  .balances tr[data-mrow]:active td.mem { background: linear-gradient(rgb(255 255 255 / .04), rgb(255 255 255 / .04)), var(--panel); }
 }
-.bal-item[disabled] { cursor: default; }
-.bal-item.me { background: var(--tint); }
-.bi-name { min-width: 0; }
-.bi-bal { font: 700 22px/1 var(--num); font-variant-numeric: tabular-nums; text-align: right; }
-.bi-sub { color: var(--muted); font-size: 13.5px; }
+@media (max-width: 380px) {
+  .data.balances th, .data.balances th.n { padding: .4rem .22rem; }
+  .balances td { padding: .55rem .22rem; }
+  .balances td.n { font-size: 13px; }
+  .balances td.bal { font-size: 14px; }
+}
+/* phones: the ledger as a stacked list */
+.narrow-only { display: none; }
+.led-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
 .led-list li { padding: 10px 2px; border-bottom: 1px solid var(--line-soft); }
 .li-top { display: flex; justify-content: space-between; gap: 10px; }
 .li-top span { font: 600 17px/1.2 var(--num); font-variant-numeric: tabular-nums; }

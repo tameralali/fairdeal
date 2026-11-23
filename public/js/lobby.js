@@ -392,20 +392,15 @@ async function clubHome(id) {
         <div><small>Owed to the club</small><b class="${c.totals.owed < 0 ? 'neg' : ''}">${F(c.totals.owed)}</b></div>
         <div><small>On tables now</small><b>${F(c.totals.onTables)}</b></div>
         <div><small>Net balance</small><b>${F(c.totals.balances)}</b></div></div>` : ''}
-      <div class="scroll-x wide-only"><table class="data balances"><thead><tr><th>Member</th><th class="n">Balance</th><th class="n hide-sm">Credit limit</th><th class="n">Available</th><th class="n hide-sm">On tables</th>${c.isManager ? '<th><span class="sr">Actions</span></th>' : ''}</tr></thead>
-      <tbody>${members.map((m) => `<tr class="${m.userId === me.user.id ? 'me' : ''}"><td><button type="button" class="linkish" data-mm="${esc(m.userId)}" ${c.isManager || m.userId === me.user.id ? '' : 'disabled'}>${esc(m.name)}</button>${m.userId === me.user.id ? ' <span class="faint">(you)</span>' : ''}${m.role !== 'member' ? ` <span class="role">${m.role === 'manager' ? 'admin' : m.role}</span>` : ''}${m.off ? ' <span class="off">access off</span>' : ''}</td>
-        <td class="n bal">${money(m.balance)}</td><td class="n hide-sm">${m.creditLimit === undefined ? '<span class="faint">-</span>' : F(m.creditLimit)}</td><td class="n">${m.available === undefined ? '<span class="faint">-</span>' : F(Math.max(0, m.available))}</td>
+      <div class="scroll-x"><table class="data balances"><thead><tr><th>Member</th><th class="n">Balance</th><th class="n col-credit">Credit<span class="wide-lbl"> limit</span></th><th class="n">Available</th><th class="n hide-sm">On tables</th>${c.isManager ? '<th class="col-act"><span class="sr">Actions</span></th>' : ''}</tr></thead>
+      <tbody>${members.map((m) => `<tr class="${m.userId === me.user.id ? 'me' : ''}" ${c.isManager || m.userId === me.user.id ? `data-mrow="${esc(m.userId)}"` : ''}><td class="mem"><button type="button" class="linkish" data-mm="${esc(m.userId)}" ${c.isManager || m.userId === me.user.id ? '' : 'disabled'}>${esc(m.name)}</button>${m.userId === me.user.id ? ' <span class="faint you">(you)</span>' : ''}${m.role !== 'member' ? ` <span class="role">${m.role === 'manager' ? 'admin' : m.role}</span>` : ''}${m.off ? ' <span class="off">access off</span>' : ''}</td>
+        <td class="n bal">${money(m.balance)}</td><td class="n col-credit">${m.creditLimit === undefined ? '<span class="faint">-</span>' : F(m.creditLimit)}</td><td class="n">${m.available === undefined ? '<span class="faint">-</span>' : F(Math.max(0, m.available))}</td>
         <td class="n hide-sm">${m.onTables === undefined ? '<span class="faint">-</span>' : F(m.onTables)}</td>
-        ${c.isManager ? `<td><div class="member-actions">
+        ${c.isManager ? `<td class="col-act"><div class="member-actions">
           <button class="btn tiny" data-m="chips" data-u="${esc(m.userId)}">Adjust</button>
           <button class="btn tiny" data-m="credit" data-u="${esc(m.userId)}">Credit</button>
           ${m.balance ? `<button class="btn tiny" data-m="settle" data-u="${esc(m.userId)}">Settle</button>` : ''}
         </div></td>` : ''}</tr>`).join('')}</tbody></table></div>
-      <ul class="bal-list narrow-only">${members.map((m) => `<li><button type="button" class="bal-item ${m.userId === me.user.id ? 'me' : ''}" data-mm="${esc(m.userId)}" ${c.isManager || m.userId === me.user.id ? '' : 'disabled'}>
-        <span class="bi-name"><b>${esc(m.name)}</b>${m.userId === me.user.id ? ' <span class="faint">(you)</span>' : ''}${m.role !== 'member' ? ` <span class="role">${m.role === 'manager' ? 'admin' : m.role}</span>` : ''}</span>
-        <span class="bi-bal">${money(m.balance)}</span>
-        ${m.balance === undefined ? '' : `<small class="bi-sub">Available ${F(Math.max(0, m.available))}${m.onTables ? `, ${F(m.onTables)} on tables` : ''}${m.creditLimit ? `, credit ${F(m.creditLimit)}` : ''}</small>`}
-      </button></li>`).join('')}</ul>
       ${!c.seeAll ? '<p class="hint">Only admins see other members’ balances.</p>' : ''}
     </section>
 
@@ -504,6 +499,13 @@ async function clubHome(id) {
     if (d) { post(`/members/${d.dataset.decide}/decide`, { approve: d.dataset.ok === '1' }); return; }
     const mm = e.target.closest('[data-mm]');
     if (mm) { const m = c.members.find((x) => x.userId === mm.dataset.mm); if (m) memberSheet(m); return; }
+    // on a phone the balances have no actions column: the whole row opens the member
+    const row = e.target.closest('tr[data-mrow]');
+    if (row && !e.target.closest('button, a') && matchMedia('(max-width: 640px)').matches) {
+      const m = c.members.find((x) => x.userId === row.dataset.mrow);
+      if (m) memberSheet(m);
+      return;
+    }
     if (e.target.closest('[data-more]')) { ui.ledgerLimit += 50; clubHome(id); return; }
     if (e.target.closest('[data-invite]')) return inviteDialog();
     if (e.target.closest('[data-settings]')) return settingsDialog();
