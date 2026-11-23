@@ -486,7 +486,7 @@ export function createServer({ dataDir = process.env.DATA_DIR || path.join(ROOT,
       store.flush();
       tables.close();
       for (const t of tables.tables.values()) {
-        for (const k of ['action', 'advance', 'next', 'rit']) clearTimeout(t.timers[k]);
+        for (const k of ['action', 'advance', 'next', 'rit', 'intro']) clearTimeout(t.timers[k]);
         for (const x of t.timers.session) clearTimeout(x);
       }
       return new Promise((resolve) => {

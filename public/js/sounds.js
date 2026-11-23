@@ -181,6 +181,15 @@ const SOUNDS = {
       tone(t + d, { freq: 3520, dur: 0.05, gain: 0.05 });
     }
   },
+  // a bomb pot: a fizzing fuse, then the bang and its rumble
+  bomb(t) {
+    burst(t, { dur: 0.6, freq: 5200, q: 0.6, gain: 0.05, to: 3600, attack: 0.05 });
+    const b = t + 0.66;
+    burst(b, { dur: 0.08, freq: 2600, q: 0.5, gain: 0.35, attack: 0.002 });
+    burst(b, { dur: 0.9, freq: 900, q: 0.5, gain: 0.55, to: 110, attack: 0.004, type: 'lowpass' });
+    tone(b, { freq: 120, drop: 40, dur: 0.9, gain: 0.5 });
+    tone(b + 0.02, { freq: 64, drop: 30, dur: 1.1, gain: 0.4 });
+  },
   // someone asks the host for a seat or chips
   request(t) {
     tone(t, { freq: 523.25, dur: 0.32, gain: 0.12, type: 'triangle' });

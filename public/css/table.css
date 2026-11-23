@@ -1151,3 +1151,64 @@ dialog.rebuy .dlg-head::after {
 .tb-tour .tb-title strong { max-width: 19vw !important; }
 @media (max-width: 370px) { .tb-tour .tb-title strong { max-width: 13vw !important; } .tb-tour .tb-game { gap: 4px; } }
 @media (max-width: 340px) { .tb-tour .tb-title { display: none; } }
+
+/* ---------- a bomb pot going off: the bomb drops and shakes (0 to 0.7 s), the burst and BOMB POT
+   punch in with sparks and a jolt of the felt, and it all fades by 2 s; then the cards are dealt ---------- */
+.bomb-intro { position: absolute; z-index: 40; pointer-events: none; animation: bi-out 2s linear forwards; }
+.bomb-intro .bi-svg { display: block; width: 100%; height: auto; overflow: visible; }
+.bomb-intro g { transform-box: fill-box; transform-origin: center; }
+.bomb-intro text { font-family: 'Arial Black', 'Arial Bold', -apple-system, 'Segoe UI Black', 'Helvetica Neue', sans-serif; font-weight: 900; font-size: 70px; letter-spacing: 2px; }
+.bomb-intro .bi-word { fill: #e5383b; stroke: #1b1b1f; stroke-width: 7px; paint-order: stroke; stroke-linejoin: round; }
+.bomb-intro .bi-shadow { fill: #1b1b1f; }
+.bomb-intro .bi-bomb { opacity: 0; animation: bi-bomb 2s cubic-bezier(.3, .7, .4, 1) forwards; }
+.bomb-intro .bi-fuse { animation: bi-fuse .12s linear infinite alternate; }
+.bomb-intro .bi-burst { opacity: 0; animation: bi-burst 2s cubic-bezier(.2, .9, .3, 1.3) forwards; }
+.bomb-intro .bi-text { opacity: 0; animation: bi-text 2s cubic-bezier(.2, .9, .3, 1.2) forwards; }
+.bomb-intro .bi-spark { opacity: 0; animation: bi-spark 2s ease-out forwards; animation-delay: var(--d, 0ms); }
+@keyframes bi-bomb {
+  0% { transform: translateY(-150px) scale(.5); opacity: 0; }
+  12% { transform: translateY(0) scale(1.06); opacity: 1; }
+  16% { transform: scale(.95); opacity: 1; }
+  20% { transform: scale(1) rotate(-7deg); opacity: 1; }
+  24% { transform: rotate(7deg); opacity: 1; }
+  28% { transform: rotate(-9deg) scale(1.05); opacity: 1; }
+  32% { transform: rotate(9deg) scale(1.1); opacity: 1; }
+  35% { transform: scale(1.3); opacity: 1; }
+  38%, 100% { transform: scale(1.7); opacity: 0; }
+}
+@keyframes bi-fuse { from { transform: scale(.7) rotate(0deg); } to { transform: scale(1.2) rotate(30deg); } }
+@keyframes bi-burst {
+  0%, 34% { transform: scale(0) rotate(-20deg); opacity: 0; }
+  42% { transform: scale(1.16) rotate(4deg); opacity: 1; }
+  48% { transform: scale(.97) rotate(-1deg); opacity: 1; }
+  54%, 82% { transform: scale(1) rotate(0deg); opacity: 1; }
+  100% { transform: scale(1.12); opacity: 0; }
+}
+@keyframes bi-text {
+  0%, 37% { transform: scale(2.4) rotate(-10deg); opacity: 0; }
+  45% { transform: scale(.92) rotate(-7deg); opacity: 1; }
+  52%, 82% { transform: scale(1) rotate(-6deg); opacity: 1; }
+  100% { transform: scale(1.1) rotate(-6deg); opacity: 0; }
+}
+@keyframes bi-spark {
+  0%, 35% { transform: translate(0, 0) scale(.3); opacity: 0; }
+  41% { opacity: 1; }
+  70% { transform: translate(var(--dx), var(--dy)) scale(1) rotate(90deg); opacity: 1; }
+  86%, 100% { transform: translate(var(--dx), var(--dy)) scale(.6) rotate(130deg); opacity: 0; }
+}
+@keyframes bi-out { 0%, 90% { opacity: 1; } 100% { opacity: 0; } }
+#felt.bi-jolt { animation: bi-jolt .38s ease-out .72s; }
+@keyframes bi-jolt {
+  0%, 100% { translate: 0 0; }
+  18% { translate: -7px 3px; }
+  36% { translate: 6px -4px; }
+  56% { translate: -4px 3px; }
+  76% { translate: 2px -1px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bomb-intro .bi-bomb, .bomb-intro .bi-spark { display: none; }
+  .bomb-intro .bi-burst, .bomb-intro .bi-text { animation: bi-fade 2s linear forwards; }
+  .bomb-intro .bi-text { transform: rotate(-6deg); }
+  #felt.bi-jolt { animation: none; }
+}
+@keyframes bi-fade { 0% { opacity: 0; } 12%, 85% { opacity: 1; } 100% { opacity: 0; } }

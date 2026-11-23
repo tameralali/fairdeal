@@ -11,7 +11,7 @@ import { TOURNEY_TIME } from '../server/tourney.js';
 import { verifyHandRecord, webCryptoAdapter } from '../shared/fairness.js';
 import { buildReplay } from '../shared/replay.js';
 
-Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, runBreak: 2, rebuy: 20, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10, away: 150 });
+Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, runBreak: 2, rebuy: 20, bombIntro: 2, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10, away: 150 });
 
 let srv, url, dataDir, siteOwner;
 const wc = webCryptoAdapter();
@@ -760,6 +760,44 @@ test('a finished hand leaves the felt once its result has had its time when no n
     const ivy = ba.state.seats.find((x) => x && x.userId === b.user.id);
     assert.ok(ivy.sittingOut, 'and the away player shows as away');
     assert.ok(ba.state.table.waiting, 'the table says why it is not dealing');
+  } finally {
+    for (const bot of bots) bot.close();
+    Object.assign(DELAYS, keep);
+  }
+});
+
+test('a bomb pot holds its first clock while it goes off: no turn and no actions until then', { timeout: 60000 }, async () => {
+  const keep = { ...DELAYS };
+  Object.assign(DELAYS, { bombIntro: 400 });
+  const bots = [];
+  try {
+    const a = await admin('Kai', { fund: 500000 });
+    const b = await member('Lou', null, { fund: 500000 });
+    const { id } = await call('POST', '/api/tables', { settings: { autoApprove: true, autoStart: false, smallBlind: 5, bigBlind: 10 } }, a.token);
+    const t = srv.tables.get(id);
+    for (const [u, name, seed, seat] of [[a, 'Kai', 91, 0], [b, 'Lou', 92, 1]]) {
+      const bot = new Bot(name, u, seed);
+      bot.passive = true;
+      await bot.connect(id);
+      bots.push(bot);
+      assert.ok((await bot.emit('seat:request', { seat, buyIn: 1000 })).ok);
+    }
+    const [ba, bb] = bots;
+    assert.ok((await ba.emit('host:bomb', { value: true })).ok);
+    assert.ok((await ba.emit('host:start', {})).ok);
+    await until(() => t.hand && t.hand.isBomb, 3000, 'a bomb pot');
+    const started = Date.now();
+    assert.ok(t.timers.intro, 'held while it goes off');
+    assert.equal(t.turn, null, 'nobody on the clock yet');
+    const actor = t.hand.actor().id === a.user.id ? ba : bb;
+    await until(() => actor.state.hand?.intro, 2000, 'the players to see it');
+    assert.equal(actor.state.hand.legal ?? null, null, 'no action buttons yet');
+    const early = await actor.emit('action', { type: 'check' });
+    assert.ok(!early.ok && /going off/.test(early.error), 'no acting yet');
+    await until(() => t.turn, 3000, 'the first clock');
+    assert.ok(Date.now() - started >= 300, 'the clock started once it had gone off');
+    await until(() => actor.state.hand?.legal, 2000, 'the action buttons');
+    assert.ok((await actor.emit('action', { type: 'check' })).ok);
   } finally {
     for (const bot of bots) bot.close();
     Object.assign(DELAYS, keep);

@@ -24,6 +24,8 @@ export const DELAYS = {
   rit: 45000, ritSettle: 15000, autoAct: 400, away: 5000, call: 30 * 60000,
   // a player who loses their last chip has 10 seconds to rebuy before the next deal
   rebuy: 10000,
+  // a bomb pot's moment on the table (its animation) before the first player's clock starts
+  bombIntro: 2000,
 };
 // Each time bank is this many more seconds on the clock; a player uses one on their turn (Extra
 // time, or T), as many in a hand as they have left, and gets one back every timeBankRefill hands.
@@ -490,7 +492,7 @@ export class Table {
 
   // Stops everything this table has running and tells every page on it that the game is gone.
   dispose() {
-    for (const k of ['action', 'advance', 'next', 'rit', 'call']) { clearTimeout(this.timers[k]); this.timers[k] = null; }
+    for (const k of ['action', 'advance', 'next', 'rit', 'call', 'intro']) { clearTimeout(this.timers[k]); this.timers[k] = null; }
     for (const t of this.timers.session || []) clearTimeout(t);
     this.timers.session = [];
     for (const t of this.awayTimers.values()) clearTimeout(t);
@@ -510,7 +512,7 @@ export class Table {
     const live = h && h.phase !== 'done';
     // a turn long past its time should have been played by now (its clock is kept after it goes off)
     const overdue = !!this.turn && Date.now() > this.turn.deadline + 15000;
-    const moving = live ? !overdue && !!(this.timers.action || this.timers.advance || this.timers.rit) : !!this.timers.next;
+    const moving = live ? !overdue && !!(this.timers.action || this.timers.advance || this.timers.rit || this.timers.intro) : !!this.timers.next;
     // a tourney waiting for players: once buying in closes, whoever is on no chips is out
     if (!live && !this.timers.next && this.tourneyCheck()) { this.endGame('tourney'); return; }
     if (moving || (!live && this.waitingReason())) { this.stalls = 0; return; }
@@ -1256,7 +1258,7 @@ export class Table {
       if (this.clubId) this.clubs.changed(this.clubId);
       return;
     }
-    for (const k of ['action', 'advance', 'next', 'rit', 'call']) { clearTimeout(this.timers[k]); this.timers[k] = null; }
+    for (const k of ['action', 'advance', 'next', 'rit', 'call', 'intro']) { clearTimeout(this.timers[k]); this.timers[k] = null; }
     this.rebuy = null;
     for (const t of this.timers.session) clearTimeout(t);
     this.timers.session = [];
@@ -1569,6 +1571,16 @@ export class Table {
         this.log(`The clock has started: this game ends in ${s.sessionMinutes} minutes`, 'game');
       }
       this.snapshot();
+      if (hand.isBomb && DELAYS.bombIntro > 0) {
+        // a bomb pot: everyone sees it go off before the first player's clock starts
+        for (const ev of hand.drainEvents()) this.log(ev.text, ev.kind);
+        this.broadcast();
+        this.timers.intro = setTimeout(this.safe(() => {
+          this.timers.intro = null;
+          if (this.hand === hand) this.afterHandChange();
+        }), DELAYS.bombIntro);
+        return true;
+      }
       this.afterHandChange();
       return true;
     } catch (e) {
@@ -1705,6 +1717,7 @@ export class Table {
   playerAction(user, action) {
     const hand = this.hand;
     if (!hand || hand.phase === 'done') fail('No hand in progress');
+    if (this.timers.intro) fail('The bomb pot is still going off');
     const actor = hand.actor();
     if (!actor || actor.id !== user.id) fail('It is not your turn');
     const type = String(action?.type || '');
@@ -2023,6 +2036,8 @@ export class Table {
       } : null;
       handState.ritDeadline = this.ritDeadline;
       handState.bombReason = this.handMeta && this.handMeta.bomb ? this.handMeta.bomb.reason : null;
+      // while a bomb pot goes off nobody acts yet
+      if (this.timers.intro && this.hand === hand) { handState.legal = null; handState.intro = true; }
       handState.canShow = !!(hand.phase === 'done' && hand.byId(userId) && !hand.byId(userId).shown);
       handState.sealed = (this.handMeta?.version || FAIRNESS_VERSION) === FAIRNESS_V2;
     }

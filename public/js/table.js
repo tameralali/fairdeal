@@ -142,6 +142,7 @@ function onState(s) {
   if (turnKey && turnKey !== app.turnKey && prefs.sound) playSound('turn');
   app.turnKey = turnKey;
   const h = s.hand;
+  if (prev && h?.isBomb && h.phase !== 'done' && (!prev.hand || prev.hand.number !== h.number)) bombIntro(h.number);
   if (h?.rit?.canChoose && h.rit.myChoice === null && prefs.autoRun !== 'ask' && app.autoRan !== h.number) {
     app.autoRan = h.number;
     emit('rit', { runs: prefs.autoRun === 'once' ? 1 : 'any' }, { quiet: true });
@@ -874,6 +875,70 @@ function animateOdds() {
 }
 
 // Away, where the cards would be: in red, with how long they have been away (kept up by tick)
+// ---------- a bomb pot going off ----------
+// Before a bomb pot is dealt: a lit bomb drops onto the felt, shakes and goes off in a comic burst with
+// BOMB POT across it, the felt jolting and sparks flying; then the cards come. The server holds the
+// first player's clock for as long (DELAYS.bombIntro).
+const BOMB_INTRO = 2000;
+// a jagged burst: n spikes, each a little different, squashed to sx by sy
+function burstPoints(n, rOut, rIn, sx = 1, sy = 1, jitter = 0) {
+  const pts = [];
+  for (let i = 0; i < n * 2; i++) {
+    const a = (Math.PI * i) / n - Math.PI / 2;
+    const r = i % 2 ? rIn : rOut * (1 - jitter / 2 + (((i * 37) % 11) / 10) * jitter);
+    pts.push(`${(Math.cos(a) * r * sx).toFixed(1)},${(Math.sin(a) * r * sy).toFixed(1)}`);
+  }
+  return pts.join(' ');
+}
+const BOMB_SVG = (() => {
+  const star = (r) => `<polygon points="${burstPoints(5, r, r * 0.45)}" fill="#ffc533" stroke="#1b1b1f" stroke-width="3" stroke-linejoin="round"/>`;
+  const sparks = [[-215, -100], [210, -112], [-240, 36], [236, 50], [-125, 142], [132, 138], [8, -170], [-40, 172]]
+    .map(([x, y], i) => `<g class="bi-spark" style="--dx:${x}px;--dy:${y}px;--d:${i * 22}ms">${star(12 + (i % 3) * 4)}</g>`).join('');
+  return `<svg class="bi-svg" viewBox="-260 -190 520 380" aria-hidden="true">
+    <defs><pattern id="bi-dots" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(20)"><circle cx="4.5" cy="4.5" r="1.7" fill="#d98e04"/></pattern></defs>
+    <g class="bi-sparks">${sparks}</g>
+    <g class="bi-burst">
+      <polygon points="${burstPoints(14, 150, 106, 1.36, 0.95, 0.36)}" fill="#ffd23f" stroke="#1b1b1f" stroke-width="7" stroke-linejoin="round"/>
+      <polygon points="${burstPoints(14, 150, 106, 1.36, 0.95, 0.36)}" fill="url(#bi-dots)" opacity=".45"/>
+      <polygon points="${burstPoints(11, 104, 80, 1.3, 0.88, 0.3)}" fill="#fff3c4" stroke="#1b1b1f" stroke-width="4" stroke-linejoin="round"/>
+    </g>
+    <g class="bi-text">
+      <text class="bi-shadow" x="6" y="30" text-anchor="middle">BOMB POT</text>
+      <text class="bi-word" x="0" y="24" text-anchor="middle">BOMB POT</text>
+    </g>
+    <g class="bi-bomb">
+      <circle r="40" fill="#1b1b1f"/>
+      <ellipse cx="-14" cy="-15" rx="11" ry="7" fill="#fff" opacity=".8" transform="rotate(-35 -14 -15)"/>
+      <rect x="-12" y="-52" width="24" height="15" rx="3" fill="#48484a" stroke="#1b1b1f" stroke-width="3"/>
+      <path d="M0 -52 C 6 -72, 26 -70, 30 -86" fill="none" stroke="#9c7a45" stroke-width="5" stroke-linecap="round"/>
+      <g transform="translate(30 -88)"><g class="bi-fuse">${star(14)}</g></g>
+    </g>
+  </svg>`;
+})();
+
+function bombIntro(n) {
+  app.bombIntro = { hand: n, until: Date.now() + BOMB_INTRO };
+  if (prefs.sound) playSound('bomb');
+  const area = els.area;
+  const feltEl = document.getElementById('felt');
+  if (!area || !feltEl) return;
+  area.querySelector('.bomb-intro')?.remove();
+  const f = feltEl.getBoundingClientRect();
+  const box = area.getBoundingClientRect();
+  const w = Math.min(f.width * 0.96, 540);
+  const el = document.createElement('div');
+  el.className = 'bomb-intro';
+  el.setAttribute('role', 'img');
+  el.setAttribute('aria-label', 'Bomb pot');
+  el.style.cssText = `left:${f.left - box.left + f.width / 2 - w / 2}px;top:${f.top - box.top + f.height / 2 - w * 0.365}px;width:${w}px`;
+  el.innerHTML = BOMB_SVG;
+  area.appendChild(el);
+  feltEl.classList.remove('bi-jolt');
+  void feltEl.offsetWidth; // start the jolt again
+  feltEl.classList.add('bi-jolt');
+  setTimeout(() => { el.remove(); feltEl.classList.remove('bi-jolt'); }, BOMB_INTRO + 80);
+}
+
 // A tourney in the top bar: the level and the time left on it, the blinds after it, and the pool
 // (with what each place gets, paid by place). short: the phone's bar, which has less room.
 function tourneyPills(tv, short = false) {
@@ -922,7 +987,8 @@ function renderTable(s) {
   const order = h ? h.players.map((p) => p.seat).sort((a, b) => a - b) : [];
   if (h) { const k = order.findIndex((st) => st > h.buttonSeat); if (k > 0) order.push(...order.splice(0, k)); }
   const step = order.length ? Math.max(45, Math.min(110, 1800 / (order.length * holeN))) : 0;
-  const dealAt = (seat, i) => Math.round((i * order.length + Math.max(0, order.indexOf(seat))) * step);
+  const intro = h && app.bombIntro?.hand === h.number ? Math.max(0, app.bombIntro.until - Date.now()) : 0;
+  const dealAt = (seat, i) => intro + Math.round((i * order.length + Math.max(0, order.indexOf(seat))) * step);
   const AW = els.area.clientWidth;
   const AH = els.area.clientHeight;
   app.dealt = [];
@@ -1007,7 +1073,8 @@ function renderTable(s) {
         extra += `<span class="eq ${eqTone(from)} n${count}" data-eq-seat="${seat}" data-from="${from}" data-to="${ch}" title="Chance of winning this run, from the cards on the table">${pctText(from)}</span>`;
       }
       const seeAll = p.hole && p.hole.length && p.hole.every(Boolean);
-      if (seeAll && (!p.folded || p.shown) && (isMe ? prefs.handStrength || !live : true) && (isMe || !live || chances || p.shown)) {
+      // (not while a bomb pot goes off: the cards are not dealt yet)
+      if (!intro && seeAll && (!p.folded || p.shown) && (isMe ? prefs.handStrength || !live : true) && (isMe || !live || chances || p.shown)) {
         // One label, over the bottom of the cards only: what the hand makes on the run being dealt (with
         // its number when it runs more than once). Once a hand run more than once is over, each runout
         // names its winner and their hand instead.
