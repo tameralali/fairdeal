@@ -10,7 +10,7 @@ import { createServer } from '../server/index.js';
 import { Store } from '../server/store.js';
 import { DELAYS } from '../server/table.js';
 
-Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, runBreak: 2, rebuy: 20, bombIntro: 2, bombDeal: 0, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10, away: 150 });
+Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, runBreak: 2, rebuy: 20, bombIntro: 2, bombDeal: 0, showdown: 2, afterPreflopFold: 10, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10, away: 150 });
 
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -145,7 +145,7 @@ test('a hand whose next step was lost is moved on by the watchdog; so is a game 
 
     // play the hand out, then lose the timer that deals the next one (a longer pause between hands
     // here, to catch it)
-    DELAYS.afterUncontested = DELAYS.afterShowdown = 3000;
+    DELAYS.afterPreflopFold = DELAYS.afterUncontested = DELAYS.afterShowdown = 3000;
     const actor = () => t.hand?.actor();
     await until(async () => {
       if (!t.hand || t.hand.phase === 'done' || t.hand.number > n) return true;
@@ -160,7 +160,7 @@ test('a hand whose next step was lost is moved on by the watchdog; so is a game 
     await until(() => !!t.timers.next, 3000, 'the next hand to be on its way');
     clearTimeout(t.timers.next);
     t.timers.next = null;
-    DELAYS.afterUncontested = DELAYS.afterShowdown = 10;
+    DELAYS.afterPreflopFold = DELAYS.afterUncontested = DELAYS.afterShowdown = 10;
     t.watchdog();
     assert.ok(!t.hand || t.hand.number === n, 'seen once: left alone');
     t.watchdog();

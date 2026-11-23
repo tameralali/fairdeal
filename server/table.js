@@ -14,13 +14,14 @@ import { DEFAULT_TOURNEY, TOURNEY_TIME, cleanTourney, standardLevels, payouts, o
 // after a hand, and for the run-it vote.
 const VOICE_MAX = 10; // each person in voice sends to each other one, so it stays small
 
-// After a hand the result stays up for 9 seconds, folded or shown down, before the next deal: PokerNow's
-// slowest showdown setting (it offers 3, 6 or 9), time to show cards or say something.
+// After a hand the result stays up for 9 seconds, folded after the flop or shown down, before the next
+// deal: PokerNow's slowest showdown setting (it offers 3, 6 or 9), time to show cards or say something.
+// A hand folded round before the flop moves on after 3.
 export const DELAYS = {
   // an all-in runout takes its time: 2.9 seconds before its first card, 2.95 between its cards, and
   // 1 more before each further run starts
   street: 1400, runoutFirst: 2900, runout: 2950, runBreak: 1000, showdown: 1400,
-  afterUncontested: 9000, afterShowdown: 9000, perExtraRun: 1500, perExtraBoard: 1000,
+  afterPreflopFold: 3000, afterUncontested: 9000, afterShowdown: 9000, perExtraRun: 1500, perExtraBoard: 1000,
   rit: 45000, ritSettle: 15000, autoAct: 400, away: 5000, call: 30 * 60000,
   // a player who loses their last chip has 10 seconds to rebuy before the next deal
   rebuy: 10000,
@@ -1871,11 +1872,23 @@ export class Table {
       return;
     }
     const extra = (hand.runCount - 1) * DELAYS.perExtraRun + (hand.bpr - 1) * DELAYS.perExtraBoard;
-    const delay = hand.results.uncontested ? DELAYS.afterUncontested : DELAYS.afterShowdown + extra;
+    // folded round before the flop: a short pause, unless the winner holds 7-2 with the 7-2 game on and
+    // may want to show it for the bounty
+    const preflop = hand.results.uncontested && hand.boards.every((b) => !b.length);
+    const delay = preflop && !this.sevenDeuceToShow(hand) ? DELAYS.afterPreflopFold
+      : hand.results.uncontested ? DELAYS.afterUncontested : DELAYS.afterShowdown + extra;
     this.nextAt = Date.now() + delay;
     this.startRebuy(hand);
     this.scheduleNext();
     this.broadcast();
+  }
+
+  // the winner of a Hold'em hand holds 7-2, not shown yet, with the 7-2 game on
+  sevenDeuceToShow(hand) {
+    if (!this.settings.sevenDeuce || hand.game?.holeCount !== 2) return false;
+    const w = (hand.results?.payouts || []).find((x) => x.amount > 0);
+    const p = w && hand.byId(w.id);
+    return !!p && !p.shown && p.hole.map((c) => c && c[0]).sort().join('') === '27';
   }
 
   buildRecord(hand, meta) {

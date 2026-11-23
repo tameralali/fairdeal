@@ -11,7 +11,7 @@ import { TOURNEY_TIME } from '../server/tourney.js';
 import { verifyHandRecord, webCryptoAdapter } from '../shared/fairness.js';
 import { buildReplay } from '../shared/replay.js';
 
-Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, runBreak: 2, rebuy: 20, bombIntro: 2, bombDeal: 0, showdown: 2, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10, away: 150 });
+Object.assign(DELAYS, { street: 2, runoutFirst: 2, runout: 2, runBreak: 2, rebuy: 20, bombIntro: 2, bombDeal: 0, showdown: 2, afterPreflopFold: 10, afterUncontested: 10, afterShowdown: 10, perExtraRun: 2, rit: 250, autoAct: 10, away: 150 });
 
 let srv, url, dataDir, siteOwner;
 const wc = webCryptoAdapter();
@@ -598,7 +598,7 @@ test('an all-in runout waits before its first card and between cards, and longer
 
 test('sitting down away, and the moment to rebuy: the next deal waits for a felted player, and goes on when they rebuy or say not now', { timeout: 90000 }, async () => {
   const keep = { ...DELAYS };
-  Object.assign(DELAYS, { afterShowdown: 100, afterUncontested: 100, rebuy: 700 });
+  Object.assign(DELAYS, { afterShowdown: 100, afterPreflopFold: 100, afterUncontested: 100, rebuy: 700 });
   try {
     const a = await admin('Rea', { fund: 500000 });
     const b = await member('Bo', null, { fund: 500000 });
@@ -680,7 +680,7 @@ test('sitting down away, and the moment to rebuy: the next deal waits for a felt
 
 test('away in a hand: you fold when it comes to you, even with a check free, or at once on your turn, then sit out', { timeout: 60000 }, async () => {
   const keep = { ...DELAYS };
-  Object.assign(DELAYS, { afterShowdown: 300, afterUncontested: 300 });
+  Object.assign(DELAYS, { afterShowdown: 300, afterPreflopFold: 300, afterUncontested: 300 });
   const bots = new Map();
   try {
     const a = await admin('Aya', { fund: 500000 });
@@ -732,7 +732,7 @@ test('away in a hand: you fold when it comes to you, even with a check free, or 
 
 test('a finished hand leaves the felt once its result has had its time when no next hand can be dealt, showing who is away', { timeout: 60000 }, async () => {
   const keep = { ...DELAYS };
-  Object.assign(DELAYS, { afterShowdown: 300, afterUncontested: 300 });
+  Object.assign(DELAYS, { afterShowdown: 300, afterPreflopFold: 300, afterUncontested: 300 });
   const bots = [];
   try {
     const a = await admin('Hal', { fund: 500000 });
@@ -804,6 +804,55 @@ test('a bomb pot holds its first clock while it goes off: no turn and no actions
   }
 });
 
+test('a hand folded before the flop moves on sooner than one that saw a flop, unless its winner holds 7-2 to show', { timeout: 60000 }, async () => {
+  const keep = { ...DELAYS };
+  Object.assign(DELAYS, { afterPreflopFold: 80, afterUncontested: 700, afterShowdown: 700 });
+  const bots = [];
+  try {
+    const a = await admin('Pia', { fund: 500000 });
+    const b = await member('Quin', null, { fund: 500000 });
+    const { id } = await call('POST', '/api/tables', { settings: { autoApprove: true, autoStart: false, smallBlind: 5, bigBlind: 10, sevenDeuce: 50 } }, a.token);
+    const t = srv.tables.get(id);
+    for (const [u, name, seed, seat] of [[a, 'Pia', 95, 0], [b, 'Quin', 96, 1]]) {
+      const bot = new Bot(name, u, seed);
+      bot.passive = true;
+      await bot.connect(id);
+      bots.push(bot);
+      assert.ok((await bot.emit('seat:request', { seat, buyIn: 1000 })).ok);
+    }
+    const byId = new Map([[a.user.id, bots[0]], [b.user.id, bots[1]]]);
+    assert.ok((await bots[0].emit('host:start', {})).ok);
+    const pause = async (play) => {
+      await until(() => t.hand && t.hand.phase === 'betting' && t.hand.actor(), 5000, 'a hand');
+      const h = t.hand;
+      await play(h);
+      await until(() => t.hand !== h, 5000, 'the hand to end');
+      const ended = Date.now();
+      await until(() => t.hand && t.hand !== h, 5000, 'the next hand');
+      return Date.now() - ended;
+    };
+    // folded straight away
+    const quick = await pause(async (h) => { assert.ok((await byId.get(h.actor().id).emit('action', { type: 'fold' })).ok); });
+    // called to the flop, then folded there
+    const slow = await pause(async (h) => {
+      assert.ok((await byId.get(h.actor().id).emit('action', { type: 'call' })).ok);
+      assert.ok((await byId.get(h.actor().id).emit('action', { type: 'check' })).ok);
+      await until(() => h.board.length === 3 && h.actor(), 3000, 'the flop');
+      assert.ok((await byId.get(h.actor().id).emit('action', { type: 'fold' })).ok);
+    });
+    assert.ok(quick < 400, `a fold before the flop moves on quickly (${quick} ms)`);
+    assert.ok(slow >= 650, `a hand that saw a flop keeps the full pause (${slow} ms)`);
+    // the 7-2 winner of a hand folded round before the flop keeps the full time to show
+    const fake = (hole, shown = false) => ({ game: { holeCount: 2 }, results: { payouts: [{ id: 'w', amount: 15 }] }, byId: () => ({ hole, shown }) });
+    assert.equal(t.sevenDeuceToShow(fake(['7h', '2c'])), true);
+    assert.equal(t.sevenDeuceToShow(fake(['7h', '2c'], true)), false, 'once shown, no need to wait');
+    assert.equal(t.sevenDeuceToShow(fake(['7h', '3c'])), false);
+  } finally {
+    for (const bot of bots) bot.close();
+    Object.assign(DELAYS, keep);
+  }
+});
+
 // Plays the hand in progress with everyone in it all in: the first to act shoves and the rest call.
 async function allInHand(t, bots, h) {
   for (let i = 0; i < 30 && t.hand === h && h.phase === 'betting'; i++) {
@@ -819,7 +868,7 @@ async function allInHand(t, bots, h) {
 test('a tourney paid by place: one buy-in whatever is sent, no adding chips, blinds up on the clock, players out in order, the pool paid by the split', { timeout: 120000 }, async () => {
   const keep = { ...DELAYS };
   const minute = TOURNEY_TIME.minute;
-  Object.assign(DELAYS, { afterShowdown: 30, afterUncontested: 30, rebuy: 30 });
+  Object.assign(DELAYS, { afterShowdown: 30, afterPreflopFold: 30, afterUncontested: 30, rebuy: 30 });
   TOURNEY_TIME.minute = 150; // a level lasts 150 ms
   const bots = new Map();
   try {
@@ -888,7 +937,7 @@ test('a tourney paid by place: one buy-in whatever is sent, no adding chips, bli
 
 test('a tourney with rebuys where chips are cash: a rebuy on no chips counts against the buy-ins, then out; buying in closes after its level; the last player cashes out every chip', { timeout: 120000 }, async () => {
   const keep = { ...DELAYS };
-  Object.assign(DELAYS, { afterShowdown: 30, afterUncontested: 30, rebuy: 400 });
+  Object.assign(DELAYS, { afterShowdown: 30, afterPreflopFold: 30, afterUncontested: 30, rebuy: 400 });
   const bots = new Map();
   try {
     const a = await admin('Ria', { fund: 500000 });
