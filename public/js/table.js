@@ -630,7 +630,7 @@ function pnTopHTML(s, { game, dbNow, rot, status, ends, reqs }) {
   if (s.me.seated) {
     const out = s.me.sittingOut || s.me.sitOutNext;
     const live = t.status !== 'ended';
-    side += out ? it('data-my="back" title="Back in from the next hand"', 'back', 'I’m back', 'go') : it('data-my="sitout" title="Away from the next hand on. I’m back brings you back in."', 'away', 'Away');
+    side += out ? it('data-my="back" title="Back in from the next hand"', 'back', 'I’m back', 'go') : it(`data-my="sitout" title="${awayTip(s)}"`, 'away', 'Away');
     if (live && !t.tourney) side += it('data-my="chips" title="Add chips to your stack"', 'chips', 'Add chips');
     if (live && t.tourney && t.tourney.canBuyIn && myStack(s) === 0) side += it('data-my="rebuy" title="Rebuy for the tourney buy-in"', 'chips', 'Rebuy', 'go');
     if (st.straddle && live) side += it(`data-my="straddle" aria-pressed="${!!s.me.straddle}" title="Post a straddle, twice the big blind, whenever you are under the gun"`, 'straddle', 'Straddle', s.me.straddle ? 'on' : '');
@@ -887,6 +887,9 @@ function tourneyPills(tv, short = false) {
     + `<span class="pill soft ${short ? 'sm-hide' : ''}" title="${esc(`Prize pool from ${tv.entrants} player${tv.entrants === 1 ? '' : 's'}: ${pays}`)}">Pool ${fmt(tv.pool)}</span>`;
 }
 const ordinal = (n) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th')}`;
+// Away folds you out of a hand you are still in, then you sit out until I'm back
+const awayTip = (s) => (s.hand && s.hand.phase !== 'done' && s.hand.players.some((p) => p.id === s.me.userId && !p.folded && !p.allIn)
+  ? 'Fold this hand and sit out until I’m back' : 'Sit out until I’m back');
 const myStack = (s) => (s.me.seated ? s.seats[s.me.seat]?.stack ?? 0 : 0);
 
 const awayMark = (since) => `<span class="awaymark" role="img" aria-label="Away"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 14.8A8 8 0 0 1 9.2 4.5a8 8 0 1 0 10.3 10.3z"/></svg><span>Away</span>${since ? `<b data-away-since="${since}">${clock(Math.max(1000, now() - since))}</b>` : ''}</span>`;
@@ -1494,7 +1497,7 @@ function renderBottom(s) {
       const out = s.me.sittingOut || s.me.sitOutNext;
       my += out
         ? '<button class="btn primary" data-my="back">I’m back</button>'
-        : '<button class="btn" data-my="sitout" title="Away from the next hand on. I’m back brings you back in.">Away</button>';
+        : `<button class="btn" data-my="sitout" title="${awayTip(s)}">Away</button>`;
       if (s.table.status !== 'ended' && !s.table.tourney) my += '<button class="btn" data-my="chips">Add chips</button>';
       if (s.table.status !== 'ended' && s.table.tourney?.canBuyIn && myStack(s) === 0) my += '<button class="btn primary" data-my="rebuy">Rebuy</button>';
       if (s.table.settings.straddle && s.table.status !== 'ended') my += `<button class="btn tog ${s.me.straddle ? 'on' : ''}" data-my="straddle" aria-pressed="${!!s.me.straddle}" title="Post a straddle, twice the big blind, whenever you are under the gun">Straddle</button>`;

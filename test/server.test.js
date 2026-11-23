@@ -678,6 +678,94 @@ test('sitting down away, and the moment to rebuy: the next deal waits for a felt
   }
 });
 
+test('away in a hand: you fold when it comes to you, even with a check free, or at once on your turn, then sit out', { timeout: 60000 }, async () => {
+  const keep = { ...DELAYS };
+  Object.assign(DELAYS, { afterShowdown: 300, afterUncontested: 300 });
+  const bots = new Map();
+  try {
+    const a = await admin('Aya', { fund: 500000 });
+    const b = await member('Ben', null, { fund: 500000 });
+    const c = await member('Cal', null, { fund: 500000 });
+    const { id } = await call('POST', '/api/tables', { settings: { autoApprove: true, autoStart: false, smallBlind: 5, bigBlind: 10 } }, a.token);
+    const t = srv.tables.get(id);
+    let seat = 0;
+    for (const [u, name, seed] of [[a, 'Aya', 71], [b, 'Ben', 72], [c, 'Cal', 73]]) {
+      const bot = new Bot(name, u, seed);
+      bot.passive = true;
+      await bot.connect(id);
+      bots.set(u.user.id, bot);
+      assert.ok((await bot.emit('seat:request', { seat: seat++, buyIn: 1000 })).ok);
+    }
+    assert.ok((await bots.get(a.user.id).emit('host:start', {})).ok);
+    await until(() => t.hand && t.hand.phase === 'betting' && t.hand.actor(), 5000, 'the first hand');
+    const h = t.hand;
+    // the first two to act limp; the third (the big blind, who could check) put themselves away first
+    const first = h.actor().id;
+    assert.ok((await bots.get(first).emit('action', { type: 'call' })).ok);
+    const second = h.actor().id;
+    const away = h.players.find((p) => p.id !== first && p.id !== second).id;
+    assert.ok((await bots.get(away).emit('sitout', { value: true })).ok);
+    assert.ok(!h.byId(away).folded, 'not their turn yet, so still in');
+    assert.ok((await bots.get(second).emit('action', { type: 'call' })).ok);
+    await until(() => h.byId(away).folded, 2000, 'the away player to fold');
+    assert.equal(h.byId(away).lastAction, 'Fold', 'a fold, not a check, though checking was free');
+    // the other two check it down
+    for (let i = 0; i < 20 && t.hand === h && h.phase !== 'done'; i++) {
+      const x = h.actor();
+      if (!x) { await new Promise((r) => setTimeout(r, 10)); continue; }
+      const ack = await bots.get(x.id).emit('action', { type: 'check' });
+      if (!ack.ok) await bots.get(x.id).emit('action', { type: 'call' });
+    }
+    await until(() => t.hand !== h, 8000, 'the hand to end');
+    await until(() => t.hand && t.hand.phase === 'betting' && t.hand.actor(), 5000, 'the next hand');
+    assert.ok(!t.hand.byId(away), 'then sitting out');
+    // on your turn: the fold is at once
+    const h2 = t.hand;
+    const actor = h2.actor().id;
+    assert.ok((await bots.get(actor).emit('sitout', { value: true })).ok);
+    assert.ok(h2.byId(actor).folded, 'away on your turn folds at once');
+  } finally {
+    for (const bot of bots.values()) bot.close();
+    Object.assign(DELAYS, keep);
+  }
+});
+
+test('a finished hand leaves the felt once its result has had its time when no next hand can be dealt, showing who is away', { timeout: 60000 }, async () => {
+  const keep = { ...DELAYS };
+  Object.assign(DELAYS, { afterShowdown: 300, afterUncontested: 300 });
+  const bots = [];
+  try {
+    const a = await admin('Hal', { fund: 500000 });
+    const b = await member('Ivy', null, { fund: 500000 });
+    const { id } = await call('POST', '/api/tables', { settings: { autoApprove: true, autoStart: false, smallBlind: 5, bigBlind: 10 } }, a.token);
+    const t = srv.tables.get(id);
+    for (const [u, name, seed, seat] of [[a, 'Hal', 81, 0], [b, 'Ivy', 82, 1]]) {
+      const bot = new Bot(name, u, seed);
+      bot.passive = true;
+      await bot.connect(id);
+      bots.push(bot);
+      assert.ok((await bot.emit('seat:request', { seat, buyIn: 1000 })).ok);
+    }
+    const [ba, bb] = bots;
+    assert.ok((await ba.emit('host:start', {})).ok);
+    await until(() => t.hand && t.hand.phase === 'betting' && t.hand.actor(), 5000, 'a hand');
+    const h = t.hand;
+    const actor = h.actor().id === a.user.id ? ba : bb;
+    assert.ok((await actor.emit('action', { type: 'fold' })).ok);
+    await until(() => t.hand === null, 3000, 'the hand to end');
+    await until(() => ba.state.hand && ba.state.hand.phase === 'done', 2000, 'the result on the felt');
+    // heads-up, one of them goes away after the hand: there can be no next hand
+    assert.ok((await bb.emit('sitout', { value: true })).ok);
+    await until(() => ba.state.hand === null, 3000, 'the felt to clear once the result had its time');
+    const ivy = ba.state.seats.find((x) => x && x.userId === b.user.id);
+    assert.ok(ivy.sittingOut, 'and the away player shows as away');
+    assert.ok(ba.state.table.waiting, 'the table says why it is not dealing');
+  } finally {
+    for (const bot of bots) bot.close();
+    Object.assign(DELAYS, keep);
+  }
+});
+
 // Plays the hand in progress with everyone in it all in: the first to act shoves and the rest call.
 async function allInHand(t, bots, h) {
   for (let i = 0; i < 30 && t.hand === h && h.phase === 'betting'; i++) {
@@ -802,6 +890,10 @@ test('a tourney with rebuys where chips are cash: a rebuy on no chips counts aga
         assert.equal(t.players.get(broke.userId).stack, 1000, 'for the one buy-in');
         assert.equal(t.tourney.pool, 3000);
         rebought = broke.userId;
+      } else if (broke && broke.userId !== rebought && t.canTourneyBuyIn(broke.userId)) {
+        // the other player out of chips, with a buy-in left: the tourney waits for them to rebuy or
+        // leave; leaving puts them out, which ends it
+        assert.ok((await bots.get(broke.userId).emit('standup', {})).ok);
       }
     }
     assert.equal(t.status, 'ended');

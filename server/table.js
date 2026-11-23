@@ -734,11 +734,15 @@ export class Table {
     const at = Math.max(this.nextAt || 0, r ? r.until : 0);
     this.timers.next = setTimeout(this.safe(() => {
       this.timers.next = null;
-      const had = this.rebuy;
       this.rebuy = null;
       const before = this.hand;
       this.maybeStartHand();
-      if (had && this.hand === before) this.broadcast();
+      // no next hand (too few players, someone away, paused): the result has had its time, so the
+      // felt clears and shows the table as it is, the away players' marks included
+      if (this.hand === before) {
+        this.lastHandShown = false;
+        this.broadcast();
+      }
     }), Math.max(0, at - Date.now()));
   }
 
@@ -973,23 +977,35 @@ export class Table {
     this.broadcast();
   }
 
+  // Away: out of the hand being played (they fold when it comes to them, at once if it is their turn,
+  // even with a check free), then sitting out until they say they are back.
   setSitOut(user, value) {
     const p = this.players.get(user.id);
     if (!p) fail('You are not seated');
+    let foldNow = false;
     if (value) {
-      if (this.inHand(p.userId)) p.sitOutNext = true;
-      else p.sittingOut = true;
+      if (this.inHand(p.userId)) {
+        p.sitOutNext = true;
+        p.foldOut = true;
+        foldNow = this.hand.actor()?.id === p.userId;
+      } else p.sittingOut = true;
       this.log(`${p.name} is away`, 'seat');
       this.rebuyDone(p.userId);
     } else {
       const was = p.sittingOut || p.sitOutNext;
       p.sittingOut = false;
       p.sitOutNext = false;
+      p.foldOut = false;
       p.away = false;
       if (was) this.log(`${p.name} is back`, 'seat');
       this.maybeStartHand();
     }
     this.snapshot();
+    if (foldNow) {
+      clearTimeout(this.timers.action);
+      this.autoAct(p.userId, false, true);
+      return;
+    }
     this.broadcast();
   }
 
@@ -1489,6 +1505,7 @@ export class Table {
     this.rebuy = null;
     for (const p of this.players.values()) {
       if (p.sitOutNext) { p.sittingOut = true; p.sitOutNext = false; }
+      p.foldOut = false;
     }
     if (this.tourneyCheck()) { this.endGame('tourney'); return false; }
     const eligible = this.eligiblePlayers();
@@ -1629,9 +1646,9 @@ export class Table {
     const p = this.players.get(actor.id);
     const now = Date.now();
     const hand = this.hand;
-    if (!p || p.leaveAfterHand || (p.away && !this.isConnected(actor.id) && !this.awayTimers.has(actor.id))) {
+    if (!p || p.leaveAfterHand || p.foldOut || (p.away && !this.isConnected(actor.id) && !this.awayTimers.has(actor.id))) {
       this.turn = { seat: actor.seat, userId: actor.id, deadline: now + DELAYS.autoAct, usingBank: false, version: hand.version, auto: true };
-      this.timers.action = setTimeout(this.safe(() => this.autoAct(actor.id, false)), DELAYS.autoAct);
+      this.timers.action = setTimeout(this.safe(() => this.autoAct(actor.id, false, !!p?.foldOut)), DELAYS.autoAct);
       return;
     }
     const ms = this.settings.decisionSeconds * 1000;
@@ -1668,7 +1685,8 @@ export class Table {
     this.broadcast();
   }
 
-  autoAct(userId, timedOut) {
+  // fold: a player who put themselves away folds; otherwise they check when it costs nothing
+  autoAct(userId, timedOut, fold = false) {
     const hand = this.hand;
     const actor = hand && hand.actor();
     if (!actor || actor.id !== userId) return;
@@ -1680,7 +1698,7 @@ export class Table {
       this.log(`${p.name} ran out of time and is away from the next hand`, 'seat');
     }
     this.turn = null;
-    hand.act(userId, { type: legal.canCheck ? 'check' : 'fold' });
+    hand.act(userId, { type: !fold && legal.canCheck ? 'check' : 'fold' });
     this.afterHandChange();
   }
 
@@ -1797,6 +1815,7 @@ export class Table {
     this.manager.stats.added();
     this.hand = null;
     this.lastHand = hand;
+    this.lastHandShown = true; // on the table until its result has had its time
     // sealed hands open their seen cards straight away; the folded ones stay sealed
     if (this.settings.revealPolicy !== 'session' || rec.fairness.version === FAIRNESS_V2) this.reveal(hand.number);
     // calling 30: a player who wins a pot over the line starts their 30 minutes again
@@ -1992,7 +2011,7 @@ export class Table {
 
   stateFor(userId) {
     const me = this.players.get(userId);
-    const hand = this.hand || this.lastHand;
+    const hand = this.hand || (this.lastHandShown ? this.lastHand : null);
     const isHost = this.isHost(userId);
     const pend = this.fair.pending;
     let handState = null;
