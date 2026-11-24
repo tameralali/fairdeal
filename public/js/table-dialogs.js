@@ -19,6 +19,7 @@ const open = {};
 export function onState(s) {
   if (open.requests) open.requests(s);
   if (open.players) open.players(s);
+  if (open.buyIn) open.buyIn(s);
   rebuyCheck(s);
 }
 
@@ -48,24 +49,55 @@ function maxBring(s, room) {
   if (room === null) return avail;
   return avail === null ? room : Math.min(room, avail);
 }
+// The most you can add to your stack: up to the maximum stack, counted from the chips you have now (in
+// a hand, what is behind: chips in the pot may come back, and what is added after the hand stops at the
+// maximum), less chips already on their way, and no more than you have.
+function maxAdd(s) {
+  const st = s.table.settings;
+  const seat = s.me.seated ? s.seats[s.me.seat] : null;
+  if (!seat) return null;
+  const h = s.hand;
+  const mine = h && h.phase !== 'done' ? h.players.find((p) => p.id === s.me.userId) : null;
+  const behind = mine ? mine.stack : seat.stack;
+  const room = st.maxBuyIn ? Math.max(0, st.maxBuyIn - behind - (seat.pendingChips || 0)) : null;
+  return maxBring(s, room);
+}
+const maxButton = (max) => `<button type="button" class="btn bi-max" data-max="${esc(inp(max || 0))}" ${max !== null && max > 0 ? '' : 'hidden'}>Max ${fmt(max || 0)}</button>`;
 function buyInBody({ value, max, facts, buttons, fixed = null }) {
+  // a default above what you can bring starts at the most you can
+  const start = max !== null && max > 0 && value > max ? max : value;
   return `<form class="buyin" novalidate>
       ${fixed !== null ? `<div class="bi-fixed"><small>Buy-in</small><b>${fmt(fixed)}</b></div>` : `<div class="bi-row">
-        <span class="bi-amt">${amountBox('amount', inp(value))}</span>
-        ${max !== null && max > 0 ? `<button type="button" class="btn bi-max" data-max="${esc(inp(max))}">Max ${fmt(max)}</button>` : ''}
+        <span class="bi-amt">${amountBox('amount', inp(start))}</span>
+        ${maxButton(max)}
       </div>`}
       ${facts}
       <p class="bad hidden" data-err></p>
       <div class="bi-go">${buttons}</div>
     </form>`;
 }
-function bindBuyIn(dlg) {
+// maxOf(state): the Max for this pop-up, worked out again as the table changes (a hand ends, chips
+// arrive, the balance moves) for as long as it is open
+function bindBuyIn(dlg, maxOf = null) {
   const f = dlg.$('form');
   const box = val(f, 'amount');
   box?.setAttribute('aria-label', 'Amount');
-  dlg.$('[data-max]')?.addEventListener('click', (e) => { box.value = e.currentTarget.dataset.max; box.focus(); });
+  const btn = dlg.$('[data-max]');
+  btn?.addEventListener('click', (e) => { box.value = e.currentTarget.dataset.max; box.focus(); });
   const err = (m) => { const el = dlg.$('[data-err]'); el.textContent = m || ''; el.classList.toggle('hidden', !m); };
   setTimeout(() => (box ? box.select() : f.querySelector('.btn.primary')?.focus()), 30);
+  if (btn && maxOf) {
+    const refresh = (s) => {
+      const max = maxOf(s);
+      // an amount still at the old Max (not typed over) follows it
+      if (box && box.value === btn.dataset.max && max !== null && max > 0) box.value = inp(max);
+      btn.hidden = !(max !== null && max > 0);
+      btn.dataset.max = inp(max || 0);
+      btn.textContent = `Max ${fmt(max || 0)}`;
+    };
+    open.buyIn = refresh;
+    dlg.el.addEventListener('close', () => { if (open.buyIn === refresh) open.buyIn = null; });
+  }
   return { f, box, err };
 }
 // a tourney: how many of your buy-ins are left, when there is a limit
@@ -101,7 +133,7 @@ export function seatDialog(seat) {
         <button class="btn" type="submit" data-away="1">${auto ? 'Sit while away' : 'Request seat while away'}</button>`,
     }),
   });
-  const { f, box, err } = bindBuyIn(dlg);
+  const { f, box, err } = bindBuyIn(dlg, (now) => maxBring(now, tableMax));
   const blocked = tourneyBlock(tv);
   if (blocked) { err(blocked); f.querySelectorAll('[type=submit]').forEach((b) => { b.disabled = true; }); }
   let away = false;
@@ -124,9 +156,7 @@ export function seatDialog(seat) {
 export function chipsDialog() {
   const s = app.state;
   const st = s.table.settings;
-  const seat = s.seats[s.me.seat];
-  const room = st.maxBuyIn ? Math.max(0, st.maxBuyIn - seat.stack - (seat.pendingChips || 0)) : null;
-  const max = maxBring(s, room);
+  const max = maxAdd(s);
   const auto = s.me.isHost || st.autoApprove;
   const dlg = dialog({
     title: 'Add chips', className: 'narrow',
@@ -135,7 +165,7 @@ export function chipsDialog() {
       buttons: `<button class="btn primary" type="submit">${auto ? 'Add chips' : 'Request chips'}</button>`,
     }),
   });
-  const { f, box, err } = bindBuyIn(dlg);
+  const { f, box, err } = bindBuyIn(dlg, maxAdd);
   f.addEventListener('submit', async (e) => {
     e.preventDefault();
     err('');
@@ -167,8 +197,7 @@ export function rebuyNow() {
 function rebuyDialog(s, until) {
   const st = s.table.settings;
   const tv = s.table.tourney;
-  const room = st.maxBuyIn ? Math.max(0, st.maxBuyIn - (s.me.pendingChips || 0)) : null;
-  const max = maxBring(s, room);
+  const max = maxAdd(s);
   const auto = s.me.isHost || st.autoApprove;
   const r = { until, quiet: false, dlg: null, timer: null };
   rebuy = r;
@@ -187,7 +216,7 @@ function rebuyDialog(s, until) {
     },
   });
   r.dlg = dlg;
-  const { f, box, err } = bindBuyIn(dlg);
+  const { f, box, err } = bindBuyIn(dlg, maxAdd);
   if (until) {
     const total = Math.max(1000, until - now());
     const tick = () => {

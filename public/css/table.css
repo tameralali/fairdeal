@@ -134,6 +134,19 @@ html, body { overflow: hidden; }
   transform-origin: 50% 150%;
 }
 .seat.me.folded .fan .card { filter: brightness(.5) saturate(.6); }
+/* a fold: the cards go face down toward the middle and fade, and the fold mark comes up where they
+   were (--te: how far into it the fold is, so drawing the table again does not start it over); your
+   own cards stay, darkening */
+.fan.toss .card { animation: toss-out .42s cubic-bezier(.5, 0, .9, .45) both; animation-delay: calc(var(--te, 0ms) * -1); }
+@keyframes toss-out { to { opacity: 0; translate: calc(var(--fx, 0px) * .5) calc(var(--fy, 0px) * .5); scale: .62; } }
+.foldmark.late { animation: fm-in .22s ease-out both; animation-delay: calc(.34s - var(--te, 0ms)); }
+@keyframes fm-in { from { opacity: 0; scale: .7; } }
+.seat.me.folded .fan.just .card { animation: dim-in .32s ease-out; animation-delay: calc(var(--te, 0ms) * -1); }
+@keyframes dim-in { from { filter: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .fan.toss { display: none; }
+  .foldmark.late, .seat.me.folded .fan.just .card { animation: none; }
+}
 .seat.out .plate { opacity: .6; }
 .seat.folded .who { opacity: .8; }
 /* chance of winning when everyone is all in: green for the favourite */
@@ -676,6 +689,12 @@ button.tb-clock:hover { border-color: var(--line); }
 /* called 30: a countdown by the name */
 .plate .c30 { position: absolute; z-index: 3; top: 0; right: calc(var(--u) * 1.2); transform: translateY(-58%); font: 800 max(10px, calc(var(--u) * 1.1))/1 var(--num); font-variant-numeric: tabular-nums; color: #1d1d1d; background: #f0c36b; border-radius: 999px; padding: .3em .6em .28em; white-space: nowrap; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); }
 .plate .c30 i { font-style: normal; }
+/* the countdown keeps to the edge of the box the last action does not use: under the box for a seat in
+   the top half (its action goes over it), over it for the others, and the other way round when the
+   action has had to go inside (fitTags) */
+.seat.upper .plate .c30 { top: auto; bottom: 0; transform: translateY(62%); }
+.seat.upper .plate:has(> .tag.in) .c30 { top: 0; bottom: auto; transform: translateY(-58%); }
+.seat:not(.upper) .plate:has(> .tag.in) .c30 { top: auto; bottom: 0; transform: translateY(62%); }
 .status-line.call30 b { font-variant-numeric: tabular-nums; color: #f0c36b; }
 
 /* ---------- the action bar keeps its places (renderActions) ---------- */
@@ -1122,6 +1141,7 @@ body.pn .drawer .seg, body.pn .drawer .chatbox { display: none; }
 .buyin .bi-amt { flex: 1; min-width: 0; }
 .buyin .bi-amt input { width: 100%; }
 .buyin .bi-max { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.buyin .bi-max[hidden] { display: none; }
 .buyin .bi-facts { display: flex; flex-wrap: wrap; gap: 8px 28px; margin-top: 14px; }
 .buyin .bi-facts small { display: block; color: var(--muted); font-size: 13px; }
 .buyin .bi-facts b { font: 600 17px/1.25 var(--num); font-variant-numeric: tabular-nums; }

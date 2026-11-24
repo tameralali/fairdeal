@@ -132,15 +132,58 @@ function setConn(ok) {
   if (dot) { dot.classList.toggle('off', !ok); dot.title = ok ? 'Connected' : 'Reconnecting'; }
 }
 
+// A hand that ends with a fold shows the fold first: the cards go in, with their sound, and only a
+// moment later does the pot go to the winner. States that come in meanwhile (each browser adding its
+// input to the next seal) wait for that moment, the newest one is drawn when it comes.
+const FOLD_HOLD = 700;
 function onState(s) {
-  const first = !app.state;
+  const hold = app.hold;
+  if (hold) {
+    if (s.hand && s.hand.number === hold.n) {
+      hold.next = s;
+      app.offset = s.serverNow - Date.now();
+      app.fair.onState(s);
+      return;
+    }
+    clearTimeout(hold.timer);
+    app.hold = null;
+  }
   const prev = app.state;
+  const held = foldFirst(prev, s);
+  if (!held) { show(s, prev); return; }
+  app.offset = s.serverNow - Date.now();
+  app.fair.onState(s);
+  show(held, prev, true);
+  app.hold = {
+    n: s.hand.number, next: s,
+    timer: setTimeout(() => { const h = app.hold; app.hold = null; if (h) show(h.next, app.state); }, FOLD_HOLD),
+  };
+}
+
+// The table as it was just before a hand ended with a fold, with that fold made: nobody to act,
+// the bets still out and no winner yet. Null when the hand did not just end that way.
+function foldFirst(prev, s) {
+  const was = prev && prev.hand;
+  const h = s.hand;
+  if (!was || !h || was.number !== h.number || was.phase === 'done' || h.phase !== 'done' || !h.results?.uncontested) return null;
+  const before = new Map(was.players.map((p) => [p.seat, p]));
+  const folds = new Set(h.players.filter((p) => p.folded && before.get(p.seat) && !before.get(p.seat).folded).map((p) => p.seat));
+  if (!folds.size) return null;
+  const view = structuredClone(prev);
+  for (const p of view.hand.players) if (folds.has(p.seat)) { p.folded = true; p.lastAction = 'Fold'; }
+  Object.assign(view.hand, { actorSeat: null, legal: null, turn: null });
+  return view;
+}
+
+// held: the moment of a fold before the result (foldFirst), drawn and sounded like any state, while
+// the clock and the seal go by the real one
+function show(s, prev, held = false) {
+  const first = !prev;
   // cards already on the table when the page opens are not dealt again
   app.quietDeal = first;
   app.state = s;
-  app.offset = s.serverNow - Date.now();
+  if (!held) { app.offset = s.serverNow - Date.now(); app.fair.onState(s); }
   app.dec = s.table.decimals;
-  app.fair.onState(s);
   const L = s.hand?.legal;
   const turnKey = L ? `${s.hand.number}|${s.hand.street}|${L.currentBet}|${L.toCall}` : null;
   if (turnKey && turnKey !== app.turnKey && prefs.sound) playSound('turn');
@@ -222,7 +265,11 @@ function tableSounds(prev, s) {
     playSound(kind, delay);
     delay += 0.09;
   }
-  if (h.phase === 'done' && was.phase !== 'done' && h.results) playSound('win', 0.12);
+  if (h.phase === 'done' && was.phase !== 'done' && h.results) {
+    playSound('win', 0.12);
+    // you won it, all of the pot or part of it: a bright ding over the sweep, as on PokerNow
+    if (h.results.payouts.some((x) => x.id === s.me.userId && x.amount > 0)) playSound('won', 0.2);
+  }
 }
 
 // Your own action sounds the moment you press it, not a round trip later when the table answers.
@@ -692,6 +739,22 @@ function stillToCome(key) {
   return at !== undefined && at > Date.now() ? Math.round(at - Date.now()) : null;
 }
 
+// How far into its fold a seat is, in ms, while the cards are still going in and the fold mark coming
+// up (table.css: .fan.toss and .foldmark.late); null once that is over, or for a fold already made when
+// the page opened. Like a card's deal, it goes on from where it was when the table is drawn again.
+const TOSS_MS = 560;
+function tossInto(seat) {
+  const key = `fold${seat}`;
+  let at = app.sched?.get(key);
+  if (at === undefined) {
+    if (!fresh(key)) return null;
+    at = Date.now();
+    app.sched?.set(key, at);
+  }
+  const into = Date.now() - at;
+  return into < TOSS_MS ? into : null;
+}
+
 // True the first time a card shows up in this hand (and not when the page has just opened).
 function fresh(key) {
   if (app.seen.has(key)) return false;
@@ -1088,9 +1151,15 @@ function renderTable(s) {
       } else if (!p.folded) {
         cards = Array.from({ length: count }, (_, i) => { const [m, st] = motion(`b${seat}${i}`, `b${seat}${i}`, i); return backHTML(m, `--i:${i}${st}`); }).join('');
       }
+      // a fold just now: someone else's cards go face down toward the middle and the fold mark comes up
+      // where they were; your own stay, darkening
+      const into = p.folded && !(info.away || info.sittingOut || info.sitOutNext) ? tossInto(seat) : null;
+      const toss = into !== null && !cards ? Array.from({ length: count }, (_, i) => backHTML('', `--i:${i}`)).join('') : '';
       const fx = ((50 - g.x) / 100) * AW;
       const fy = ((47.5 - g.y) / 100) * AH;
-      if (cards) fan = `<div class="fan n${count}" style="--fx:${fx.toFixed(0)}px;--fy:${fy.toFixed(0)}px">${cards}</div>`;
+      const at = `--fx:${fx.toFixed(0)}px;--fy:${fy.toFixed(0)}px${into !== null ? `;--te:${into}ms` : ''}`;
+      if (cards) fan = `<div class="fan n${count}${into !== null ? ' just' : ''}" style="${at}">${cards}</div>`;
+      else if (toss) fan = `<div class="fan n${count} toss" style="${at}" aria-hidden="true">${toss}</div>${FOLD_MARK.replace('class="foldmark"', `class="foldmark late" style="--te:${into}ms"`)}`;
       else if (p.folded) fan = FOLD_MARK;
       const ch = chances && chances.get(seat);
       if (ch !== undefined && ch !== null) {
@@ -1275,7 +1344,7 @@ function fitTags() {
   if (!tags.length) return;
   const hit = (a, c) => a.left < c.right - 1 && c.left < a.right - 1 && a.top < c.bottom - 1 && c.top < a.bottom - 1;
   const rectsOf = (x, sel) => [...x.querySelectorAll(sel)].map((el) => el.getBoundingClientRect()).filter((r) => r.width && r.height);
-  const parts = seats.map((x) => rectsOf(x, '.plate, .fan, .made, .eq'));
+  const parts = seats.map((x) => rectsOf(x, '.plate, .fan, .made, .eq, .c30'));
   // the bar along the top: on a computer its parts sit on their own (the bar itself takes no room),
   // so each part counts, the game and blinds, the tags under them and the buttons
   const top = els.top ? [...els.top.querySelectorAll(':scope > *, :scope > * > *')].map((el) => el.getBoundingClientRect()).filter((q) => q.width && q.height) : [];

@@ -892,6 +892,54 @@ test('adding chips puts a note in the chat for everyone: now, after this hand, o
   }
 });
 
+test('adding chips in a hand counts from the chips behind, and what is added after the hand stops at the maximum stack', { timeout: 60000 }, async () => {
+  const bots = [];
+  try {
+    const a = await admin('Ria', { fund: 500000 });
+    const b = await member('Sul', null, { fund: 500000 });
+    const { id } = await call('POST', '/api/tables', { settings: { autoApprove: true, autoStart: false, smallBlind: 5, bigBlind: 10, maxBuyIn: 2000 } }, a.token);
+    const t = srv.tables.get(id);
+    const byId = new Map();
+    for (const [u, name, seed, seat] of [[a, 'Ria', 91, 0], [b, 'Sul', 92, 1]]) {
+      const bot = new Bot(name, u, seed);
+      bot.passive = true;
+      await bot.connect(id);
+      bots.push(bot);
+      byId.set(u.user.id, bot);
+      assert.ok((await bot.emit('seat:request', { seat, buyIn: 1500 })).ok);
+    }
+    assert.ok((await bots[0].emit('host:start', {})).ok);
+    await until(() => t.hand && t.hand.phase === 'betting', 5000, 'a hand');
+    const h = t.hand;
+    // the first to act puts 500 in: 1,000 behind, so 1,000 more fits under the 2,000 maximum
+    const raiser = h.actor();
+    const rb = byId.get(raiser.id);
+    const other = byId.get(h.players.find((p) => p.id !== raiser.id).id);
+    assert.ok((await rb.emit('action', { type: 'raise', to: 500 })).ok);
+    const avail0 = srv.clubs.available(t.clubId, raiser.id);
+    let r = await rb.emit('chips:request', { amount: 1000 });
+    assert.ok(r.ok, r.error);
+    assert.equal(t.players.get(raiser.id).pendingChips, 1000);
+    r = await rb.emit('chips:request', { amount: 1 });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /add up to/);
+    // the other player folds: the raiser takes the pot back to 1,510, and only 490 of the 1,000 is added
+    assert.ok((await bots[0].emit('host:pause', { value: true })).ok);
+    assert.ok((await other.emit('action', { type: 'fold' })).ok);
+    await until(() => t.hand === null, 3000, 'the hand to end');
+    const p = t.players.get(raiser.id);
+    assert.equal(p.stack, 2000);
+    assert.equal(p.pendingChips, 0);
+    assert.equal(srv.clubs.available(t.clubId, raiser.id), avail0 - 490, 'only what went on the stack came out of the balance');
+    assert.ok(t.logEntries.some((e) => e.text === `${p.name} adds ${t.fmt(490)} of the ${t.fmt(1000)} asked for: the maximum stack is ${t.fmt(2000)}`));
+    // at the maximum, nothing more fits
+    r = await rb.emit('chips:request', { amount: 100 });
+    assert.equal(r.ok, false);
+  } finally {
+    for (const bot of bots) bot.close();
+  }
+});
+
 // Plays the hand in progress with everyone in it all in: the first to act shoves and the rest call.
 async function allInHand(t, bots, h) {
   for (let i = 0; i < 30 && t.hand === h && h.phase === 'betting'; i++) {

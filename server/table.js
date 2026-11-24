@@ -681,8 +681,9 @@ export class Table {
     }
     if (!Number.isInteger(amount) || amount <= 0) fail('Enter a positive amount');
     const s = this.settings;
-    if (s.maxBuyIn && p.stack + p.pendingChips + amount > s.maxBuyIn) {
-      fail(`Maximum stack is ${this.fmt(s.maxBuyIn)}; you can add up to ${this.fmt(Math.max(0, s.maxBuyIn - p.stack - p.pendingChips))}`);
+    const behind = this.stackBehind(p);
+    if (s.maxBuyIn && behind + p.pendingChips + amount > s.maxBuyIn) {
+      fail(`Maximum stack is ${this.fmt(s.maxBuyIn)}; you can add up to ${this.fmt(Math.max(0, s.maxBuyIn - behind - p.pendingChips))}`);
     }
     if (this.clubId) {
       const avail = this.clubs.available(this.clubId, user.id) - p.pendingChips;
@@ -700,9 +701,33 @@ export class Table {
     return { pending: true };
   }
 
+  // The chips a top-up goes on: in a hand being played, what is behind (chips in the pot may come
+  // back, so what is added after the hand stops at the maximum stack: fitToMax); otherwise the stack.
+  stackBehind(p) {
+    return this.inHand(p.userId) ? this.hand.byId(p.userId).stack : p.stack;
+  }
+
+  // As much of `amount` as goes on the stack without taking it over the maximum.
+  fitToMax(p, amount) {
+    const max = this.settings.maxBuyIn;
+    return max ? Math.min(amount, Math.max(0, max - p.stack)) : amount;
+  }
+
   queueChips(p, amount, approvedBy) {
-    // a note in the chat for everyone (the table pings with it): who is adding chips, and how much
     const later = this.inHand(p.userId);
+    // a request that waited for the host may no longer fit under the maximum stack
+    if (!later) {
+      const fit = this.fitToMax(p, amount);
+      if (fit <= 0) {
+        this.log(`${p.name}'s ${this.fmt(amount)} was not added: the stack is at the maximum (${this.fmt(this.settings.maxBuyIn)})`, 'chips');
+        this.rebuyDone(p.userId);
+        this.snapshot();
+        this.broadcast();
+        return;
+      }
+      amount = fit;
+    }
+    // a note in the chat for everyone (the table pings with it): who is adding chips, and how much
     const note = p.stack === 0 && !p.pendingChips && !later ? `${p.name} rebuys for ${this.fmt(amount)}`
       : `${p.name} is adding ${this.fmt(amount)} to their stack${later ? ' after this hand' : ''}`;
     if (later) {
@@ -1860,9 +1885,19 @@ export class Table {
     for (const p of [...this.players.values()]) {
       if (p.leaveAfterHand) { this.removePlayer(p, p.kicked ? 'kicked' : 'stood up'); continue; }
       if (p.pendingChips > 0) {
-        const amt = p.pendingChips;
+        const asked = p.pendingChips;
         p.pendingChips = 0;
-        try { this.applyChips(p, amt, null); } catch (e) { this.log(`${p.name} could not add chips: ${e.message}`, 'chips'); }
+        // a top-up asked for during the hand stops at the maximum stack (a pot won since may have
+        // brought the stack closer to it)
+        const amt = this.fitToMax(p, asked);
+        if (amt > 0) {
+          try { this.applyChips(p, amt, null); } catch (e) { this.log(`${p.name} could not add chips: ${e.message}`, 'chips'); }
+        }
+        if (amt < asked) {
+          const max = this.fmt(this.settings.maxBuyIn);
+          this.log(amt > 0 ? `${p.name} adds ${this.fmt(amt)} of the ${this.fmt(asked)} asked for: the maximum stack is ${max}`
+            : `${p.name}'s ${this.fmt(asked)} was not added: the stack is at the maximum (${max})`, 'chips');
+        }
       }
       if (p.stack === 0 && !p.sittingOut && !(this.isTourney && !this.canTourneyBuyIn(p.userId))) this.log(`${p.name} is out of chips`, 'seat');
     }

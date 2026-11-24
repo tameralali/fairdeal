@@ -162,6 +162,14 @@ const SOUNDS = {
     burst(t, { dur: 0.5, freq: 2100, q: 0.6, gain: 0.15, to: 760, attack: 0.06 });
     chips(t + 0.06, 11, 0.035);
   },
+  // you won the pot: a bright bell, two notes going up, each with a bell's high ring over it
+  won(t) {
+    [[0, 1567.98], [0.1, 2093.0]].forEach(([d, f]) => {
+      tone(t + d, { freq: f, dur: 0.9, gain: 0.17 });
+      tone(t + d, { freq: f * 2.76, dur: 0.28, gain: 0.03 });
+      tone(t + d, { freq: f * 2, dur: 0.45, gain: 0.035 });
+    });
+  },
   // someone called 30: three soft notes going down, like a clock chiming
   call30(t) {
     [[0, 987.77], [0.17, 783.99], [0.34, 659.25]].forEach(([d, f]) => {
@@ -205,9 +213,26 @@ const SOUNDS = {
 
 export const SOUND_NAMES = Object.keys(SOUNDS);
 
+// A browser can stop a page's sound after it started: a phone locked or put away, a call, another app
+// or the voice chat taking the audio, a tab left in the background. The sound is asked back whenever
+// the page is looked at again, and before any sound while it is stopped; that sound still plays if it
+// comes back at once (never late, so a fold is not heard a minute after it).
+function wake() {
+  if (ctx && ctx.state !== 'running' && ctx.state !== 'closed') ctx.resume().catch(() => {});
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) wake(); });
+  window.addEventListener('pageshow', wake);
+  window.addEventListener('focus', wake);
+}
+
 // kind: one of SOUND_NAMES; delay: seconds from now
 export function playSound(kind, delay = 0) {
   const a = audio();
-  if (!a || a.state !== 'running' || !SOUNDS[kind]) return;
-  try { SOUNDS[kind](a.currentTime + 0.01 + delay); } catch { /* sound not available */ }
+  if (!a || !SOUNDS[kind]) return;
+  const go = () => { try { SOUNDS[kind](a.currentTime + 0.01 + delay); } catch { /* sound not available */ } };
+  if (a.state === 'running') { go(); return; }
+  if (a.state === 'closed') return;
+  const asked = performance.now();
+  a.resume().then(() => { if (a.state === 'running' && performance.now() - asked < 250) go(); }).catch(() => {});
 }
